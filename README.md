@@ -178,6 +178,56 @@ The chosen source becomes the submodule’s origin remote.
 
 ---
 
+### `xr_tisyscfg_cfg`
+
+TI SysConfig 工程初始化入口  
+TI SysConfig project bootstrap entry.
+
+```bash
+usage: xr_tisyscfg_cfg [-h] -d DIRECTORY [-o OUTPUT] [-t TERMINAL] [--xrobot] [--commit COMMIT]
+                       [--git-source GIT_SOURCE] [--git-mirrors GIT_MIRRORS] [--force]
+                       [--post-cmd POST_CMD] [--dry-run]
+```
+
+当前版本行为：自动扫描 `.syscfg`，提取基础元信息并生成 TI 基线 `.config.yaml`。  
+Current behavior: scans `.syscfg`, extracts baseline metadata, and generates a TI baseline `.config.yaml`.
+
+#### 🔧 必选参数 (Required)
+
+- `-d, --directory <DIRECTORY>`：
+
+  TI SysConfig 工程目录（需包含 `.syscfg` 文件）  
+  TI SysConfig project directory (must contain a `.syscfg` file).
+
+#### ⚙️ 可选参数 (Optional)
+
+- `-o, --output <FILE>`：
+
+  输出 YAML 路径（默认 `.config.yaml`）  
+  Output YAML path (default `.config.yaml`).
+
+- `-t, --terminal <TERMINAL>`：
+
+  写入 `terminal_source` 字段  
+  Fill `terminal_source` in generated YAML.
+
+- `--force`：
+
+  覆盖已存在输出文件  
+  Overwrite existing output file.
+
+- `--post-cmd`：
+
+  生成 YAML 后执行自定义命令（支持占位符 `{project_dir}`、`{syscfg_file}`、`{yaml_output}`）  
+  Run a custom command after YAML generation (supports placeholders `{project_dir}`, `{syscfg_file}`, `{yaml_output}`).
+
+- `--dry-run`：
+
+  仅扫描并输出识别结果，不写文件  
+  Scan only and print summary without writing files.
+
+---
+
 ### `xr_parse_ioc`
 
 自动解析 STM32CubeMX 工程配置  
