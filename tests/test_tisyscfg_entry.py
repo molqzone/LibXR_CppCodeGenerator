@@ -90,6 +90,14 @@ const rtos = "FreeRTOS";
 /**
  * @cliArgs --board "/ti/boards/LP_MSPM0G3507"
  */
+const GPIO = scripting.addModule("/ti/driverlib/GPIO", {}, false);
+const GPIO1 = GPIO.addInstance();
+GPIO1.$name = "GPIO_GRP_0";
+GPIO1.associatedPins[0].$name = "LED";
+GPIO1.associatedPins[0].assignedPort = "PORTB";
+GPIO1.associatedPins[0].assignedPin = "22";
+GPIO1.associatedPins[0].direction = "OUTPUT";
+GPIO1.associatedPins[0].internalResistor = "PULL_UP";
 const I2C = scripting.addModule("/ti/driverlib/I2C", {}, false);
 const I2C1 = I2C.addInstance();
 I2C1.$name = "I2C_0";
@@ -103,6 +111,11 @@ I2C1.$name = "I2C_0";
         self.assertEqual(result["Mcu"]["Family"], "TI")
         self.assertEqual(result["Mcu"]["Type"], "MSPM0G3507")
         self.assertEqual(result["SysConfig"]["Board"], "LP_MSPM0G3507")
+        self.assertIn("PB22", result["GPIO"])
+        self.assertEqual(result["GPIO"]["PB22"]["Signal"], "GPIO_Output")
+        self.assertEqual(result["GPIO"]["PB22"]["Label"], "LED")
+        self.assertEqual(result["GPIO"]["PB22"]["Pull"], "GPIO_PULLUP")
+        self.assertNotIn("GPIO", result["Peripherals"])
         self.assertIn("I2C", result["Peripherals"])
         self.assertIn("I2C_0", result["Peripherals"]["I2C"])
         self.assertEqual(result["terminal_source"], "uart0")

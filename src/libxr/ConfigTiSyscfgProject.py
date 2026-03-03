@@ -6,7 +6,7 @@ import os
 import re
 import subprocess
 import sys
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
@@ -26,6 +26,125 @@ def find_syscfg_file(directory: str):
         if filename.endswith(".syscfg"):
             return os.path.join(directory, filename)
     return None
+
+
+def _extract_module_aliases(syscfg_text: str) -> Dict[str, str]:
+    """Extract variable -> module path mappings from addModule calls."""
+    aliases: Dict[str, str] = {}
+    for var, module_path in re.findall(
+        r'const\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*scripting\.addModule\(\s*["\']([^"\']+)["\']',
+        syscfg_text,
+    ):
+        aliases[var] = module_path
+    return aliases
+
+
+def _parse_literal(raw_value: str) -> Any:
+    """Parse a simple SysConfig literal value."""
+    value = raw_value.strip()
+    if len(value) >= 2 and value[0] == '"' and value[-1] == '"':
+        return value[1:-1]
+    if len(value) >= 2 and value[0] == "'" and value[-1] == "'":
+        return value[1:-1]
+    lowered = value.lower()
+    if lowered == "true":
+        return True
+    if lowered == "false":
+        return False
+    return value
+
+
+def _normalize_pull(raw_pull: str) -> Optional[str]:
+    """Map TI pull setting to CubeMX-style pull value."""
+    pull = raw_pull.strip().upper()
+    pull = pull.replace("-", "_")
+    mapping = {
+        "PULL_UP": "GPIO_PULLUP",
+        "PULLUP": "GPIO_PULLUP",
+        "PULL_DOWN": "GPIO_PULLDOWN",
+        "PULLDOWN": "GPIO_PULLDOWN",
+        "NO_PULL": "GPIO_NOPULL",
+        "NOPULL": "GPIO_NOPULL",
+        "NONE": "GPIO_NOPULL",
+    }
+    return mapping.get(pull)
+
+
+def _resolve_pin_key(pin_cfg: Dict[str, Any]) -> Optional[str]:
+    """Resolve pin name to format like PA8 / PB22."""
+    assigned = str(pin_cfg.get("pin.$assign", "")).strip().upper()
+    if re.match(r"^P[A-Z]\d+$", assigned):
+        return assigned
+
+    assigned_port = str(pin_cfg.get("assignedPort", "")).strip().upper()
+    assigned_pin = str(pin_cfg.get("assignedPin", "")).strip()
+    port_match = re.match(r"^PORT([A-Z])$", assigned_port)
+    if port_match and assigned_pin.isdigit():
+        return f"P{port_match.group(1)}{assigned_pin}"
+    return None
+
+
+def _resolve_signal(pin_cfg: Dict[str, Any]) -> str:
+    """Infer GPIO signal type from pin configuration."""
+    direction = str(pin_cfg.get("direction", "")).strip().upper()
+    if direction == "OUTPUT":
+        return "GPIO_Output"
+    if direction == "INPUT":
+        return "GPIO_Input"
+    if "initialValue" in pin_cfg:
+        return "GPIO_Output"
+    if bool(pin_cfg.get("interruptEn", False)):
+        return "GPIO_Input"
+    return "GPIO_Input"
+
+
+def extract_gpio_pins(syscfg_text: str) -> Dict[str, Dict[str, Any]]:
+    """Extract GPIO pins using per-pin config instead of GPIO group names."""
+    module_aliases = _extract_module_aliases(syscfg_text)
+    instance_aliases: Dict[str, str] = {}
+    pin_data: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    gpio_config: Dict[str, Dict[str, Any]] = {}
+
+    for var, parent in re.findall(
+        r'const\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([A-Za-z_][A-Za-z0-9_]*)\.addInstance\(',
+        syscfg_text,
+    ):
+        instance_aliases[var] = parent
+
+    for instance_var, index, prop, raw_value in re.findall(
+        r'([A-Za-z_][A-Za-z0-9_]*)\.associatedPins\[(\d+)\]\.([A-Za-z0-9_.$]+)\s*=\s*([^;\n]+);',
+        syscfg_text,
+    ):
+        parent_var = instance_aliases.get(instance_var, "")
+        module_path = module_aliases.get(parent_var, "")
+        if os.path.basename(module_path).upper() != "GPIO":
+            continue
+
+        key = (instance_var, index)
+        pin_data.setdefault(key, {})
+        pin_data[key][prop] = _parse_literal(raw_value)
+
+    for pin_cfg in pin_data.values():
+        pin_key = _resolve_pin_key(pin_cfg)
+        if not pin_key:
+            continue
+
+        details: Dict[str, Any] = {
+            "Signal": _resolve_signal(pin_cfg),
+        }
+        raw_name = str(pin_cfg.get("$name", "")).strip()
+        if raw_name and not re.match(r"^PIN_\d+$", raw_name):
+            details["Label"] = raw_name
+
+        raw_pull = pin_cfg.get("internalResistor")
+        if isinstance(raw_pull, str):
+            pull = _normalize_pull(raw_pull)
+            if pull:
+                details["Pull"] = pull
+
+        gpio_config[pin_key] = details
+
+    return {pin: gpio_config[pin] for pin in sorted(gpio_config)}
 
 
 def _extract_cli_board(syscfg_text: str) -> Optional[str]:
@@ -117,16 +236,10 @@ def extract_modules(syscfg_text: str) -> List[str]:
 
 def extract_peripherals(syscfg_text: str) -> Dict[str, Dict[str, Dict[str, bool]]]:
     """Extract minimal peripheral instances from SysConfig script text."""
-    module_aliases: Dict[str, str] = {}
+    module_aliases = _extract_module_aliases(syscfg_text)
     instance_aliases: Dict[str, str] = {}
     display_names: Dict[str, str] = {}
     peripherals: Dict[str, Dict[str, Dict[str, bool]]] = {}
-
-    for var, module_path in re.findall(
-        r'const\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*scripting\.addModule\(\s*["\']([^"\']+)["\']',
-        syscfg_text,
-    ):
-        module_aliases[var] = module_path
 
     for var, parent in re.findall(
         r'const\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([A-Za-z_][A-Za-z0-9_]*)\.addInstance\(',
@@ -145,6 +258,9 @@ def extract_peripherals(syscfg_text: str) -> Dict[str, Dict[str, Dict[str, bool]
         peripheral_type = os.path.basename(module_path).upper()
         if not peripheral_type:
             continue
+        if peripheral_type == "GPIO":
+            # GPIO is represented in top-level "GPIO" using per-pin shape.
+            continue
 
         instance_name = display_names.get(instance_var, instance_var)
         peripherals.setdefault(peripheral_type, {})
@@ -158,6 +274,7 @@ def build_yaml_config(syscfg_file: str, terminal_source: str, syscfg_text: str) 
     mcu_type, board_name = extract_ti_device(syscfg_text)
     rtos = extract_rtos(syscfg_text)
     modules = extract_modules(syscfg_text)
+    gpio = extract_gpio_pins(syscfg_text)
     peripherals = extract_peripherals(syscfg_text)
 
     config = {
@@ -166,7 +283,7 @@ def build_yaml_config(syscfg_file: str, terminal_source: str, syscfg_text: str) 
             "Type": mcu_type,
             "Source": "TI SysConfig",
         },
-        "GPIO": {},
+        "GPIO": gpio,
         "Peripherals": peripherals,
         "Timebase": {
             "Source": "SysTick",
