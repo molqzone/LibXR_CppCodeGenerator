@@ -189,8 +189,8 @@ usage: xr_tisyscfg_cfg [-h] -d DIRECTORY [-o OUTPUT] [-t TERMINAL] [--xrobot] [-
                        [--post-cmd POST_CMD] [--dry-run]
 ```
 
-当前版本行为：自动扫描 `.syscfg`，提取基础元信息并生成 TI 基线 `.config.yaml`。  
-Current behavior: scans `.syscfg`, extracts baseline metadata, and generates a TI baseline `.config.yaml`.
+当前版本行为：扫描指定目录第一层的 `.syscfg`，提取 board/device、模块与实例元信息并生成 TI 基线 `.config.yaml`。  
+Current behavior: scans first-level `.syscfg` files in the specified directory, extracts board/device, module, and instance metadata, and generates a TI baseline `.config.yaml`.
 
 #### 🔧 必选参数 (Required)
 

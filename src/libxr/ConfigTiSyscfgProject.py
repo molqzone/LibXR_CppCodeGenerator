@@ -6,7 +6,7 @@ import os
 import re
 import subprocess
 import sys
-from typing import Dict, List
+from typing import Dict, List, Optional, Tuple
 
 import yaml
 
@@ -21,31 +21,72 @@ def _friendly_path_name(path: str) -> str:
 
 
 def find_syscfg_file(directory: str):
-    """Return the first .syscfg file path in the directory, or None."""
+    """Return the first .syscfg file path in the specified directory, or None."""
     for filename in sorted(os.listdir(directory)):
         if filename.endswith(".syscfg"):
             return os.path.join(directory, filename)
     return None
 
 
-def extract_ti_device(syscfg_text: str) -> str:
-    """Extract TI device identifier from a SysConfig file."""
+def _extract_cli_board(syscfg_text: str) -> Optional[str]:
+    """Extract board path from SysConfig @cliArgs/@v2CliArgs metadata."""
+    match = re.search(r'--board\s+["\']([^"\']+)["\']', syscfg_text)
+    if not match:
+        return None
+    board_path = match.group(1).strip()
+    if not board_path:
+        return None
+    return os.path.basename(board_path)
+
+
+def _extract_device_from_board(board_name: str) -> Optional[str]:
+    """Infer MCU model from board name, e.g. LP_MSPM0G3507 -> MSPM0G3507."""
+    match = re.search(r'(MSPM0[A-Za-z0-9]+)', board_name, re.IGNORECASE)
+    if match:
+        return match.group(1).upper()
+    return None
+
+
+def extract_ti_device(syscfg_text: str) -> Tuple[str, Optional[str]]:
+    """Extract TI device identifier and board name from a SysConfig file."""
     patterns = [
         r'deviceName\s*:\s*"([^"]+)"',
         r'device\s*:\s*"([^"]+)"',
+        r"deviceName\s*:\s*'([^']+)'",
+        r"device\s*:\s*'([^']+)'",
         r'Device\s*=\s*"([^"]+)"',
+        r"Device\s*=\s*'([^']+)'",
         r'boardName\s*:\s*"([^"]+)"',
+        r"boardName\s*:\s*'([^']+)'",
     ]
 
     for pattern in patterns:
         match = re.search(pattern, syscfg_text)
         if match:
-            return match.group(1).strip()
-    return "UNKNOWN_TI_DEVICE"
+            return match.group(1).strip(), None
+
+    board_name = _extract_cli_board(syscfg_text)
+    if board_name:
+        device = _extract_device_from_board(board_name)
+        if device:
+            return device, board_name
+        return board_name, board_name
+
+    return "UNKNOWN_TI_DEVICE", None
 
 
 def extract_rtos(syscfg_text: str) -> str:
     """Infer RTOS type from SysConfig text."""
+    match = re.search(r'--rtos\s+["\']?([A-Za-z0-9\-_]+)["\']?', syscfg_text, re.IGNORECASE)
+    if match:
+        value = match.group(1).lower()
+        if "free" in value:
+            return "FreeRTOS"
+        if "ti" in value:
+            return "TI-RTOS"
+        if "no" in value:
+            return "NoRTOS"
+
     lowered = syscfg_text.lower()
     if "freertos" in lowered:
         return "FreeRTOS"
@@ -61,8 +102,8 @@ def extract_modules(syscfg_text: str) -> List[str]:
     modules = set()
 
     for pattern in [
-        r'addModule\(\s*"([^"]+)"\s*\)',
-        r"addModule\(\s*'([^']+)'\s*\)",
+        r'addModule\(\s*"([^"]+)"',
+        r"addModule\(\s*'([^']+)'",
         r'moduleName\s*:\s*"([^"]+)"',
         r"moduleName\s*:\s*'([^']+)'",
     ]:
@@ -74,11 +115,50 @@ def extract_modules(syscfg_text: str) -> List[str]:
     return sorted(modules)
 
 
+def extract_peripherals(syscfg_text: str) -> Dict[str, Dict[str, Dict[str, bool]]]:
+    """Extract minimal peripheral instances from SysConfig script text."""
+    module_aliases: Dict[str, str] = {}
+    instance_aliases: Dict[str, str] = {}
+    display_names: Dict[str, str] = {}
+    peripherals: Dict[str, Dict[str, Dict[str, bool]]] = {}
+
+    for var, module_path in re.findall(
+        r'const\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*scripting\.addModule\(\s*["\']([^"\']+)["\']',
+        syscfg_text,
+    ):
+        module_aliases[var] = module_path
+
+    for var, parent in re.findall(
+        r'const\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([A-Za-z_][A-Za-z0-9_]*)\.addInstance\(',
+        syscfg_text,
+    ):
+        instance_aliases[var] = parent
+
+    for var, name in re.findall(
+        r'([A-Za-z_][A-Za-z0-9_]*)\.\$name\s*=\s*["\']([^"\']+)["\']',
+        syscfg_text,
+    ):
+        display_names[var] = name
+
+    for instance_var, parent_var in instance_aliases.items():
+        module_path = module_aliases.get(parent_var, "")
+        peripheral_type = os.path.basename(module_path).upper()
+        if not peripheral_type:
+            continue
+
+        instance_name = display_names.get(instance_var, instance_var)
+        peripherals.setdefault(peripheral_type, {})
+        peripherals[peripheral_type][instance_name] = {"Enabled": True}
+
+    return peripherals
+
+
 def build_yaml_config(syscfg_file: str, terminal_source: str, syscfg_text: str) -> Dict:
     """Build a baseline .config.yaml structure from SysConfig metadata."""
-    mcu_type = extract_ti_device(syscfg_text)
+    mcu_type, board_name = extract_ti_device(syscfg_text)
     rtos = extract_rtos(syscfg_text)
     modules = extract_modules(syscfg_text)
+    peripherals = extract_peripherals(syscfg_text)
 
     config = {
         "Mcu": {
@@ -87,7 +167,7 @@ def build_yaml_config(syscfg_file: str, terminal_source: str, syscfg_text: str) 
             "Source": "TI SysConfig",
         },
         "GPIO": {},
-        "Peripherals": {},
+        "Peripherals": peripherals,
         "Timebase": {
             "Source": "SysTick",
         },
@@ -97,6 +177,8 @@ def build_yaml_config(syscfg_file: str, terminal_source: str, syscfg_text: str) 
             "Modules": modules,
         },
     }
+    if board_name:
+        config["SysConfig"]["Board"] = board_name
 
     if terminal_source:
         config["terminal_source"] = terminal_source
