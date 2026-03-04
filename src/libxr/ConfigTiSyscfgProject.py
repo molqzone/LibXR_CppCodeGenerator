@@ -95,7 +95,7 @@ def _resolve_signal(pin_cfg: Dict[str, Any]) -> str:
         return "GPIO_Output"
     if bool(pin_cfg.get("interruptEn", False)):
         return "GPIO_Input"
-    return "GPIO_Input"
+    return "GPIO_Output"
 
 
 def extract_gpio_pins(syscfg_text: str) -> Dict[str, Dict[str, Any]]:
@@ -149,10 +149,10 @@ def extract_gpio_pins(syscfg_text: str) -> Dict[str, Dict[str, Any]]:
 
 def _extract_cli_board(syscfg_text: str) -> Optional[str]:
     """Extract board path from SysConfig @cliArgs/@v2CliArgs metadata."""
-    match = re.search(r'--board\s+["\']([^"\']+)["\']', syscfg_text)
+    match = re.search(r'--board\s+(?:"([^"]+)"|\'([^\']+)\'|([^\s]+))', syscfg_text)
     if not match:
         return None
-    board_path = match.group(1).strip()
+    board_path = next((item for item in match.groups() if item), "").strip()
     if not board_path:
         return None
     return os.path.basename(board_path)
@@ -166,25 +166,46 @@ def _extract_device_from_board(board_name: str) -> Optional[str]:
     return None
 
 
+def _extract_cli_device(syscfg_text: str) -> Optional[str]:
+    """Extract device name from @v2CliArgs/@cliArgs metadata."""
+    v2_matches = re.findall(
+        r'@v2CliArgs[^\n\r]*--device\s+(?:"([^"]+)"|\'([^\']+)\'|([^\s]+))',
+        syscfg_text,
+        re.IGNORECASE,
+    )
+    if v2_matches:
+        v2_value = next((item for item in v2_matches[-1] if item), "").strip()
+        if v2_value:
+            return v2_value.upper()
+
+    matches = re.findall(
+        r'--device\s+(?:"([^"]+)"|\'([^\']+)\'|([^\s]+))',
+        syscfg_text,
+        re.IGNORECASE,
+    )
+    if not matches:
+        return None
+
+    cli_device = next((item for item in matches[-1] if item), "").strip().upper()
+    if not cli_device:
+        return None
+
+    if cli_device.endswith("X"):
+        board_name = _extract_cli_board(syscfg_text)
+        if board_name:
+            board_device = _extract_device_from_board(board_name)
+            if board_device and board_device.startswith(cli_device[:-1]):
+                return board_device
+    return cli_device
+
+
 def extract_ti_device(syscfg_text: str) -> Tuple[str, Optional[str]]:
     """Extract TI device identifier and board name from a SysConfig file."""
-    patterns = [
-        r'deviceName\s*:\s*"([^"]+)"',
-        r'device\s*:\s*"([^"]+)"',
-        r"deviceName\s*:\s*'([^']+)'",
-        r"device\s*:\s*'([^']+)'",
-        r'Device\s*=\s*"([^"]+)"',
-        r"Device\s*=\s*'([^']+)'",
-        r'boardName\s*:\s*"([^"]+)"',
-        r"boardName\s*:\s*'([^']+)'",
-    ]
-
-    for pattern in patterns:
-        match = re.search(pattern, syscfg_text)
-        if match:
-            return match.group(1).strip(), None
-
     board_name = _extract_cli_board(syscfg_text)
+    cli_device = _extract_cli_device(syscfg_text)
+    if cli_device:
+        return cli_device, board_name
+
     if board_name:
         device = _extract_device_from_board(board_name)
         if device:
@@ -240,12 +261,32 @@ def extract_peripherals(syscfg_text: str) -> Dict[str, Dict[str, Dict[str, bool]
     instance_aliases: Dict[str, str] = {}
     display_names: Dict[str, str] = {}
     peripherals: Dict[str, Dict[str, Dict[str, bool]]] = {}
+    modules_with_instances = set()
+    module_name_map = {
+        "ADC12": "ADC",
+        "CANFD": "MCAN",
+        "FDCAN": "MCAN",
+        "I2CSMBUS": "I2C",
+    }
+    module_presence_whitelist = {
+        "ADC",
+        "DMA",
+        "I2C",
+        "LPUART",
+        "MCAN",
+        "PWM",
+        "SPI",
+        "TIMER",
+        "UART",
+        "USART",
+    }
 
     for var, parent in re.findall(
         r'const\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([A-Za-z_][A-Za-z0-9_]*)\.addInstance\(',
         syscfg_text,
     ):
         instance_aliases[var] = parent
+        modules_with_instances.add(parent)
 
     for var, name in re.findall(
         r'([A-Za-z_][A-Za-z0-9_]*)\.\$name\s*=\s*["\']([^"\']+)["\']',
@@ -256,6 +297,7 @@ def extract_peripherals(syscfg_text: str) -> Dict[str, Dict[str, Dict[str, bool]
     for instance_var, parent_var in instance_aliases.items():
         module_path = module_aliases.get(parent_var, "")
         peripheral_type = os.path.basename(module_path).upper()
+        peripheral_type = module_name_map.get(peripheral_type, peripheral_type)
         if not peripheral_type:
             continue
         if peripheral_type == "GPIO":
@@ -265,6 +307,21 @@ def extract_peripherals(syscfg_text: str) -> Dict[str, Dict[str, Dict[str, bool]
         instance_name = display_names.get(instance_var, instance_var)
         peripherals.setdefault(peripheral_type, {})
         peripherals[peripheral_type][instance_name] = {"Enabled": True}
+
+    # Some SysConfig modules (for example DMA) are configured without addInstance().
+    # For these, keep existence-only entries so downstream can see they are enabled.
+    for module_var, module_path in module_aliases.items():
+        if module_var in modules_with_instances:
+            continue
+
+        peripheral_type = os.path.basename(module_path).upper()
+        peripheral_type = module_name_map.get(peripheral_type, peripheral_type)
+        if peripheral_type not in module_presence_whitelist:
+            continue
+
+        fallback_name = display_names.get(module_var, module_var)
+        peripherals.setdefault(peripheral_type, {})
+        peripherals[peripheral_type].setdefault(fallback_name, {"Enabled": True})
 
     return peripherals
 
