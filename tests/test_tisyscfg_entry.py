@@ -131,10 +131,10 @@ I2C1.$name = "I2C_0";
         self.assertIn("Mcu", result)
         self.assertIn("GPIO", result)
         self.assertIn("Peripherals", result)
-        self.assertIn("SysConfig", result)
+        self.assertIn("Timebase", result)
+        self.assertNotIn("SysConfig", result)
         self.assertEqual(result["Mcu"]["Family"], "TI")
         self.assertEqual(result["Mcu"]["Type"], "MSPM0G3507")
-        self.assertEqual(result["SysConfig"]["Board"], "LP_MSPM0G3507")
         self.assertIn("PB22", result["GPIO"])
         self.assertEqual(result["GPIO"]["PB22"]["Signal"], "GPIO_Output")
         self.assertEqual(result["GPIO"]["PB22"]["Label"], "LED")
@@ -144,7 +144,7 @@ I2C1.$name = "I2C_0";
         self.assertIn("I2C_0", result["Peripherals"]["I2C"])
         self.assertEqual(result["terminal_source"], "uart0")
 
-    def test_build_yaml_config_gpio_defaults_to_output_without_direction_fields(self):
+    def test_build_yaml_config_gpio_without_signal_fields_uses_ti_fallback(self):
         syscfg_text = """
 /**
  * @cliArgs --board "/ti/boards/LP_MSPM0G3507"
@@ -160,6 +160,27 @@ GPIO1.associatedPins[0].assignedPin = "22";
 
         self.assertIn("PB22", result["GPIO"])
         self.assertEqual(result["GPIO"]["PB22"]["Signal"], "GPIO_Output")
+        self.assertEqual(result["GPIO"]["PB22"]["Pull"], "GPIO_NOPULL")
+
+    def test_build_yaml_config_gpio_sets_interrupt_en_marker(self):
+        syscfg_text = """
+/**
+ * @cliArgs --board "/ti/boards/LP_MSPM0G3507"
+ */
+const GPIO = scripting.addModule("/ti/driverlib/GPIO", {}, false);
+const GPIO1 = GPIO.addInstance();
+GPIO1.$name = "GPIO_GRP_0";
+GPIO1.associatedPins[0].$name = "BUTTON";
+GPIO1.associatedPins[0].assignedPort = "PORTA";
+GPIO1.associatedPins[0].assignedPin = "8";
+GPIO1.associatedPins[0].direction = "INPUT";
+GPIO1.associatedPins[0].interruptEn = true;
+"""
+        result = build_yaml_config("/tmp/demo.syscfg", "uart0", syscfg_text)
+
+        self.assertIn("PA8", result["GPIO"])
+        self.assertEqual(result["GPIO"]["PA8"]["Signal"], "GPIO_Input")
+        self.assertTrue(result["GPIO"]["PA8"]["interruptEn"])
 
     def test_extract_peripherals_detects_modules_without_instances(self):
         syscfg_text = """
@@ -171,10 +192,10 @@ const Board = scripting.addModule("/ti/driverlib/Board", {}, false);
 
         self.assertIn("DMA", peripherals)
         self.assertIn("DMA", peripherals["DMA"])
-        self.assertTrue(peripherals["DMA"]["DMA"]["Enabled"])
+        self.assertEqual(peripherals["DMA"]["DMA"], {})
         self.assertIn("MCAN", peripherals)
         self.assertIn("MCAN", peripherals["MCAN"])
-        self.assertTrue(peripherals["MCAN"]["MCAN"]["Enabled"])
+        self.assertEqual(peripherals["MCAN"]["MCAN"], {})
         self.assertNotIn("Board", peripherals)
 
     def test_extract_peripherals_uses_instance_name_when_available(self):
@@ -188,6 +209,66 @@ SPI1.$name = "SPI_0";
         self.assertIn("SPI", peripherals)
         self.assertIn("SPI_0", peripherals["SPI"])
         self.assertNotIn("SPI", peripherals["SPI"])
+
+    def test_extract_peripherals_pwm_parses_core_parameters(self):
+        syscfg_text = """
+const PWM = scripting.addModule("/ti/driverlib/PWM", {}, false);
+const PWM1 = PWM.addInstance();
+PWM1.$name = "PWM_1";
+PWM1.pwmMode = "CENTER_ALIGN";
+PWM1.timerCount = 4000;
+PWM1.timerStartTimer = true;
+PWM1.clockDivider = 8;
+PWM1.clockPrescale = 4;
+PWM1.enableShadowLoad = true;
+PWM1.ccIndex = [0];
+PWM1.ccIndexCmpl = [0];
+PWM1.peripheral.$assign = "TIMA0";
+PWM1.peripheral.ccp0Pin.$assign = "PB8";
+PWM1.peripheral.ccp0Pin_cmpl.$assign = "PB9";
+PWM1.PWM_CHANNEL_0.$name = "MOTOR_A";
+PWM1.PWM_CHANNEL_0.dutyCycle = 50;
+PWM1.PWM_CHANNEL_0.ccValue = 2000;
+PWM1.PWM_CHANNEL_0.invert = true;
+PWM1.PWM_CHANNEL_0.shadowUpdateMode = "ZERO_EVT";
+"""
+        peripherals = extract_peripherals(syscfg_text)
+
+        self.assertIn("PWM", peripherals)
+        self.assertIn("PWM_1", peripherals["PWM"])
+        pwm_cfg = peripherals["PWM"]["PWM_1"]
+        self.assertEqual(pwm_cfg["Mode"], "CENTER_ALIGN")
+        self.assertEqual(pwm_cfg["Period"], 4000)
+        self.assertEqual(pwm_cfg["Prescaler"], 8)
+        self.assertEqual(pwm_cfg["ClockPrescaler"], 4)
+        self.assertNotIn("Started", pwm_cfg)
+        self.assertNotIn("ShadowLoad", pwm_cfg)
+        self.assertNotIn("Timer", pwm_cfg)
+        self.assertNotIn("CCIndex", pwm_cfg)
+        self.assertNotIn("CCIndexCmpl", pwm_cfg)
+        self.assertIn("Channels", pwm_cfg)
+        self.assertIn("PWM_CHANNEL_0", pwm_cfg["Channels"])
+        ch0_cfg = pwm_cfg["Channels"]["PWM_CHANNEL_0"]
+        self.assertTrue(ch0_cfg["PWM"])
+        self.assertEqual(ch0_cfg["DutyCycle"], 50)
+        self.assertNotIn("CCValue", ch0_cfg)
+        self.assertNotIn("Invert", ch0_cfg)
+        self.assertNotIn("Label", ch0_cfg)
+        self.assertNotIn("Pin", ch0_cfg)
+        self.assertNotIn("PinCmpl", ch0_cfg)
+        self.assertNotIn("Complementary", ch0_cfg)
+
+    def test_extract_peripherals_pwm_keeps_enabled_fallback_without_params(self):
+        syscfg_text = """
+const PWM = scripting.addModule("/ti/driverlib/PWM", {}, false);
+const PWM1 = PWM.addInstance();
+PWM1.$name = "PWM_0";
+"""
+        peripherals = extract_peripherals(syscfg_text)
+
+        self.assertIn("PWM", peripherals)
+        self.assertIn("PWM_0", peripherals["PWM"])
+        self.assertEqual(peripherals["PWM"]["PWM_0"], {})
 
     def test_render_template_command_raises_for_unknown_placeholder(self):
         with self.assertRaises(ValueError):

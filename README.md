@@ -226,6 +226,9 @@ Current behavior: scans first-level `.syscfg` files in the specified directory, 
   仅扫描并输出识别结果，不写文件  
   Scan only and print summary without writing files.
 
+> 兼容别名 / Alias: `xr_parse_syscfg`（参数与行为完全一致）  
+> Compatible alias: `xr_parse_syscfg` (same arguments and behavior)
+
 ---
 
 ### `xr_parse_ioc`
