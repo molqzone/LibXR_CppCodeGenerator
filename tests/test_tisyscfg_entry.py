@@ -270,6 +270,70 @@ PWM1.$name = "PWM_0";
         self.assertIn("PWM_0", peripherals["PWM"])
         self.assertEqual(peripherals["PWM"]["PWM_0"], {})
 
+    def test_extract_peripherals_uart_parses_core_parameters(self):
+        syscfg_text = """
+const UART = scripting.addModule("/ti/driverlib/UART", {}, false);
+const UART1 = UART.addInstance();
+UART1.$name = "UART_0";
+UART1.targetBaudRate = 115200;
+UART1.wordLength = "8_BITS";
+UART1.parity = "NONE";
+UART1.stopBits = "ONE";
+UART1.uartMode = "DALI";
+UART1.direction = "TX";
+UART1.flowControl = "RTS_CTS";
+UART1.enableFIFO = true;
+UART1.rxFifoThreshold = "DL_UART_RX_FIFO_LEVEL_ONE_ENTRY";
+UART1.txFifoThreshold = "DL_UART_TX_FIFO_LEVEL_EMPTY";
+UART1.enableDMARX = false;
+UART1.enableDMATX = true;
+UART1.enabledDMARXTriggers = "DL_UART_DMA_INTERRUPT_RX";
+UART1.enabledDMATXTriggers = "DL_UART_DMA_INTERRUPT_TX";
+UART1.enabledInterrupts = ["RX","TX"];
+UART1.peripheral.$assign = "UART0";
+UART1.peripheral.rxPin.$assign = "PA11";
+UART1.peripheral.txPin.$assign = "PA10";
+UART1.peripheral.rtsPin.$assign = "PA8";
+UART1.peripheral.ctsPin.$assign = "PA9";
+"""
+        peripherals = extract_peripherals(syscfg_text)
+
+        self.assertIn("UART", peripherals)
+        self.assertIn("UART_0", peripherals["UART"])
+        uart_cfg = peripherals["UART"]["UART_0"]
+        self.assertEqual(uart_cfg["BaudRate"], 115200)
+        self.assertEqual(uart_cfg["WordLength"], "8_BITS")
+        self.assertEqual(uart_cfg["Parity"], "NONE")
+        self.assertEqual(uart_cfg["StopBits"], "ONE")
+        self.assertEqual(uart_cfg["Mode"], "DALI")
+        self.assertEqual(uart_cfg["Direction"], "TX")
+        self.assertEqual(uart_cfg["FlowControl"], "RTS_CTS")
+        self.assertTrue(uart_cfg["FIFO"])
+        self.assertEqual(uart_cfg["RXFifoThreshold"], "DL_UART_RX_FIFO_LEVEL_ONE_ENTRY")
+        self.assertEqual(uart_cfg["TXFifoThreshold"], "DL_UART_TX_FIFO_LEVEL_EMPTY")
+        self.assertFalse(uart_cfg["DMA_RX"])
+        self.assertTrue(uart_cfg["DMA_TX"])
+        self.assertEqual(uart_cfg["DMARXTrigger"], "DL_UART_DMA_INTERRUPT_RX")
+        self.assertEqual(uart_cfg["DMATXTrigger"], "DL_UART_DMA_INTERRUPT_TX")
+        self.assertEqual(uart_cfg["Interrupts"], ["RX", "TX"])
+        self.assertEqual(uart_cfg["Instance"], "UART0")
+        self.assertEqual(
+            uart_cfg["Pins"],
+            {"RX": "PA11", "TX": "PA10", "RTS": "PA8", "CTS": "PA9"},
+        )
+
+    def test_extract_peripherals_uart_uses_word_length_fallback_without_parameters(self):
+        syscfg_text = """
+const UART = scripting.addModule("/ti/driverlib/UART", {}, false);
+const UART1 = UART.addInstance();
+UART1.$name = "UART_0";
+"""
+        peripherals = extract_peripherals(syscfg_text)
+
+        self.assertIn("UART", peripherals)
+        self.assertIn("UART_0", peripherals["UART"])
+        self.assertEqual(peripherals["UART"]["UART_0"], {"WordLength": "8_BITS"})
+
     def test_render_template_command_raises_for_unknown_placeholder(self):
         with self.assertRaises(ValueError):
             render_template_command(

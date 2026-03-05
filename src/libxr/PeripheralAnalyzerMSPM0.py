@@ -346,6 +346,134 @@ def _sanitize_numeric(value: Any) -> Any:
     return value
 
 
+def _parse_bool(value: Any) -> Optional[bool]:
+    """Normalize bool-like values found in SysConfig assignments."""
+    if isinstance(value, bool):
+        return value
+    if not isinstance(value, str):
+        return None
+
+    lowered = value.strip().lower()
+    if lowered in {"true", "enable", "enabled", "1"}:
+        return True
+    if lowered in {"false", "disable", "disabled", "0"}:
+        return False
+    return None
+
+
+def _parse_string_list(value: Any) -> Optional[List[str]]:
+    """Parse list-like string values such as [\"RX\",\"TX\"] into string lists."""
+    if isinstance(value, list):
+        return [str(item) for item in value]
+    if not isinstance(value, str):
+        return None
+
+    text = value.strip()
+    if not text.startswith("[") or not text.endswith("]"):
+        return None
+
+    inner = text[1:-1].strip()
+    if not inner:
+        return []
+
+    items: List[str] = []
+    for raw_item in inner.split(","):
+        token = raw_item.strip()
+        if not token:
+            continue
+        if (
+            (token.startswith('"') and token.endswith('"'))
+            or (token.startswith("'") and token.endswith("'"))
+        ) and len(token) >= 2:
+            token = token[1:-1]
+        items.append(token)
+    return items
+
+
+def _build_uart_config(instance_props: Dict[str, Any]) -> Dict[str, Any]:
+    """Extract UART/LPUART/USART instance parameters from SysConfig values."""
+    uart_cfg: Dict[str, Any] = {}
+
+    scalar_map = {
+        "targetBaudRate": "BaudRate",
+        "wordLength": "WordLength",
+        "WordLength": "WordLength",
+        "dataLength": "WordLength",
+        "characterLength": "WordLength",
+        "charLength": "WordLength",
+        "dataBits": "WordLength",
+        "wordLen": "WordLength",
+        "parity": "Parity",
+        "stopBits": "StopBits",
+        "uartMode": "Mode",
+        "direction": "Direction",
+        "flowControl": "FlowControl",
+        "rxFifoThreshold": "RXFifoThreshold",
+        "txFifoThreshold": "TXFifoThreshold",
+        "enabledDMARXTriggers": "DMARXTrigger",
+        "enabledDMATXTriggers": "DMATXTrigger",
+        "peripheral.$assign": "Instance",
+    }
+    for source_key, target_key in scalar_map.items():
+        if source_key not in instance_props:
+            continue
+        value = instance_props[source_key]
+        if source_key == "targetBaudRate":
+            uart_cfg[target_key] = _sanitize_numeric(value)
+        else:
+            uart_cfg[target_key] = value
+
+    # Keep TI UART default behavior explicit when WordLength is not configured.
+    if not uart_cfg.get("WordLength"):
+        uart_cfg["WordLength"] = "8_BITS"
+
+    bool_map = {
+        "enableFIFO": "FIFO",
+        "enableDMARX": "DMA_RX",
+        "enableDMATX": "DMA_TX",
+        "enableInternalLoopback": "InternalLoopback",
+        "enableManchester": "Manchester",
+        "enableIrda": "IrDA",
+    }
+    for source_key, target_key in bool_map.items():
+        if source_key not in instance_props:
+            continue
+        parsed = _parse_bool(instance_props[source_key])
+        uart_cfg[target_key] = (
+            instance_props[source_key] if parsed is None else parsed
+        )
+
+    interrupts = _parse_string_list(instance_props.get("enabledInterrupts"))
+    if interrupts is not None:
+        uart_cfg["Interrupts"] = interrupts
+
+    pins: Dict[str, str] = {}
+    pin_map = {
+        "peripheral.rxPin.$assign": "RX",
+        "peripheral.txPin.$assign": "TX",
+        "peripheral.rtsPin.$assign": "RTS",
+        "peripheral.ctsPin.$assign": "CTS",
+    }
+    for source_key, pin_label in pin_map.items():
+        raw_pin = instance_props.get(source_key)
+        if isinstance(raw_pin, str) and raw_pin.strip():
+            pins[pin_label] = raw_pin.strip()
+    if pins:
+        uart_cfg["Pins"] = pins
+
+    return uart_cfg
+
+
+def _is_uart_type(peripheral_type: str) -> bool:
+    """Check if module type should use UART parser."""
+    return (
+        peripheral_type in {"UART", "LPUART", "USART", "UARTLIN"}
+        or peripheral_type.startswith("UART")
+        or peripheral_type.startswith("LPUART")
+        or peripheral_type.startswith("USART")
+    )
+
+
 def _build_pwm_config(instance_props: Dict[str, Any]) -> Dict[str, Any]:
     """Extract PWM instance parameters aligned to STM32 TIM core fields."""
     pwm_cfg: Dict[str, Any] = {}
@@ -411,6 +539,7 @@ def extract_peripherals(syscfg_text: str) -> Dict[str, Dict[str, Dict[str, Any]]
         "SPI",
         "TIMER",
         "UART",
+        "UARTLIN",
         "USART",
     }
 
@@ -447,6 +576,10 @@ def extract_peripherals(syscfg_text: str) -> Dict[str, Dict[str, Dict[str, Any]]
         peripherals.setdefault(peripheral_type, {})
         if peripheral_type == "PWM":
             peripherals[peripheral_type][instance_name] = _build_pwm_config(
+                instance_props.get(instance_var, {})
+            )
+        elif _is_uart_type(peripheral_type):
+            peripherals[peripheral_type][instance_name] = _build_uart_config(
                 instance_props.get(instance_var, {})
             )
         else:
