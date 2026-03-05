@@ -6,7 +6,7 @@ import os
 import re
 import sys
 from collections import defaultdict
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import yaml
 
@@ -237,6 +237,66 @@ def extract_modules(syscfg_text: str) -> List[str]:
     return sorted(modules)
 
 
+class SyscfgParseContext:
+    """Preprocessed SysConfig script context used by TI parser pipeline."""
+
+    def __init__(self, syscfg_text: str) -> None:
+        self.text = syscfg_text
+        self.module_aliases = _extract_module_aliases(syscfg_text)
+        self.instance_aliases: Dict[str, str] = {}
+        self.modules_with_instances: Set[str] = set()
+        self.display_names: Dict[str, str] = {}
+        self.instance_props: Dict[str, Dict[str, Any]] = defaultdict(dict)
+
+        for var, parent in re.findall(
+            r'const\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([A-Za-z_][A-Za-z0-9_]*)\.addInstance\(',
+            syscfg_text,
+        ):
+            self.instance_aliases[var] = parent
+            self.modules_with_instances.add(parent)
+
+        for var, name in re.findall(
+            r'([A-Za-z_][A-Za-z0-9_]*)\.\$name\s*=\s*["\']([^"\']+)["\']',
+            syscfg_text,
+        ):
+            self.display_names[var] = name
+
+        for instance_var, prop, raw_value in re.findall(
+            r'([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z0-9_.$]+)\s*=\s*([^;\n]+);',
+            syscfg_text,
+        ):
+            if instance_var not in self.instance_aliases:
+                continue
+            self.instance_props[instance_var][prop] = _parse_literal(raw_value)
+
+
+class TIParser:
+    """Base class for TI SysConfig parser stages."""
+
+    def __init__(self, config: ConfigurationManager, context: SyscfgParseContext) -> None:
+        self.config = config
+        self.context = context
+
+    def parse(self) -> None:
+        raise NotImplementedError
+
+
+class McuParser(TIParser):
+    """Parse MCU metadata from SysConfig header args."""
+
+    def parse(self) -> None:
+        mcu_type, _ = extract_ti_device(self.context.text)
+        self.config.mcu_config["Type"] = mcu_type
+
+
+class RtosParser(TIParser):
+    """Parse RTOS type and toggle FreeRTOS configuration."""
+
+    def parse(self) -> None:
+        if extract_rtos(self.context.text) == "FreeRTOS":
+            self.config.freertos_config["Enabled"] = True
+
+
 def _normalize_pull(raw_pull: str) -> Optional[str]:
     """Map TI pull setting to CubeMX-style pull value."""
     pull = raw_pull.strip().upper().replace("-", "_")
@@ -280,25 +340,17 @@ def _resolve_signal(pin_cfg: Dict[str, Any]) -> str:
     return "GPIO_Output"
 
 
-def extract_gpio_pins(syscfg_text: str) -> Dict[str, Dict[str, Any]]:
-    """Extract GPIO pins using per-pin config instead of GPIO group names."""
-    module_aliases = _extract_module_aliases(syscfg_text)
-    instance_aliases: Dict[str, str] = {}
+def _extract_gpio_pins_from_context(context: SyscfgParseContext) -> Dict[str, Dict[str, Any]]:
+    """Extract GPIO pins from preprocessed SysConfig context."""
     pin_data: Dict[Tuple[str, str], Dict[str, Any]] = {}
     gpio_config: Dict[str, Dict[str, Any]] = {}
 
-    for var, parent in re.findall(
-        r'const\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([A-Za-z_][A-Za-z0-9_]*)\.addInstance\(',
-        syscfg_text,
-    ):
-        instance_aliases[var] = parent
-
     for instance_var, index, prop, raw_value in re.findall(
         r'([A-Za-z_][A-Za-z0-9_]*)\.associatedPins\[(\d+)\]\.([A-Za-z0-9_.$]+)\s*=\s*([^;\n]+);',
-        syscfg_text,
+        context.text,
     ):
-        parent_var = instance_aliases.get(instance_var, "")
-        module_path = module_aliases.get(parent_var, "")
+        parent_var = context.instance_aliases.get(instance_var, "")
+        module_path = context.module_aliases.get(parent_var, "")
         if os.path.basename(module_path).upper() != "GPIO":
             continue
 
@@ -329,6 +381,20 @@ def extract_gpio_pins(syscfg_text: str) -> Dict[str, Dict[str, Any]]:
         gpio_config[pin_key] = details
 
     return {pin: gpio_config[pin] for pin in sorted(gpio_config)}
+
+
+def extract_gpio_pins(syscfg_text: str) -> Dict[str, Dict[str, Any]]:
+    """Extract GPIO pins using per-pin config instead of GPIO group names."""
+    context = SyscfgParseContext(syscfg_text)
+    return _extract_gpio_pins_from_context(context)
+
+
+class GpioParser(TIParser):
+    """Parse GPIO configuration from SysConfig context."""
+
+    def parse(self) -> None:
+        for pin, cfg in _extract_gpio_pins_from_context(self.context).items():
+            self.config.gpio_pins[pin] = cfg
 
 
 def _sanitize_numeric(value: Any) -> Any:
@@ -509,107 +575,194 @@ def _build_pwm_config(instance_props: Dict[str, Any]) -> Dict[str, Any]:
     return pwm_cfg
 
 
-def extract_peripherals(syscfg_text: str) -> Dict[str, Dict[str, Dict[str, Any]]]:
-    """Extract peripheral instances and selected module parameters from SysConfig."""
-    module_aliases = _extract_module_aliases(syscfg_text)
-    instance_aliases: Dict[str, str] = {}
-    instance_props: Dict[str, Dict[str, Any]] = defaultdict(dict)
-    display_names: Dict[str, str] = {}
-    peripherals: Dict[str, Dict[str, Dict[str, Any]]] = {}
-    modules_with_instances = set()
-    module_name_map = {
-        "ADC12": "ADC",
-        "CANFD": "MCAN",
-        "FDCAN": "MCAN",
-        "I2CSMBUS": "I2C",
-    }
-    module_presence_whitelist = {
-        "ADC",
-        "DMA",
-        "I2C",
-        "LPUART",
-        "MCAN",
-        "PWM",
-        "SPI",
-        "TIMER",
-        "UART",
-        "UARTLIN",
-        "USART",
-    }
+_MODULE_NAME_MAP = {
+    "ADC12": "ADC",
+    "CANFD": "MCAN",
+    "FDCAN": "MCAN",
+    "I2CSMBUS": "I2C",
+}
 
-    for var, parent in re.findall(
-        r'const\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([A-Za-z_][A-Za-z0-9_]*)\.addInstance\(',
-        syscfg_text,
-    ):
-        instance_aliases[var] = parent
-        modules_with_instances.add(parent)
+_UART_PERIPHERAL_TYPES = {"UART", "UARTLIN", "LPUART", "USART"}
+_GENERIC_PERIPHERAL_TYPES = {"ADC", "DMA", "I2C", "MCAN", "SPI", "TIMER"}
 
-    for var, name in re.findall(
-        r'([A-Za-z_][A-Za-z0-9_]*)\.\$name\s*=\s*["\']([^"\']+)["\']',
-        syscfg_text,
-    ):
-        display_names[var] = name
 
-    for instance_var, prop, raw_value in re.findall(
-        r'([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z0-9_.$]+)\s*=\s*([^;\n]+);',
-        syscfg_text,
-    ):
-        if instance_var not in instance_aliases:
+def _normalize_peripheral_type(module_path: str) -> str:
+    """Normalize module basename to LibXR peripheral type."""
+    module_name = os.path.basename(module_path).upper()
+    return _MODULE_NAME_MAP.get(module_name, module_name)
+
+
+def _iter_peripheral_instances(
+    context: SyscfgParseContext,
+) -> List[Tuple[str, str, Dict[str, Any]]]:
+    """Collect instance-level peripheral records from preprocessed context."""
+    records: List[Tuple[str, str, Dict[str, Any]]] = []
+    for instance_var, parent_var in context.instance_aliases.items():
+        module_path = context.module_aliases.get(parent_var, "")
+        peripheral_type = _normalize_peripheral_type(module_path)
+        if not peripheral_type or peripheral_type == "GPIO":
             continue
-        instance_props[instance_var][prop] = _parse_literal(raw_value)
+        instance_name = context.display_names.get(instance_var, instance_var)
+        instance_props = context.instance_props.get(instance_var, {})
+        records.append((peripheral_type, instance_name, instance_props))
+    return records
 
-    for instance_var, parent_var in instance_aliases.items():
-        module_path = module_aliases.get(parent_var, "")
-        peripheral_type = os.path.basename(module_path).upper()
-        peripheral_type = module_name_map.get(peripheral_type, peripheral_type)
-        if not peripheral_type:
-            continue
-        if peripheral_type == "GPIO":
-            continue
-        instance_name = display_names.get(instance_var, instance_var)
-        peripherals.setdefault(peripheral_type, {})
-        if peripheral_type == "PWM":
-            peripherals[peripheral_type][instance_name] = _build_pwm_config(
-                instance_props.get(instance_var, {})
-            )
-        elif _is_uart_type(peripheral_type):
-            peripherals[peripheral_type][instance_name] = _build_uart_config(
-                instance_props.get(instance_var, {})
-            )
-        else:
-            peripherals[peripheral_type][instance_name] = {}
 
-    for module_var, module_path in module_aliases.items():
-        if module_var in modules_with_instances:
+def _iter_module_presence_fallbacks(
+    context: SyscfgParseContext,
+    module_presence_whitelist: Set[str],
+) -> List[Tuple[str, str]]:
+    """Collect module-level fallback entries for modules without addInstance usage."""
+    records: List[Tuple[str, str]] = []
+    for module_var, module_path in context.module_aliases.items():
+        if module_var in context.modules_with_instances:
             continue
 
-        peripheral_type = os.path.basename(module_path).upper()
-        peripheral_type = module_name_map.get(peripheral_type, peripheral_type)
+        peripheral_type = _normalize_peripheral_type(module_path)
         if peripheral_type not in module_presence_whitelist:
             continue
 
-        fallback_name = display_names.get(module_var, module_var)
+        fallback_name = context.display_names.get(module_var, module_var)
+        records.append((peripheral_type, fallback_name))
+    return records
+
+
+class PeripheralTypeParser:
+    """Base parser for one or more peripheral types."""
+
+    def __init__(self, peripheral_types: Set[str]) -> None:
+        self.peripheral_types = set(peripheral_types)
+
+    def supports(self, peripheral_type: str) -> bool:
+        return peripheral_type in self.peripheral_types
+
+    def parse_instance(self, instance_props: Dict[str, Any]) -> Dict[str, Any]:
+        return {}
+
+
+class UartPeripheralTypeParser(PeripheralTypeParser):
+    """Parser for UART-family peripherals."""
+
+    def __init__(self) -> None:
+        super().__init__(_UART_PERIPHERAL_TYPES)
+
+    def supports(self, peripheral_type: str) -> bool:
+        return _is_uart_type(peripheral_type)
+
+    def parse_instance(self, instance_props: Dict[str, Any]) -> Dict[str, Any]:
+        return _build_uart_config(instance_props)
+
+
+class PwmPeripheralTypeParser(PeripheralTypeParser):
+    """Parser for PWM peripherals."""
+
+    def __init__(self) -> None:
+        super().__init__({"PWM"})
+
+    def parse_instance(self, instance_props: Dict[str, Any]) -> Dict[str, Any]:
+        return _build_pwm_config(instance_props)
+
+
+class GenericPeripheralTypeParser(PeripheralTypeParser):
+    """Parser for presence-only peripheral types."""
+
+
+class FallbackPeripheralTypeParser(PeripheralTypeParser):
+    """Fallback parser to preserve legacy detection for unknown instance types."""
+
+    def __init__(self) -> None:
+        super().__init__(set())
+
+    def supports(self, peripheral_type: str) -> bool:
+        return True
+
+
+def _build_peripheral_parser_registry() -> List[PeripheralTypeParser]:
+    """Build registered peripheral parsers ordered by specificity."""
+    parsers: List[PeripheralTypeParser] = [
+        PwmPeripheralTypeParser(),
+        UartPeripheralTypeParser(),
+    ]
+    for peripheral_type in sorted(_GENERIC_PERIPHERAL_TYPES):
+        parsers.append(GenericPeripheralTypeParser({peripheral_type}))
+    parsers.append(FallbackPeripheralTypeParser())
+    return parsers
+
+
+def _resolve_peripheral_parser(
+    peripheral_type: str,
+    parser_registry: List[PeripheralTypeParser],
+) -> PeripheralTypeParser:
+    """Resolve parser instance for a peripheral type."""
+    for parser in parser_registry:
+        if parser.supports(peripheral_type):
+            return parser
+    return FallbackPeripheralTypeParser()
+
+
+def _extract_peripherals_from_context(
+    context: SyscfgParseContext,
+    parser_registry: Optional[List[PeripheralTypeParser]] = None,
+) -> Dict[str, Dict[str, Dict[str, Any]]]:
+    """Extract peripheral instances through registered type parsers."""
+    peripherals: Dict[str, Dict[str, Dict[str, Any]]] = {}
+    active_registry = parser_registry or _build_peripheral_parser_registry()
+    module_presence_whitelist: Set[str] = set(_GENERIC_PERIPHERAL_TYPES)
+    module_presence_whitelist.update(_UART_PERIPHERAL_TYPES)
+    module_presence_whitelist.add("PWM")
+
+    for peripheral_type, instance_name, instance_props in _iter_peripheral_instances(context):
+        parser = _resolve_peripheral_parser(peripheral_type, active_registry)
+        peripherals.setdefault(peripheral_type, {})
+        peripherals[peripheral_type][instance_name] = parser.parse_instance(instance_props)
+
+    for peripheral_type, fallback_name in _iter_module_presence_fallbacks(
+        context, module_presence_whitelist
+    ):
         peripherals.setdefault(peripheral_type, {})
         peripherals[peripheral_type].setdefault(fallback_name, {})
 
     return peripherals
 
 
+def extract_peripherals(syscfg_text: str) -> Dict[str, Dict[str, Dict[str, Any]]]:
+    """Extract peripheral instances and selected module parameters from SysConfig."""
+    context = SyscfgParseContext(syscfg_text)
+    return _extract_peripherals_from_context(context)
+
+
+class PeripheralCollectionParser(TIParser):
+    """Dispatch non-GPIO parsing through registered peripheral type parsers."""
+
+    def __init__(
+        self,
+        config: ConfigurationManager,
+        context: SyscfgParseContext,
+        parser_registry: Optional[List[PeripheralTypeParser]] = None,
+    ) -> None:
+        super().__init__(config, context)
+        self.parser_registry = parser_registry or _build_peripheral_parser_registry()
+
+    def parse(self) -> None:
+        for p_type, instances in _extract_peripherals_from_context(
+            self.context, self.parser_registry
+        ).items():
+            self.config.peripherals[p_type].update(instances)
+
+
 def parse_syscfg_text(syscfg_text: str, syscfg_file: Optional[str] = None) -> Dict[str, Any]:
     """Parse SysConfig text and return normalized LibXR configuration."""
     config = ConfigurationManager()
-    mcu_type, _ = extract_ti_device(syscfg_text)
-    config.mcu_config["Type"] = mcu_type
+    context = SyscfgParseContext(syscfg_text)
 
-    rtos = extract_rtos(syscfg_text)
-    if rtos == "FreeRTOS":
-        config.freertos_config["Enabled"] = True
-
-    for pin, cfg in extract_gpio_pins(syscfg_text).items():
-        config.gpio_pins[pin] = cfg
-
-    for p_type, instances in extract_peripherals(syscfg_text).items():
-        config.peripherals[p_type].update(instances)
+    parsers: List[TIParser] = [
+        McuParser(config, context),
+        RtosParser(config, context),
+        GpioParser(config, context),
+        PeripheralCollectionParser(config, context),
+    ]
+    for parser in parsers:
+        parser.parse()
 
     return config.clean_structure()
 
