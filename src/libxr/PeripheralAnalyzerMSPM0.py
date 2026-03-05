@@ -397,12 +397,6 @@ def _build_uart_config(instance_props: Dict[str, Any]) -> Dict[str, Any]:
     scalar_map = {
         "targetBaudRate": "BaudRate",
         "wordLength": "WordLength",
-        "WordLength": "WordLength",
-        "dataLength": "WordLength",
-        "characterLength": "WordLength",
-        "charLength": "WordLength",
-        "dataBits": "WordLength",
-        "wordLen": "WordLength",
         "parity": "Parity",
         "stopBits": "StopBits",
         "uartMode": "Mode",
