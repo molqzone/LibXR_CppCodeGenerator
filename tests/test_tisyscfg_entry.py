@@ -210,6 +210,54 @@ SPI1.$name = "SPI_0";
         self.assertIn("SPI_0", peripherals["SPI"])
         self.assertNotIn("SPI", peripherals["SPI"])
 
+    def test_extract_peripherals_spi_parses_core_parameters(self):
+        syscfg_text = """
+const SPI = scripting.addModule("/ti/driverlib/SPI", {}, false);
+const SPI1 = SPI.addInstance();
+SPI1.$name = "SPI_0";
+SPI1.targetBitRate = 500000;
+SPI1.mode = "PERIPHERAL";
+SPI1.dataSize = 8;
+SPI1.bitOrder = "MSB_FIRST";
+SPI1.frameFormat = "MOTOROLA_POL0_PHA1";
+SPI1.phase = "FIRST_EDGE";
+SPI1.polarity = "IDLE_LOW";
+SPI1.enableDMAEvent1 = true;
+SPI1.enableDMAEvent2 = false;
+SPI1.enabledDMAEvent1Triggers = "DL_SPI_DMA_INTERRUPT_RX";
+SPI1.enabledDMAEvent2Triggers = "DL_SPI_DMA_INTERRUPT_TX";
+SPI1.enabledInterrupts = ["RX","TX_EMPTY"];
+SPI1.chipSelect = ["1"];
+SPI1.peripheral.$assign = "SPI1";
+SPI1.peripheral.sclkPin.$assign = "PA17";
+SPI1.peripheral.mosiPin.$assign = "PB8";
+SPI1.peripheral.misoPin.$assign = "PB7";
+SPI1.peripheral.cs1Pin.$assign = "PA27";
+"""
+        peripherals = extract_peripherals(syscfg_text)
+
+        self.assertIn("SPI", peripherals)
+        self.assertIn("SPI_0", peripherals["SPI"])
+        spi_cfg = peripherals["SPI"]["SPI_0"]
+        self.assertEqual(spi_cfg["BaudRate"], 500000)
+        self.assertEqual(spi_cfg["Mode"], "PERIPHERAL")
+        self.assertEqual(spi_cfg["DataSize"], 8)
+        self.assertEqual(spi_cfg["FirstBit"], "MSB_FIRST")
+        self.assertEqual(spi_cfg["FrameFormat"], "MOTOROLA_POL0_PHA1")
+        self.assertEqual(spi_cfg["CLKPhase"], "FIRST_EDGE")
+        self.assertEqual(spi_cfg["CLKPolarity"], "IDLE_LOW")
+        self.assertTrue(spi_cfg["DMAEvent1"])
+        self.assertFalse(spi_cfg["DMAEvent2"])
+        self.assertEqual(spi_cfg["DMAEvent1Trigger"], "DL_SPI_DMA_INTERRUPT_RX")
+        self.assertEqual(spi_cfg["DMAEvent2Trigger"], "DL_SPI_DMA_INTERRUPT_TX")
+        self.assertEqual(spi_cfg["Interrupts"], ["RX", "TX_EMPTY"])
+        self.assertEqual(spi_cfg["ChipSelect"], "1")
+        self.assertEqual(spi_cfg["Instance"], "SPI1")
+        self.assertEqual(
+            spi_cfg["Pins"],
+            {"SCLK": "PA17", "MOSI": "PB8", "MISO": "PB7", "CS1": "PA27"},
+        )
+
     def test_extract_peripherals_pwm_parses_core_parameters(self):
         syscfg_text = """
 const PWM = scripting.addModule("/ti/driverlib/PWM", {}, false);
@@ -322,17 +370,62 @@ UART1.peripheral.ctsPin.$assign = "PA9";
             {"RX": "PA11", "TX": "PA10", "RTS": "PA8", "CTS": "PA9"},
         )
 
-    def test_extract_peripherals_uart_uses_word_length_fallback_without_parameters(self):
+    def test_extract_peripherals_uart_uses_fallbacks_without_parameters(self):
         syscfg_text = """
 const UART = scripting.addModule("/ti/driverlib/UART", {}, false);
 const UART1 = UART.addInstance();
 UART1.$name = "UART_0";
+UART1.enableDMARX = true;
+UART1.enableDMATX = true;
+UART1.peripheral.rxPin.$suggestSolution = "PA11";
+UART1.peripheral.txPin.$suggestSolution = "PA10";
 """
         peripherals = extract_peripherals(syscfg_text)
 
         self.assertIn("UART", peripherals)
         self.assertIn("UART_0", peripherals["UART"])
-        self.assertEqual(peripherals["UART"]["UART_0"], {"WordLength": "8_BITS"})
+        self.assertEqual(
+            peripherals["UART"]["UART_0"],
+            {
+                "WordLength": "8_BITS",
+                "RXFifoThreshold": "DL_UART_RX_FIFO_LEVEL_1_2_FULL",
+                "TXFifoThreshold": "DL_UART_TX_FIFO_LEVEL_1_2_EMPTY",
+                "DMA_RX": True,
+                "DMA_TX": True,
+                "DMARXTrigger": "DL_UART_DMA_INTERRUPT_RX",
+                "DMATXTrigger": "DL_UART_DMA_INTERRUPT_TX",
+                "Pins": {"RX": "PA11", "TX": "PA10"},
+            },
+        )
+
+    def test_extract_peripherals_spi_uses_fallbacks_without_parameters(self):
+        syscfg_text = """
+const SPI = scripting.addModule("/ti/driverlib/SPI", {}, false);
+const SPI1 = SPI.addInstance();
+SPI1.$name = "SPI_0";
+SPI1.enableDMAEvent1 = true;
+SPI1.enableDMAEvent2 = true;
+SPI1.peripheral.sclkPin.$suggestSolution = "PA17";
+SPI1.peripheral.mosiPin.$suggestSolution = "PB8";
+SPI1.peripheral.misoPin.$suggestSolution = "PB7";
+SPI1.peripheral.cs0Pin.$suggestSolution = "PA13";
+"""
+        peripherals = extract_peripherals(syscfg_text)
+
+        self.assertIn("SPI", peripherals)
+        self.assertIn("SPI_0", peripherals["SPI"])
+        self.assertEqual(
+            peripherals["SPI"]["SPI_0"],
+            {
+                "RXFifoThreshold": "DL_SPI_RX_FIFO_LEVEL_1_2_FULL",
+                "TXFifoThreshold": "DL_SPI_TX_FIFO_LEVEL_1_2_EMPTY",
+                "DMAEvent1": True,
+                "DMAEvent2": True,
+                "DMAEvent1Trigger": "DL_SPI_DMA_INTERRUPT_RX",
+                "DMAEvent2Trigger": "DL_SPI_DMA_INTERRUPT_TX",
+                "Pins": {"SCLK": "PA17", "MOSI": "PB8", "MISO": "PB7", "CS0": "PA13"},
+            },
+        )
 
     def test_render_template_command_raises_for_unknown_placeholder(self):
         with self.assertRaises(ValueError):

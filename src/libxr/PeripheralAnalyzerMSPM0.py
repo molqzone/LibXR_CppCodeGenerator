@@ -487,6 +487,12 @@ def _build_uart_config(instance_props: Dict[str, Any]) -> Dict[str, Any]:
     if not uart_cfg.get("WordLength"):
         uart_cfg["WordLength"] = "8_BITS"
 
+    # SysConfig generated C commonly defaults FIFO thresholds when not set in .syscfg.
+    if not uart_cfg.get("RXFifoThreshold"):
+        uart_cfg["RXFifoThreshold"] = "DL_UART_RX_FIFO_LEVEL_1_2_FULL"
+    if not uart_cfg.get("TXFifoThreshold"):
+        uart_cfg["TXFifoThreshold"] = "DL_UART_TX_FIFO_LEVEL_1_2_EMPTY"
+
     bool_map = {
         "enableFIFO": "FIFO",
         "enableDMARX": "DMA_RX",
@@ -503,19 +509,25 @@ def _build_uart_config(instance_props: Dict[str, Any]) -> Dict[str, Any]:
             instance_props[source_key] if parsed is None else parsed
         )
 
+    # SysConfig generated C uses fixed RX/TX DMA event mappings when triggers are omitted.
+    if uart_cfg.get("DMA_RX") is True and not uart_cfg.get("DMARXTrigger"):
+        uart_cfg["DMARXTrigger"] = "DL_UART_DMA_INTERRUPT_RX"
+    if uart_cfg.get("DMA_TX") is True and not uart_cfg.get("DMATXTrigger"):
+        uart_cfg["DMATXTrigger"] = "DL_UART_DMA_INTERRUPT_TX"
+
     interrupts = _parse_string_list(instance_props.get("enabledInterrupts"))
     if interrupts is not None:
         uart_cfg["Interrupts"] = interrupts
 
     pins: Dict[str, str] = {}
     pin_map = {
-        "peripheral.rxPin.$assign": "RX",
-        "peripheral.txPin.$assign": "TX",
-        "peripheral.rtsPin.$assign": "RTS",
-        "peripheral.ctsPin.$assign": "CTS",
+        "RX": ("peripheral.rxPin.$assign", "peripheral.rxPin.$suggestSolution"),
+        "TX": ("peripheral.txPin.$assign", "peripheral.txPin.$suggestSolution"),
+        "RTS": ("peripheral.rtsPin.$assign", "peripheral.rtsPin.$suggestSolution"),
+        "CTS": ("peripheral.ctsPin.$assign", "peripheral.ctsPin.$suggestSolution"),
     }
-    for source_key, pin_label in pin_map.items():
-        raw_pin = instance_props.get(source_key)
+    for pin_label, (assign_key, suggest_key) in pin_map.items():
+        raw_pin = instance_props.get(assign_key) or instance_props.get(suggest_key)
         if isinstance(raw_pin, str) and raw_pin.strip():
             pins[pin_label] = raw_pin.strip()
     if pins:
@@ -583,7 +595,8 @@ _MODULE_NAME_MAP = {
 }
 
 _UART_PERIPHERAL_TYPES = {"UART", "UARTLIN", "LPUART", "USART"}
-_GENERIC_PERIPHERAL_TYPES = {"ADC", "DMA", "I2C", "MCAN", "SPI", "TIMER"}
+_SPI_PERIPHERAL_TYPES = {"SPI"}
+_GENERIC_PERIPHERAL_TYPES = {"ADC", "DMA", "I2C", "MCAN", "TIMER"}
 
 
 def _normalize_peripheral_type(module_path: str) -> str:
@@ -663,6 +676,106 @@ class PwmPeripheralTypeParser(PeripheralTypeParser):
         return _build_pwm_config(instance_props)
 
 
+def _build_spi_config(instance_props: Dict[str, Any]) -> Dict[str, Any]:
+    """Extract SPI instance parameters from SysConfig values."""
+    spi_cfg: Dict[str, Any] = {}
+
+    scalar_map = {
+        "targetBitRate": "BaudRate",
+        "calculatedBitRate": "CalculatedBaudRate",
+        "mode": "Mode",
+        "dataSize": "DataSize",
+        "bitOrder": "FirstBit",
+        "frameFormat": "FrameFormat",
+        "phase": "CLKPhase",
+        "polarity": "CLKPolarity",
+        "rxFifoThreshold": "RXFifoThreshold",
+        "txFifoThreshold": "TXFifoThreshold",
+        "enabledDMAEvent1Triggers": "DMAEvent1Trigger",
+        "enabledDMAEvent2Triggers": "DMAEvent2Trigger",
+        "spiClkSrc": "ClockSource",
+        "interruptPriority": "IRQPriority",
+        "peripheral.$assign": "Instance",
+    }
+    for source_key, target_key in scalar_map.items():
+        if source_key not in instance_props:
+            continue
+        value = instance_props[source_key]
+        if source_key in {"targetBitRate", "calculatedBitRate", "dataSize", "interruptPriority"}:
+            spi_cfg[target_key] = _sanitize_numeric(value)
+        else:
+            spi_cfg[target_key] = value
+
+    # SysConfig generated C commonly defaults FIFO thresholds when not set in .syscfg.
+    if not spi_cfg.get("RXFifoThreshold"):
+        spi_cfg["RXFifoThreshold"] = "DL_SPI_RX_FIFO_LEVEL_1_2_FULL"
+    if not spi_cfg.get("TXFifoThreshold"):
+        spi_cfg["TXFifoThreshold"] = "DL_SPI_TX_FIFO_LEVEL_1_2_EMPTY"
+
+    chip_select_list = _parse_string_list(instance_props.get("chipSelect"))
+    if chip_select_list is not None:
+        if len(chip_select_list) == 1:
+            spi_cfg["ChipSelect"] = chip_select_list[0]
+        else:
+            spi_cfg["ChipSelect"] = chip_select_list
+    elif "peripheralChipSelect" in instance_props:
+        spi_cfg["ChipSelect"] = str(instance_props["peripheralChipSelect"]).strip()
+
+    bool_map = {
+        "enableDMAEvent1": "DMAEvent1",
+        "enableDMAEvent2": "DMAEvent2",
+        "enableInternalLoopback": "InternalLoopback",
+        "enableCDMode": "CDMode",
+        "clearRXCounterOnCSIdle": "ClearRXCounterOnCSIdle",
+    }
+    for source_key, target_key in bool_map.items():
+        if source_key not in instance_props:
+            continue
+        parsed = _parse_bool(instance_props[source_key])
+        spi_cfg[target_key] = (
+            instance_props[source_key] if parsed is None else parsed
+        )
+
+    # SysConfig generated C uses fixed DMA event mappings when triggers are omitted.
+    if spi_cfg.get("DMAEvent1") is True and not spi_cfg.get("DMAEvent1Trigger"):
+        spi_cfg["DMAEvent1Trigger"] = "DL_SPI_DMA_INTERRUPT_RX"
+    if spi_cfg.get("DMAEvent2") is True and not spi_cfg.get("DMAEvent2Trigger"):
+        spi_cfg["DMAEvent2Trigger"] = "DL_SPI_DMA_INTERRUPT_TX"
+
+    interrupts = _parse_string_list(instance_props.get("enabledInterrupts"))
+    if interrupts is not None:
+        spi_cfg["Interrupts"] = interrupts
+
+    pins: Dict[str, str] = {}
+    pin_map = {
+        "SCLK": ("peripheral.sclkPin.$assign", "peripheral.sclkPin.$suggestSolution"),
+        "MOSI": ("peripheral.mosiPin.$assign", "peripheral.mosiPin.$suggestSolution"),
+        "MISO": ("peripheral.misoPin.$assign", "peripheral.misoPin.$suggestSolution"),
+        "CS0": ("peripheral.cs0Pin.$assign", "peripheral.cs0Pin.$suggestSolution"),
+        "CS1": ("peripheral.cs1Pin.$assign", "peripheral.cs1Pin.$suggestSolution"),
+        "CS2": ("peripheral.cs2Pin.$assign", "peripheral.cs2Pin.$suggestSolution"),
+        "CS3": ("peripheral.cs3Pin.$assign", "peripheral.cs3Pin.$suggestSolution"),
+    }
+    for pin_label, (assign_key, suggest_key) in pin_map.items():
+        raw_pin = instance_props.get(assign_key) or instance_props.get(suggest_key)
+        if isinstance(raw_pin, str) and raw_pin.strip():
+            pins[pin_label] = raw_pin.strip()
+    if pins:
+        spi_cfg["Pins"] = pins
+
+    return spi_cfg
+
+
+class SpiPeripheralTypeParser(PeripheralTypeParser):
+    """Parser for SPI peripherals."""
+
+    def __init__(self) -> None:
+        super().__init__(_SPI_PERIPHERAL_TYPES)
+
+    def parse_instance(self, instance_props: Dict[str, Any]) -> Dict[str, Any]:
+        return _build_spi_config(instance_props)
+
+
 class GenericPeripheralTypeParser(PeripheralTypeParser):
     """Parser for presence-only peripheral types."""
 
@@ -682,6 +795,7 @@ def _build_peripheral_parser_registry() -> List[PeripheralTypeParser]:
     parsers: List[PeripheralTypeParser] = [
         PwmPeripheralTypeParser(),
         UartPeripheralTypeParser(),
+        SpiPeripheralTypeParser(),
     ]
     for peripheral_type in sorted(_GENERIC_PERIPHERAL_TYPES):
         parsers.append(GenericPeripheralTypeParser({peripheral_type}))
@@ -708,6 +822,7 @@ def _extract_peripherals_from_context(
     peripherals: Dict[str, Dict[str, Dict[str, Any]]] = {}
     active_registry = parser_registry or _build_peripheral_parser_registry()
     module_presence_whitelist: Set[str] = set(_GENERIC_PERIPHERAL_TYPES)
+    module_presence_whitelist.update(_SPI_PERIPHERAL_TYPES)
     module_presence_whitelist.update(_UART_PERIPHERAL_TYPES)
     module_presence_whitelist.add("PWM")
 
