@@ -521,13 +521,13 @@ def _build_uart_config(instance_props: Dict[str, Any]) -> Dict[str, Any]:
 
     pins: Dict[str, str] = {}
     pin_map = {
-        "RX": ("peripheral.rxPin.$assign", "peripheral.rxPin.$suggestSolution"),
-        "TX": ("peripheral.txPin.$assign", "peripheral.txPin.$suggestSolution"),
-        "RTS": ("peripheral.rtsPin.$assign", "peripheral.rtsPin.$suggestSolution"),
-        "CTS": ("peripheral.ctsPin.$assign", "peripheral.ctsPin.$suggestSolution"),
+        "RX": "peripheral.rxPin.$assign",
+        "TX": "peripheral.txPin.$assign",
+        "RTS": "peripheral.rtsPin.$assign",
+        "CTS": "peripheral.ctsPin.$assign",
     }
-    for pin_label, (assign_key, suggest_key) in pin_map.items():
-        raw_pin = instance_props.get(assign_key) or instance_props.get(suggest_key)
+    for pin_label, assign_key in pin_map.items():
+        raw_pin = instance_props.get(assign_key)
         if isinstance(raw_pin, str) and raw_pin.strip():
             pins[pin_label] = raw_pin.strip()
     if pins:
@@ -748,16 +748,16 @@ def _build_spi_config(instance_props: Dict[str, Any]) -> Dict[str, Any]:
 
     pins: Dict[str, str] = {}
     pin_map = {
-        "SCLK": ("peripheral.sclkPin.$assign", "peripheral.sclkPin.$suggestSolution"),
-        "MOSI": ("peripheral.mosiPin.$assign", "peripheral.mosiPin.$suggestSolution"),
-        "MISO": ("peripheral.misoPin.$assign", "peripheral.misoPin.$suggestSolution"),
-        "CS0": ("peripheral.cs0Pin.$assign", "peripheral.cs0Pin.$suggestSolution"),
-        "CS1": ("peripheral.cs1Pin.$assign", "peripheral.cs1Pin.$suggestSolution"),
-        "CS2": ("peripheral.cs2Pin.$assign", "peripheral.cs2Pin.$suggestSolution"),
-        "CS3": ("peripheral.cs3Pin.$assign", "peripheral.cs3Pin.$suggestSolution"),
+        "SCLK": "peripheral.sclkPin.$assign",
+        "MOSI": "peripheral.mosiPin.$assign",
+        "MISO": "peripheral.misoPin.$assign",
+        "CS0": "peripheral.cs0Pin.$assign",
+        "CS1": "peripheral.cs1Pin.$assign",
+        "CS2": "peripheral.cs2Pin.$assign",
+        "CS3": "peripheral.cs3Pin.$assign",
     }
-    for pin_label, (assign_key, suggest_key) in pin_map.items():
-        raw_pin = instance_props.get(assign_key) or instance_props.get(suggest_key)
+    for pin_label, assign_key in pin_map.items():
+        raw_pin = instance_props.get(assign_key)
         if isinstance(raw_pin, str) and raw_pin.strip():
             pins[pin_label] = raw_pin.strip()
     if pins:
@@ -865,6 +865,167 @@ class PeripheralCollectionParser(TIParser):
             self.config.peripherals[p_type].update(instances)
 
 
+class DmaParser(TIParser):
+    """Parse SysConfig DMA channel blocks and link them to peripheral instances."""
+
+    _CHANNEL_PROP_MAP = {
+        "addressMode": "mode",
+        "transferMode": "transfer_mode",
+        "srcLength": "src_width",
+        "dstLength": "dst_width",
+        "srcIncrement": "src_increment",
+        "srcIncDec": "src_increment",
+        "destIncrement": "dest_increment",
+        "dstIncDec": "dest_increment",
+        "triggerSelect": "trigger_select",
+        "triggerNumber": "trigger_number",
+        "enableInterrupt": "interrupt",
+        "enableEarlyInterrupt": "early_interrupt",
+        "earlyIntThresh": "early_threshold",
+        "configureTransferSize": "configure_transfer_size",
+        "fillIncAmount": "fill_increment",
+    }
+
+    _CHANNEL_DIRECTION_MAP = {
+        "RX": "rx",
+        "TX": "tx",
+        "EVENT1": "rx",
+        "EVENT2": "tx",
+    }
+
+    def parse(self) -> None:
+        for instance_var, parent_var in self.context.instance_aliases.items():
+            module_path = self.context.module_aliases.get(parent_var, "")
+            peripheral_type = _normalize_peripheral_type(module_path)
+            if not peripheral_type or peripheral_type == "GPIO":
+                continue
+
+            instance_name = self.context.display_names.get(instance_var, instance_var)
+            peripheral_group = self.config.peripherals.get(peripheral_type, {})
+            if instance_name not in peripheral_group:
+                continue
+
+            instance_props = self.context.instance_props.get(instance_var, {})
+            channel_blocks = self._collect_channel_blocks(instance_props)
+            if not channel_blocks:
+                continue
+
+            peripheral_cfg = peripheral_group[instance_name]
+            for channel_suffix, channel_props in channel_blocks.items():
+                direction = self._resolve_direction(channel_suffix)
+                request_key = self._build_request_key(instance_name, direction)
+                request_name = (
+                    instance_name
+                    if direction == "general"
+                    else f"{instance_name}_{direction.upper()}"
+                )
+                stream = str(
+                    channel_props.get("peripheral.$assign")
+                    or channel_props.get("$name")
+                    or request_key
+                ).strip()
+
+                dma_cfg: Dict[str, Any] = {
+                    "request_id": request_key,
+                    "peripheral": request_name,
+                    "dma_type": "DMA",
+                    "stream": stream,
+                }
+
+                for prop, value in channel_props.items():
+                    field = self._CHANNEL_PROP_MAP.get(prop)
+                    if not field:
+                        continue
+                    parsed_bool = _parse_bool(value)
+                    dma_cfg[field] = (
+                        value
+                        if parsed_bool is None
+                        else parsed_bool
+                    )
+                    if parsed_bool is None:
+                        dma_cfg[field] = _sanitize_numeric(dma_cfg[field])
+
+                trigger = self._resolve_dma_trigger(peripheral_type, direction, peripheral_cfg)
+                if trigger:
+                    dma_cfg.setdefault("trigger", trigger)
+
+                self.config.dma_requests[request_key] = request_name
+                self.config.dma_configs[request_key] = dma_cfg
+                self._link_to_peripheral(peripheral_cfg, direction, dma_cfg)
+
+    def _collect_channel_blocks(
+        self,
+        instance_props: Dict[str, Any],
+    ) -> Dict[str, Dict[str, Any]]:
+        blocks: Dict[str, Dict[str, Any]] = defaultdict(dict)
+        for prop, value in instance_props.items():
+            match = re.match(
+                r"DMA_CHANNEL(?:_([A-Za-z0-9]+))?\.([A-Za-z0-9_.$]+)$", prop
+            )
+            if not match:
+                continue
+            suffix = (match.group(1) or "GENERAL").upper()
+            channel_prop = match.group(2)
+            blocks[suffix][channel_prop] = value
+        return blocks
+
+    def _resolve_direction(self, channel_suffix: str) -> str:
+        return self._CHANNEL_DIRECTION_MAP.get(channel_suffix, "general")
+
+    def _build_request_key(self, instance_name: str, direction: str) -> str:
+        base = f"{instance_name}_{direction}".lower()
+        key = base
+        dedupe_idx = 2
+        while key in self.config.dma_requests:
+            key = f"{base}_{dedupe_idx}"
+            dedupe_idx += 1
+        return key
+
+    @staticmethod
+    def _resolve_dma_trigger(
+        peripheral_type: str,
+        direction: str,
+        peripheral_cfg: Dict[str, Any],
+    ) -> Optional[str]:
+        p_type = peripheral_type.upper()
+        if direction == "rx":
+            if p_type in {"UART", "UARTLIN", "USART", "LPUART"}:
+                value = peripheral_cfg.get("DMARXTrigger")
+                return str(value).strip() if value else None
+            if p_type in {"SPI", "I2C"}:
+                value = peripheral_cfg.get("DMAEvent1Trigger")
+                return str(value).strip() if value else None
+        if direction == "tx":
+            if p_type in {"UART", "UARTLIN", "USART", "LPUART"}:
+                value = peripheral_cfg.get("DMATXTrigger")
+                return str(value).strip() if value else None
+            if p_type in {"SPI", "I2C"}:
+                value = peripheral_cfg.get("DMAEvent2Trigger")
+                return str(value).strip() if value else None
+        return None
+
+    @staticmethod
+    def _link_to_peripheral(
+        peripheral_cfg: Dict[str, Any],
+        direction: str,
+        dma_cfg: Dict[str, Any],
+    ) -> None:
+        if "dma" not in peripheral_cfg:
+            peripheral_cfg["dma"] = {}
+
+        dir_key = "dma" if direction == "general" else f"dma_{direction}"
+        peripheral_cfg["dma"][dir_key] = dma_cfg
+
+        if direction == "tx":
+            peripheral_cfg["DMA_TX"] = True
+            peripheral_cfg["DMA_TX_TYPE"] = "DMA"
+        elif direction == "rx":
+            peripheral_cfg["DMA_RX"] = True
+            peripheral_cfg["DMA_RX_TYPE"] = "DMA"
+        else:
+            peripheral_cfg["DMA"] = True
+
+
 def parse_syscfg_text(syscfg_text: str, syscfg_file: Optional[str] = None) -> Dict[str, Any]:
     """Parse SysConfig text and return normalized LibXR configuration."""
     config = ConfigurationManager()
@@ -875,6 +1036,7 @@ def parse_syscfg_text(syscfg_text: str, syscfg_file: Optional[str] = None) -> Di
         RtosParser(config, context),
         GpioParser(config, context),
         PeripheralCollectionParser(config, context),
+        DmaParser(config, context),
     ]
     for parser in parsers:
         parser.parse()

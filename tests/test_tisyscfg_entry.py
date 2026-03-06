@@ -182,6 +182,85 @@ GPIO1.associatedPins[0].interruptEn = true;
         self.assertEqual(result["GPIO"]["PA8"]["Signal"], "GPIO_Input")
         self.assertTrue(result["GPIO"]["PA8"]["interruptEn"])
 
+    def test_build_yaml_config_uart_dma_channels_are_extracted_and_linked(self):
+        syscfg_text = """
+const DMA = scripting.addModule("/ti/driverlib/DMA", {}, false);
+const UART = scripting.addModule("/ti/driverlib/UART", {}, false);
+const UART1 = UART.addInstance();
+UART1.$name = "UART_0";
+UART1.enabledDMARXTriggers = "DL_UART_DMA_INTERRUPT_RX";
+UART1.enabledDMATXTriggers = "DL_UART_DMA_INTERRUPT_TX";
+UART1.DMA_CHANNEL_RX.$name = "DMA_CH2";
+UART1.DMA_CHANNEL_RX.addressMode = "f2b";
+UART1.DMA_CHANNEL_RX.srcLength = "BYTE";
+UART1.DMA_CHANNEL_RX.dstLength = "BYTE";
+UART1.DMA_CHANNEL_RX.destIncrement = "INCREMENT";
+UART1.DMA_CHANNEL_RX.peripheral.$assign = "DMA_CH2";
+UART1.DMA_CHANNEL_TX.$name = "DMA_CH3";
+UART1.DMA_CHANNEL_TX.addressMode = "b2f";
+UART1.DMA_CHANNEL_TX.srcLength = "BYTE";
+UART1.DMA_CHANNEL_TX.dstLength = "BYTE";
+UART1.DMA_CHANNEL_TX.srcIncrement = "INCREMENT";
+UART1.DMA_CHANNEL_TX.peripheral.$assign = "DMA_CH3";
+"""
+        result = build_yaml_config("/tmp/demo.syscfg", "uart0", syscfg_text)
+
+        self.assertEqual(result["DMA"]["Requests"]["uart_0_rx"], "UART_0_RX")
+        self.assertEqual(result["DMA"]["Requests"]["uart_0_tx"], "UART_0_TX")
+
+        rx_cfg = result["DMA"]["Configurations"]["uart_0_rx"]
+        tx_cfg = result["DMA"]["Configurations"]["uart_0_tx"]
+        self.assertEqual(rx_cfg["stream"], "DMA_CH2")
+        self.assertEqual(tx_cfg["stream"], "DMA_CH3")
+        self.assertEqual(rx_cfg["mode"], "f2b")
+        self.assertEqual(tx_cfg["mode"], "b2f")
+        self.assertEqual(rx_cfg["trigger"], "DL_UART_DMA_INTERRUPT_RX")
+        self.assertEqual(tx_cfg["trigger"], "DL_UART_DMA_INTERRUPT_TX")
+
+        uart_cfg = result["Peripherals"]["UART"]["UART_0"]
+        self.assertTrue(uart_cfg["DMA_RX"])
+        self.assertTrue(uart_cfg["DMA_TX"])
+        self.assertEqual(uart_cfg["DMA_RX_TYPE"], "DMA")
+        self.assertEqual(uart_cfg["DMA_TX_TYPE"], "DMA")
+        self.assertEqual(uart_cfg["dma"]["dma_rx"]["stream"], "DMA_CH2")
+        self.assertEqual(uart_cfg["dma"]["dma_tx"]["stream"], "DMA_CH3")
+
+    def test_build_yaml_config_spi_dma_event_channels_map_to_rx_tx(self):
+        syscfg_text = """
+const DMA = scripting.addModule("/ti/driverlib/DMA", {}, false);
+const SPI = scripting.addModule("/ti/driverlib/SPI", {}, false);
+const SPI1 = SPI.addInstance();
+SPI1.$name = "SPI_0";
+SPI1.enabledDMAEvent1Triggers = "DL_SPI_DMA_INTERRUPT_RX";
+SPI1.enabledDMAEvent2Triggers = "DL_SPI_DMA_INTERRUPT_TX";
+SPI1.DMA_CHANNEL_EVENT1.$name = "DMA_CH1";
+SPI1.DMA_CHANNEL_EVENT1.addressMode = "f2b";
+SPI1.DMA_CHANNEL_EVENT1.peripheral.$assign = "DMA_CH1";
+SPI1.DMA_CHANNEL_EVENT2.$name = "DMA_CH0";
+SPI1.DMA_CHANNEL_EVENT2.addressMode = "b2f";
+SPI1.DMA_CHANNEL_EVENT2.peripheral.$assign = "DMA_CH0";
+"""
+        result = build_yaml_config("/tmp/demo.syscfg", "uart0", syscfg_text)
+
+        self.assertEqual(result["DMA"]["Requests"]["spi_0_rx"], "SPI_0_RX")
+        self.assertEqual(result["DMA"]["Requests"]["spi_0_tx"], "SPI_0_TX")
+        self.assertEqual(
+            result["DMA"]["Configurations"]["spi_0_rx"]["trigger"],
+            "DL_SPI_DMA_INTERRUPT_RX",
+        )
+        self.assertEqual(
+            result["DMA"]["Configurations"]["spi_0_tx"]["trigger"],
+            "DL_SPI_DMA_INTERRUPT_TX",
+        )
+
+        spi_cfg = result["Peripherals"]["SPI"]["SPI_0"]
+        self.assertTrue(spi_cfg["DMA_RX"])
+        self.assertTrue(spi_cfg["DMA_TX"])
+        self.assertEqual(spi_cfg["DMA_RX_TYPE"], "DMA")
+        self.assertEqual(spi_cfg["DMA_TX_TYPE"], "DMA")
+        self.assertEqual(spi_cfg["dma"]["dma_rx"]["stream"], "DMA_CH1")
+        self.assertEqual(spi_cfg["dma"]["dma_tx"]["stream"], "DMA_CH0")
+
     def test_extract_peripherals_detects_modules_without_instances(self):
         syscfg_text = """
 const DMA = scripting.addModule("/ti/driverlib/DMA");
@@ -370,7 +449,7 @@ UART1.peripheral.ctsPin.$assign = "PA9";
             {"RX": "PA11", "TX": "PA10", "RTS": "PA8", "CTS": "PA9"},
         )
 
-    def test_extract_peripherals_uart_uses_fallbacks_without_parameters(self):
+    def test_extract_peripherals_uart_ignores_suggested_pins_without_assignments(self):
         syscfg_text = """
 const UART = scripting.addModule("/ti/driverlib/UART", {}, false);
 const UART1 = UART.addInstance();
@@ -394,11 +473,10 @@ UART1.peripheral.txPin.$suggestSolution = "PA10";
                 "DMA_TX": True,
                 "DMARXTrigger": "DL_UART_DMA_INTERRUPT_RX",
                 "DMATXTrigger": "DL_UART_DMA_INTERRUPT_TX",
-                "Pins": {"RX": "PA11", "TX": "PA10"},
             },
         )
 
-    def test_extract_peripherals_spi_uses_fallbacks_without_parameters(self):
+    def test_extract_peripherals_spi_ignores_suggested_pins_without_assignments(self):
         syscfg_text = """
 const SPI = scripting.addModule("/ti/driverlib/SPI", {}, false);
 const SPI1 = SPI.addInstance();
@@ -423,7 +501,6 @@ SPI1.peripheral.cs0Pin.$suggestSolution = "PA13";
                 "DMAEvent2": True,
                 "DMAEvent1Trigger": "DL_SPI_DMA_INTERRUPT_RX",
                 "DMAEvent2Trigger": "DL_SPI_DMA_INTERRUPT_TX",
-                "Pins": {"SCLK": "PA17", "MOSI": "PB8", "MISO": "PB7", "CS0": "PA13"},
             },
         )
 
