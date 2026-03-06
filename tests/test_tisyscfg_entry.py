@@ -596,6 +596,65 @@ I2C1.DMA_CHANNEL_EVENT2.peripheral.$assign = "DMA_CH1";
         self.assertEqual(i2c_cfg["dma"]["dma_tx"]["stream"], "DMA_CH0")
         self.assertEqual(i2c_cfg["dma"]["dma_rx"]["stream"], "DMA_CH1")
 
+    def test_extract_peripherals_adc_parses_core_parameters(self):
+        syscfg_text = """
+const ADC12 = scripting.addModule("/ti/driverlib/ADC12", {}, false);
+const ADC121 = ADC12.addInstance();
+ADC121.$name = "ADC12_0";
+ADC121.repeatMode = true;
+ADC121.configureDMA = true;
+ADC121.adcMem1chansel = "DL_ADC12_INPUT_CHAN_3";
+ADC121.adcMem0chansel = "DL_ADC12_INPUT_CHAN_2";
+ADC121.adcMem2chansel = "DL_ADC12_INPUT_CHAN_2";
+"""
+        peripherals = extract_peripherals(syscfg_text)
+
+        self.assertIn("ADC", peripherals)
+        self.assertIn("ADC12_0", peripherals["ADC"])
+        self.assertEqual(
+            peripherals["ADC"]["ADC12_0"],
+            {
+                "ContinuousMode": True,
+                "RegularConversions": ["DL_ADC12_INPUT_CHAN_2", "DL_ADC12_INPUT_CHAN_3"],
+                "Channels": ["DL_ADC12_INPUT_CHAN_2", "DL_ADC12_INPUT_CHAN_3"],
+                "DMA": "ENABLE",
+            },
+        )
+
+    def test_build_yaml_config_adc_dma_channel_is_extracted_and_linked(self):
+        syscfg_text = """
+const DMA = scripting.addModule("/ti/driverlib/DMA", {}, false);
+const ADC12 = scripting.addModule("/ti/driverlib/ADC12", {}, false);
+const ADC121 = ADC12.addInstance();
+ADC121.$name = "ADC12_0";
+ADC121.configureDMA = true;
+ADC121.enabledDMATriggers = ["DL_ADC12_DMA_MEM0_RESULT_LOADED"];
+ADC121.adcMem0chansel = "DL_ADC12_INPUT_CHAN_2";
+ADC121.DMA_CHANNEL.$name = "DMA_CH0";
+ADC121.DMA_CHANNEL.addressMode = "f2b";
+ADC121.DMA_CHANNEL.srcLength = "HALF_WORD";
+ADC121.DMA_CHANNEL.dstLength = "HALF_WORD";
+ADC121.DMA_CHANNEL.peripheral.$assign = "DMA_CH0";
+"""
+        result = build_yaml_config("/tmp/demo.syscfg", "uart0", syscfg_text)
+
+        self.assertEqual(result["DMA"]["Requests"]["adc12_0_general"], "ADC12_0")
+        self.assertEqual(
+            result["DMA"]["Configurations"]["adc12_0_general"]["trigger"],
+            "DL_ADC12_DMA_MEM0_RESULT_LOADED",
+        )
+        self.assertEqual(
+            result["DMA"]["Configurations"]["adc12_0_general"]["stream"],
+            "DMA_CH0",
+        )
+
+        adc_cfg = result["Peripherals"]["ADC"]["ADC12_0"]
+        self.assertEqual(adc_cfg["DMA"], "ENABLE")
+        self.assertEqual(adc_cfg["Channels"], ["DL_ADC12_INPUT_CHAN_2"])
+        self.assertEqual(adc_cfg["RegularConversions"], ["DL_ADC12_INPUT_CHAN_2"])
+        self.assertEqual(adc_cfg["dma"]["dma"]["stream"], "DMA_CH0")
+        self.assertEqual(adc_cfg["dma"]["dma"]["mode"], "f2b")
+
     def test_render_template_command_raises_for_unknown_placeholder(self):
         with self.assertRaises(ValueError):
             render_template_command(

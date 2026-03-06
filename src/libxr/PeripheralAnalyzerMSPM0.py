@@ -604,7 +604,8 @@ _MODULE_NAME_MAP = {
 _UART_PERIPHERAL_TYPES = {"UART", "UARTLIN", "LPUART", "USART"}
 _SPI_PERIPHERAL_TYPES = {"SPI"}
 _I2C_PERIPHERAL_TYPES = {"I2C"}
-_GENERIC_PERIPHERAL_TYPES = {"ADC", "DMA", "MCAN", "TIMER"}
+_ADC_PERIPHERAL_TYPES = {"ADC"}
+_GENERIC_PERIPHERAL_TYPES = {"DMA", "MCAN", "TIMER"}
 
 
 def _normalize_peripheral_type(module_path: str) -> str:
@@ -715,6 +716,56 @@ def _build_i2c_config(instance_props: Dict[str, Any]) -> Dict[str, Any]:
     return i2c_cfg
 
 
+def _normalize_adc_channel(raw_channel: Any) -> Optional[str]:
+    """Keep ADC channel tokens in SysConfig naming style."""
+    if not isinstance(raw_channel, str):
+        return None
+
+    channel = raw_channel.strip()
+    return channel or None
+
+
+def _build_adc_config(instance_props: Dict[str, Any]) -> Dict[str, Any]:
+    """Extract STM32-aligned ADC core fields from SysConfig values."""
+    adc_cfg: Dict[str, Any] = {
+        "ContinuousMode": False,
+        "RegularConversions": [],
+        "Channels": [],
+        "DMA": "DISABLE",
+    }
+
+    repeat_mode = _parse_bool(instance_props.get("repeatMode"))
+    if repeat_mode is not None:
+        adc_cfg["ContinuousMode"] = repeat_mode
+
+    dma_enabled = any(
+        _parse_bool(instance_props.get(dma_key)) is True
+        for dma_key in ("configureDMA", "enableDMA")
+    )
+    if not dma_enabled:
+        dma_enabled = any(prop.startswith("DMA_CHANNEL") for prop in instance_props)
+    adc_cfg["DMA"] = "ENABLE" if dma_enabled else "DISABLE"
+
+    channels_by_index: Dict[int, str] = {}
+    for prop, raw_value in instance_props.items():
+        match = re.fullmatch(r"adcMem(\d+)chansel", prop)
+        if not match:
+            continue
+        normalized = _normalize_adc_channel(raw_value)
+        if not normalized:
+            continue
+        channels_by_index[int(match.group(1))] = normalized
+
+    for channel_index in sorted(channels_by_index):
+        channel_name = channels_by_index[channel_index]
+        if channel_name not in adc_cfg["Channels"]:
+            adc_cfg["Channels"].append(channel_name)
+        if channel_name not in adc_cfg["RegularConversions"]:
+            adc_cfg["RegularConversions"].append(channel_name)
+
+    return adc_cfg
+
+
 class I2CPeripheralTypeParser(PeripheralTypeParser):
     """Parser for I2C peripherals."""
 
@@ -723,6 +774,16 @@ class I2CPeripheralTypeParser(PeripheralTypeParser):
 
     def parse_instance(self, instance_props: Dict[str, Any]) -> Dict[str, Any]:
         return _build_i2c_config(instance_props)
+
+
+class AdcPeripheralTypeParser(PeripheralTypeParser):
+    """Parser for ADC peripherals."""
+
+    def __init__(self) -> None:
+        super().__init__(_ADC_PERIPHERAL_TYPES)
+
+    def parse_instance(self, instance_props: Dict[str, Any]) -> Dict[str, Any]:
+        return _build_adc_config(instance_props)
 
 
 def _build_spi_config(instance_props: Dict[str, Any]) -> Dict[str, Any]:
@@ -846,6 +907,7 @@ def _build_peripheral_parser_registry() -> List[PeripheralTypeParser]:
         UartPeripheralTypeParser(),
         SpiPeripheralTypeParser(),
         I2CPeripheralTypeParser(),
+        AdcPeripheralTypeParser(),
     ]
     for peripheral_type in sorted(_GENERIC_PERIPHERAL_TYPES):
         parsers.append(GenericPeripheralTypeParser({peripheral_type}))
@@ -875,6 +937,7 @@ def _extract_peripherals_from_context(
     module_presence_whitelist.update(_SPI_PERIPHERAL_TYPES)
     module_presence_whitelist.update(_I2C_PERIPHERAL_TYPES)
     module_presence_whitelist.update(_UART_PERIPHERAL_TYPES)
+    module_presence_whitelist.update(_ADC_PERIPHERAL_TYPES)
     module_presence_whitelist.add("PWM")
 
     for peripheral_type, instance_name, instance_props in _iter_peripheral_instances(context):
@@ -1068,7 +1131,7 @@ class DmaParser(TIParser):
         channel_suffix: str,
         direction: str,
         instance_props: Dict[str, Any],
-    ) -> Optional[str]:
+    ) -> Optional[Any]:
         p_type = peripheral_type.upper()
         if p_type == "SPI" and channel_suffix in {"EVENT1", "EVENT2"}:
             value = instance_props.get(f"enabledDMA{channel_suffix.title()}Triggers")
@@ -1086,6 +1149,16 @@ class DmaParser(TIParser):
 
         if direction == "tx" and p_type in {"UART", "UARTLIN", "USART", "LPUART"}:
             value = instance_props.get("enabledDMATXTriggers")
+            return str(value).strip() if value else None
+
+        if direction == "general" and p_type == "ADC":
+            triggers = _parse_string_list(instance_props.get("enabledDMATriggers"))
+            if triggers is not None:
+                if len(triggers) == 1:
+                    return triggers[0]
+                if triggers:
+                    return triggers
+            value = instance_props.get("enabledDMATriggers")
             return str(value).strip() if value else None
 
         return None
@@ -1109,7 +1182,7 @@ class DmaParser(TIParser):
             peripheral_cfg["DMA_RX"] = True
             peripheral_cfg["DMA_RX_TYPE"] = "DMA"
         else:
-            peripheral_cfg["DMA"] = True
+            peripheral_cfg["DMA"] = "ENABLE"
 
 
 def parse_syscfg_text(syscfg_text: str, syscfg_file: Optional[str] = None) -> Dict[str, Any]:
