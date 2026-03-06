@@ -504,6 +504,98 @@ SPI1.peripheral.cs0Pin.$suggestSolution = "PA13";
             },
         )
 
+    def test_extract_peripherals_i2c_parses_core_parameters(self):
+        syscfg_text = """
+const I2C = scripting.addModule("/ti/driverlib/I2C", {}, false);
+const I2C1 = I2C.addInstance();
+I2C1.$name = "I2C_0";
+I2C1.basicEnableController = true;
+I2C1.basicControllerBusSpeed = 400000;
+I2C1.basicEnableTarget = true;
+I2C1.basicTargetAddress = 0x48;
+I2C1.basicTargetSecAddressEnable = true;
+I2C1.advAnalogGlitchFilter = "DISABLED";
+I2C1.advControllerTXFIFOTRIG = "BYTES_1";
+I2C1.advTargetTXFIFOTRIG = "BYTES_1";
+I2C1.intController = ["NACK","RXFIFO_TRIGGER"];
+I2C1.intTarget = ["START","TXFIFO_EMPTY"];
+I2C1.DMAEvent1 = "TARGET_TXFIFO_TRIGGER";
+I2C1.DMAEvent2 = "TARGET_RXFIFO_TRIGGER";
+I2C1.peripheral.$assign = "I2C0";
+I2C1.peripheral.sdaPin.$assign = "PA0";
+I2C1.peripheral.sclPin.$assign = "PA1/NRST";
+"""
+        peripherals = extract_peripherals(syscfg_text)
+
+        self.assertIn("I2C", peripherals)
+        self.assertIn("I2C_0", peripherals["I2C"])
+        i2c_cfg = peripherals["I2C"]["I2C_0"]
+        self.assertEqual(i2c_cfg["ClockSpeed"], 400000)
+        self.assertEqual(i2c_cfg["Pins"], {"SDA": "PA0", "SCL": "PA1/NRST"})
+        self.assertEqual(set(i2c_cfg.keys()), {"ClockSpeed", "Pins"})
+
+    def test_extract_peripherals_i2c_defaults_clockspeed_for_controller_mode(self):
+        syscfg_text = """
+const I2C = scripting.addModule("/ti/driverlib/I2C", {}, false);
+const I2C1 = I2C.addInstance();
+I2C1.$name = "I2C_0";
+I2C1.basicEnableController = true;
+"""
+        peripherals = extract_peripherals(syscfg_text)
+
+        self.assertEqual(peripherals["I2C"]["I2C_0"], {"ClockSpeed": 100000})
+
+    def test_extract_peripherals_i2c_ignores_board_connector_pin_assignments(self):
+        syscfg_text = """
+const I2C = scripting.addModule("/ti/driverlib/I2C", {}, false);
+const I2C1 = I2C.addInstance();
+I2C1.$name = "I2C_0";
+I2C1.basicEnableController = true;
+I2C1.peripheral.sdaPin.$assign = "boosterpack.10";
+I2C1.peripheral.sclPin.$assign = "boosterpack.9";
+"""
+        peripherals = extract_peripherals(syscfg_text)
+
+        self.assertEqual(peripherals["I2C"]["I2C_0"], {"ClockSpeed": 100000})
+
+    def test_build_yaml_config_i2c_dma_channels_are_extracted_and_linked(self):
+        syscfg_text = """
+const DMA = scripting.addModule("/ti/driverlib/DMA", {}, false);
+const I2C = scripting.addModule("/ti/driverlib/I2C", {}, false);
+const I2C1 = I2C.addInstance();
+I2C1.$name = "I2C_0";
+I2C1.DMAEvent1 = "TARGET_TXFIFO_TRIGGER";
+I2C1.DMAEvent2 = "TARGET_RXFIFO_TRIGGER";
+I2C1.DMA_CHANNEL_EVENT1.$name = "DMA_CH_TX";
+I2C1.DMA_CHANNEL_EVENT1.addressMode = "b2f";
+I2C1.DMA_CHANNEL_EVENT1.srcLength = "BYTE";
+I2C1.DMA_CHANNEL_EVENT1.peripheral.$assign = "DMA_CH0";
+I2C1.DMA_CHANNEL_EVENT2.$name = "DMA_CH_RX";
+I2C1.DMA_CHANNEL_EVENT2.addressMode = "f2b";
+I2C1.DMA_CHANNEL_EVENT2.dstLength = "BYTE";
+I2C1.DMA_CHANNEL_EVENT2.peripheral.$assign = "DMA_CH1";
+"""
+        result = build_yaml_config("/tmp/demo.syscfg", "uart0", syscfg_text)
+
+        self.assertEqual(result["DMA"]["Requests"]["i2c_0_tx"], "I2C_0_TX")
+        self.assertEqual(result["DMA"]["Requests"]["i2c_0_rx"], "I2C_0_RX")
+        self.assertEqual(
+            result["DMA"]["Configurations"]["i2c_0_tx"]["trigger"],
+            "TARGET_TXFIFO_TRIGGER",
+        )
+        self.assertEqual(
+            result["DMA"]["Configurations"]["i2c_0_rx"]["trigger"],
+            "TARGET_RXFIFO_TRIGGER",
+        )
+
+        i2c_cfg = result["Peripherals"]["I2C"]["I2C_0"]
+        self.assertTrue(i2c_cfg["DMA_TX"])
+        self.assertTrue(i2c_cfg["DMA_RX"])
+        self.assertEqual(i2c_cfg["DMA_TX_TYPE"], "DMA")
+        self.assertEqual(i2c_cfg["DMA_RX_TYPE"], "DMA")
+        self.assertEqual(i2c_cfg["dma"]["dma_tx"]["stream"], "DMA_CH0")
+        self.assertEqual(i2c_cfg["dma"]["dma_rx"]["stream"], "DMA_CH1")
+
     def test_render_template_command_raises_for_unknown_placeholder(self):
         with self.assertRaises(ValueError):
             render_template_command(

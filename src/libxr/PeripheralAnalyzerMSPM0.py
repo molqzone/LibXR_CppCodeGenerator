@@ -405,6 +405,8 @@ def _sanitize_numeric(value: Any) -> Any:
         return value
 
     text = value.strip()
+    if re.fullmatch(r"0[xX][0-9A-Fa-f]+", text):
+        return int(text, 16)
     if re.fullmatch(r"[+-]?\d+", text):
         return int(text)
     if re.fullmatch(r"[+-]?(?:\d+\.\d*|\.\d+)(?:[eE][+-]?\d+)?", text):
@@ -454,6 +456,11 @@ def _parse_string_list(value: Any) -> Optional[List[str]]:
             token = token[1:-1]
         items.append(token)
     return items
+
+
+def _looks_like_mcu_pin(pin_name: str) -> bool:
+    """Return whether an assigned pin name looks like a concrete MCU pin."""
+    return bool(re.match(r"^P[A-Z]\d+(?:[-/][A-Za-z0-9_]+)*$", pin_name.strip().upper()))
 
 
 def _build_uart_config(instance_props: Dict[str, Any]) -> Dict[str, Any]:
@@ -596,7 +603,8 @@ _MODULE_NAME_MAP = {
 
 _UART_PERIPHERAL_TYPES = {"UART", "UARTLIN", "LPUART", "USART"}
 _SPI_PERIPHERAL_TYPES = {"SPI"}
-_GENERIC_PERIPHERAL_TYPES = {"ADC", "DMA", "I2C", "MCAN", "TIMER"}
+_I2C_PERIPHERAL_TYPES = {"I2C"}
+_GENERIC_PERIPHERAL_TYPES = {"ADC", "DMA", "MCAN", "TIMER"}
 
 
 def _normalize_peripheral_type(module_path: str) -> str:
@@ -674,6 +682,47 @@ class PwmPeripheralTypeParser(PeripheralTypeParser):
 
     def parse_instance(self, instance_props: Dict[str, Any]) -> Dict[str, Any]:
         return _build_pwm_config(instance_props)
+
+
+def _build_i2c_config(instance_props: Dict[str, Any]) -> Dict[str, Any]:
+    """Extract STM32-aligned I2C fields from SysConfig values."""
+    i2c_cfg: Dict[str, Any] = {}
+
+    if "basicControllerBusSpeed" in instance_props:
+        i2c_cfg["ClockSpeed"] = _sanitize_numeric(
+            instance_props["basicControllerBusSpeed"]
+        )
+    else:
+        controller_enabled = _parse_bool(instance_props.get("basicEnableController"))
+        if controller_enabled is True:
+            i2c_cfg["ClockSpeed"] = 100000
+
+    pins: Dict[str, str] = {}
+    pin_map = {
+        "SDA": "peripheral.sdaPin.$assign",
+        "SCL": "peripheral.sclPin.$assign",
+    }
+    for pin_label, assign_key in pin_map.items():
+        raw_pin = instance_props.get(assign_key)
+        if not isinstance(raw_pin, str):
+            continue
+        pin_name = raw_pin.strip()
+        if pin_name and _looks_like_mcu_pin(pin_name):
+            pins[pin_label] = pin_name
+    if pins:
+        i2c_cfg["Pins"] = pins
+
+    return i2c_cfg
+
+
+class I2CPeripheralTypeParser(PeripheralTypeParser):
+    """Parser for I2C peripherals."""
+
+    def __init__(self) -> None:
+        super().__init__(_I2C_PERIPHERAL_TYPES)
+
+    def parse_instance(self, instance_props: Dict[str, Any]) -> Dict[str, Any]:
+        return _build_i2c_config(instance_props)
 
 
 def _build_spi_config(instance_props: Dict[str, Any]) -> Dict[str, Any]:
@@ -796,6 +845,7 @@ def _build_peripheral_parser_registry() -> List[PeripheralTypeParser]:
         PwmPeripheralTypeParser(),
         UartPeripheralTypeParser(),
         SpiPeripheralTypeParser(),
+        I2CPeripheralTypeParser(),
     ]
     for peripheral_type in sorted(_GENERIC_PERIPHERAL_TYPES):
         parsers.append(GenericPeripheralTypeParser({peripheral_type}))
@@ -823,6 +873,7 @@ def _extract_peripherals_from_context(
     active_registry = parser_registry or _build_peripheral_parser_registry()
     module_presence_whitelist: Set[str] = set(_GENERIC_PERIPHERAL_TYPES)
     module_presence_whitelist.update(_SPI_PERIPHERAL_TYPES)
+    module_presence_whitelist.update(_I2C_PERIPHERAL_TYPES)
     module_presence_whitelist.update(_UART_PERIPHERAL_TYPES)
     module_presence_whitelist.add("PWM")
 
@@ -889,8 +940,6 @@ class DmaParser(TIParser):
     _CHANNEL_DIRECTION_MAP = {
         "RX": "rx",
         "TX": "tx",
-        "EVENT1": "rx",
-        "EVENT2": "tx",
     }
 
     def parse(self) -> None:
@@ -912,7 +961,9 @@ class DmaParser(TIParser):
 
             peripheral_cfg = peripheral_group[instance_name]
             for channel_suffix, channel_props in channel_blocks.items():
-                direction = self._resolve_direction(channel_suffix)
+                direction = self._resolve_direction(
+                    peripheral_type, channel_suffix, channel_props, instance_props
+                )
                 request_key = self._build_request_key(instance_name, direction)
                 request_name = (
                     instance_name
@@ -945,7 +996,9 @@ class DmaParser(TIParser):
                     if parsed_bool is None:
                         dma_cfg[field] = _sanitize_numeric(dma_cfg[field])
 
-                trigger = self._resolve_dma_trigger(peripheral_type, direction, peripheral_cfg)
+                trigger = self._resolve_dma_trigger(
+                    peripheral_type, channel_suffix, direction, instance_props
+                )
                 if trigger:
                     dma_cfg.setdefault("trigger", trigger)
 
@@ -969,8 +1022,36 @@ class DmaParser(TIParser):
             blocks[suffix][channel_prop] = value
         return blocks
 
-    def _resolve_direction(self, channel_suffix: str) -> str:
-        return self._CHANNEL_DIRECTION_MAP.get(channel_suffix, "general")
+    def _resolve_direction(
+        self,
+        peripheral_type: str,
+        channel_suffix: str,
+        channel_props: Dict[str, Any],
+        instance_props: Dict[str, Any],
+    ) -> str:
+        if channel_suffix in self._CHANNEL_DIRECTION_MAP:
+            return self._CHANNEL_DIRECTION_MAP[channel_suffix]
+
+        if channel_suffix in {"EVENT1", "EVENT2"}:
+            if peripheral_type.upper() == "I2C":
+                event_key = f"DMA{channel_suffix.title()}"
+                event_value = instance_props.get(event_key)
+                if isinstance(event_value, str):
+                    upper_value = event_value.upper()
+                    if "RX" in upper_value:
+                        return "rx"
+                    if "TX" in upper_value:
+                        return "tx"
+
+                address_mode = str(channel_props.get("addressMode", "")).strip().lower()
+                if address_mode == "f2b":
+                    return "rx"
+                if address_mode == "b2f":
+                    return "tx"
+
+            return "rx" if channel_suffix == "EVENT1" else "tx"
+
+        return "general"
 
     def _build_request_key(self, instance_name: str, direction: str) -> str:
         base = f"{instance_name}_{direction}".lower()
@@ -984,24 +1065,29 @@ class DmaParser(TIParser):
     @staticmethod
     def _resolve_dma_trigger(
         peripheral_type: str,
+        channel_suffix: str,
         direction: str,
-        peripheral_cfg: Dict[str, Any],
+        instance_props: Dict[str, Any],
     ) -> Optional[str]:
         p_type = peripheral_type.upper()
-        if direction == "rx":
-            if p_type in {"UART", "UARTLIN", "USART", "LPUART"}:
-                value = peripheral_cfg.get("DMARXTrigger")
-                return str(value).strip() if value else None
-            if p_type in {"SPI", "I2C"}:
-                value = peripheral_cfg.get("DMAEvent1Trigger")
-                return str(value).strip() if value else None
-        if direction == "tx":
-            if p_type in {"UART", "UARTLIN", "USART", "LPUART"}:
-                value = peripheral_cfg.get("DMATXTrigger")
-                return str(value).strip() if value else None
-            if p_type in {"SPI", "I2C"}:
-                value = peripheral_cfg.get("DMAEvent2Trigger")
-                return str(value).strip() if value else None
+        if p_type == "SPI" and channel_suffix in {"EVENT1", "EVENT2"}:
+            value = instance_props.get(f"enabledDMA{channel_suffix.title()}Triggers")
+            return str(value).strip() if value else None
+
+        if p_type == "I2C" and channel_suffix in {"EVENT1", "EVENT2"}:
+            value = instance_props.get(f"enabledDMA{channel_suffix.title()}Triggers")
+            if value is None:
+                value = instance_props.get(f"DMA{channel_suffix.title()}")
+            return str(value).strip() if value else None
+
+        if direction == "rx" and p_type in {"UART", "UARTLIN", "USART", "LPUART"}:
+            value = instance_props.get("enabledDMARXTriggers")
+            return str(value).strip() if value else None
+
+        if direction == "tx" and p_type in {"UART", "UARTLIN", "USART", "LPUART"}:
+            value = instance_props.get("enabledDMATXTriggers")
+            return str(value).strip() if value else None
+
         return None
 
     @staticmethod
