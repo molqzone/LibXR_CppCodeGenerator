@@ -9,9 +9,9 @@
 [![CI/CD - Python Package](https://github.com/Jiu-xiao/LibXR_CppCodeGenerator/actions/workflows/python-publish.yml/badge.svg)](https://github.com/Jiu-xiao/LibXR_CppCodeGenerator/actions/workflows/python-publish.yml)
 [![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2FJiu-xiao%2FLibXR_CppCodeGenerator.svg?type=shield)](https://app.fossa.com/projects/git%2Bgithub.com%2FJiu-xiao%2FLibXR_CppCodeGenerator?ref=badge_shield)
 
-`libxr` 是一个 Python 包，用于自动化嵌入式系统开发。它通过解析硬件配置文件并生成对应的 C++ 工程代码，显著降低嵌入式开发中的重复性工作。目前默认支持 STM32 平台，后续将扩展至更多硬件体系结构。
+`libxr` 是一个 Python 包，用于自动化嵌入式系统开发。它通过解析硬件配置文件并生成对应的 C++ 工程代码，显著降低嵌入式开发中的重复性工作。目前支持 STM32，并提供 TI MSPM0 SysConfig 解析与 LibXR/XRobot 代码生成入口。
 
-`libxr` is a Python package for automating embedded system development. It parses hardware configuration files and generates corresponding C++ project code, significantly reducing repetitive manual work. STM32 is supported by default, with more hardware architectures planned.
+`libxr` is a Python package for automating embedded system development. It parses hardware configuration files and generates corresponding C++ project code, significantly reducing repetitive manual work. It supports STM32 and provides TI MSPM0 SysConfig parsing plus LibXR/XRobot code generation.
 
 ## 🌟 Features 功能亮点
 
@@ -184,13 +184,14 @@ TI SysConfig 工程初始化入口
 TI SysConfig project bootstrap entry.
 
 ```bash
-usage: xr_tisyscfg_cfg [-h] -d DIRECTORY [-o OUTPUT] [-t TERMINAL] [--xrobot] [--commit COMMIT]
+usage: xr_tisyscfg_cfg [-h] -d DIRECTORY [-o OUTPUT] [-t TERMINAL] [--xrobot] [--hw-cntr]
+                       [--code-output CODE_OUTPUT] [--libxr-config LIBXR_CONFIG] [--commit COMMIT]
                        [--git-source GIT_SOURCE] [--git-mirrors GIT_MIRRORS] [--force]
                        [--post-cmd POST_CMD] [--dry-run]
 ```
 
-当前版本行为：扫描指定目录第一层的 `.syscfg`，提取 board/device、模块与实例元信息并生成 TI 基线 `.config.yaml`。  
-Current behavior: scans first-level `.syscfg` files in the specified directory, extracts board/device, module, and instance metadata, and generates a TI baseline `.config.yaml`.
+扫描指定目录第一层的 `.syscfg`，提取 board/device、GPIO、UART、I2C、SPI、ADC、PWM、MCAN 与 DMA 元信息并生成 TI `.config.yaml`。使用 `--xrobot`、`--hw-cntr` 或 `--code-output` 时，还会生成 `app_main.cpp`、`app_main.h` 和 `libxr_config.yaml`。
+Scans first-level `.syscfg` files, extracts board/device, GPIO, UART, I2C, SPI, ADC, PWM, MCAN, and DMA metadata, and generates TI `.config.yaml`. With `--xrobot`, `--hw-cntr`, or `--code-output`, it also generates `app_main.cpp`, `app_main.h`, and `libxr_config.yaml`.
 
 #### 🔧 必选参数 (Required)
 
@@ -216,10 +217,25 @@ Current behavior: scans first-level `.syscfg` files in the specified directory, 
   覆盖已存在输出文件  
   Overwrite existing output file.
 
+- `--xrobot` / `--hw-cntr`：
+
+  生成 XRobot 入口或 LibXR `HardwareContainer`。`--xrobot` 会自动启用硬件容器。
+  Generate the XRobot entry or LibXR `HardwareContainer`. `--xrobot` enables the hardware container automatically.
+
+- `--code-output <FILE>`：
+
+  指定生成的 `app_main.cpp`。当目录名为 `sysconfig` 且工程存在 `src` 时，默认写入同级 `src/app_main.cpp`。
+  Select the generated `app_main.cpp`. For a `sysconfig` directory with a sibling `src`, the default is `src/app_main.cpp`.
+
+- `--libxr-config <FILE>`：
+
+  读取缓冲区大小、DMA 阈值、PWM 频率、设备别名等生成设置。
+  Load generation settings such as buffer sizes, DMA thresholds, PWM frequency, and device aliases.
+
 - `--post-cmd`：
 
-  生成 YAML 后执行自定义命令（支持占位符 `{project_dir}`、`{syscfg_file}`、`{yaml_output}`）  
-  Run a custom command after YAML generation (supports placeholders `{project_dir}`, `{syscfg_file}`, `{yaml_output}`).
+  生成 YAML 后执行自定义命令（支持占位符 `{project_dir}`、`{syscfg_file}`、`{yaml_output}`、`{code_output}`）
+  Run a custom command after YAML generation (supports placeholders `{project_dir}`, `{syscfg_file}`, `{yaml_output}`, `{code_output}`).
 
 - `--dry-run`：
 
@@ -228,6 +244,28 @@ Current behavior: scans first-level `.syscfg` files in the specified directory, 
 
 > 兼容别名 / Alias: `xr_parse_syscfg`（参数与行为完全一致）  
 > Compatible alias: `xr_parse_syscfg` (same arguments and behavior)
+
+---
+
+### `xr_gen_code_mspm0`
+
+从 `xr_parse_syscfg` / `xr_tisyscfg_cfg` 生成的 YAML 单独生成 MSPM0 LibXR/XRobot 代码：
+
+```bash
+xr_gen_code_mspm0 \
+  -i .config.yaml \
+  -o src/app_main.cpp \
+  --xrobot \
+  --libxr-config src/libxr_config.yaml
+```
+
+也可以使用通用入口，平台会从 `Mcu.Family: TI` 与 `Mcu.Type: MSPM0...` 自动识别：
+
+```bash
+xr_gen_code -i .config.yaml -o src/app_main.cpp --xrobot
+```
+
+生成器直接使用 LibXR MSPM0 驱动提供的 SysConfig 宏，例如 `MSPM0_UART_INIT`、`MSPM0_I2C_INIT`、`MSPM0_SPI_INIT`、`MSPM0_ADC_INIT` 和 `MSPM0_PWM_INIT`。SPI 需要 SysConfig 同时配置 RX/TX DMA；MCAN 需要启用中断后才会生成驱动实例。
 
 ---
 

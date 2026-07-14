@@ -11,6 +11,7 @@ if SRC not in sys.path:
 
 from libxr.ConfigTiSyscfgProject import (
     build_yaml_config,
+    default_code_output,
     extract_peripherals,
     extract_modules,
     extract_rtos,
@@ -48,6 +49,17 @@ class TestTiSyscfgEntry(unittest.TestCase):
             result = find_syscfg_file(tmpdir)
 
             self.assertIsNone(result)
+
+    def test_default_code_output_uses_project_src_for_sysconfig_directory(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            sysconfig_dir = os.path.join(tmpdir, "sysconfig")
+            source_dir = os.path.join(tmpdir, "src")
+            os.makedirs(sysconfig_dir)
+            os.makedirs(source_dir)
+
+            result = default_code_output(sysconfig_dir)
+
+            self.assertEqual(result, os.path.join(source_dir, "app_main.cpp"))
 
     def test_extract_metadata_from_syscfg_text(self):
         syscfg_text = """
@@ -139,6 +151,9 @@ I2C1.$name = "I2C_0";
         self.assertEqual(result["GPIO"]["PB22"]["Signal"], "GPIO_Output")
         self.assertEqual(result["GPIO"]["PB22"]["Label"], "LED")
         self.assertEqual(result["GPIO"]["PB22"]["Pull"], "GPIO_PULLUP")
+        self.assertEqual(result["GPIO"]["PB22"]["Group"], "GPIO_GRP_0")
+        self.assertEqual(result["GPIO"]["PB22"]["Name"], "LED")
+        self.assertEqual(result["GPIO"]["PB22"]["Macro"], "GPIO_GRP_0_LED")
         self.assertNotIn("GPIO", result["Peripherals"])
         self.assertIn("I2C", result["Peripherals"])
         self.assertIn("I2C_0", result["Peripherals"]["I2C"])
@@ -368,6 +383,7 @@ PWM1.PWM_CHANNEL_0.shadowUpdateMode = "ZERO_EVT";
         self.assertEqual(pwm_cfg["Period"], 4000)
         self.assertEqual(pwm_cfg["Prescaler"], 8)
         self.assertEqual(pwm_cfg["ClockPrescaler"], 4)
+        self.assertEqual(pwm_cfg["Instance"], "TIMA0")
         self.assertNotIn("Started", pwm_cfg)
         self.assertNotIn("ShadowLoad", pwm_cfg)
         self.assertNotIn("Timer", pwm_cfg)
@@ -378,6 +394,7 @@ PWM1.PWM_CHANNEL_0.shadowUpdateMode = "ZERO_EVT";
         ch0_cfg = pwm_cfg["Channels"]["PWM_CHANNEL_0"]
         self.assertTrue(ch0_cfg["PWM"])
         self.assertEqual(ch0_cfg["DutyCycle"], 50)
+        self.assertEqual(ch0_cfg["Name"], "MOTOR_A")
         self.assertNotIn("CCValue", ch0_cfg)
         self.assertNotIn("Invert", ch0_cfg)
         self.assertNotIn("Label", ch0_cfg)
@@ -618,6 +635,33 @@ ADC121.adcMem2chansel = "DL_ADC12_INPUT_CHAN_2";
                 "RegularConversions": ["DL_ADC12_INPUT_CHAN_2", "DL_ADC12_INPUT_CHAN_3"],
                 "Channels": ["DL_ADC12_INPUT_CHAN_2", "DL_ADC12_INPUT_CHAN_3"],
                 "DMA": "ENABLE",
+                "MemoryIndices": [0, 1, 2],
+            },
+        )
+
+    def test_extract_peripherals_mcan_parses_generator_fields(self):
+        syscfg_text = """
+const MCAN = scripting.addModule("/ti/driverlib/MCAN", {}, false);
+const MCAN1 = MCAN.addInstance();
+MCAN1.$name = "MCAN0";
+MCAN1.desiredNomRate = 500;
+MCAN1.desiredDataRate = 2000;
+MCAN1.fdMode = true;
+MCAN1.brsEnable = true;
+MCAN1.enableInterrupt = true;
+MCAN1.peripheral.$assign = "CANFD0";
+"""
+        peripherals = extract_peripherals(syscfg_text)
+
+        self.assertEqual(
+            peripherals["MCAN"]["MCAN0"],
+            {
+                "Instance": "CANFD0",
+                "NominalBitRate": 500,
+                "DataBitRate": 2000,
+                "FDMode": True,
+                "BitRateSwitch": True,
+                "Interrupt": True,
             },
         )
 

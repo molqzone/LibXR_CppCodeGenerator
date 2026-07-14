@@ -13,11 +13,11 @@ def main():
 
     LibXRPackageInfo.check_and_print()
 
-    parser = argparse.ArgumentParser(description="Run PeripheralAnalyzerSTM32 on a specified directory.")
+    parser = argparse.ArgumentParser(description="Parse a supported embedded project configuration.")
     parser.add_argument(
         "-d", "--directory",
         required=True,
-        help="Input directory containing .ioc files"
+        help="Input project directory"
     )
     args, extra_args = parser.parse_known_args()
 
@@ -27,29 +27,38 @@ def main():
         logging.error(f"Specified directory does not exist: {target_dir}")
         sys.exit(1)
 
-    # Search for .ioc files in the specified directory
     ioc_files = [f for f in os.listdir(target_dir) if f.endswith(".ioc")]
-    if not ioc_files:
-        logging.error(f"No .ioc files found in directory: {target_dir}")
+    syscfg_files = [f for f in os.listdir(target_dir) if f.endswith(".syscfg")]
+    if ioc_files and syscfg_files:
+        logging.error("Both STM32 .ioc and TI .syscfg files were found; use a platform-specific parser")
         sys.exit(1)
 
-    # Construct the command to run the parser
+    if ioc_files:
+        module = "libxr.PeripheralAnalyzerSTM32"
+        detected_files = ioc_files
+    elif syscfg_files:
+        module = "libxr.PeripheralAnalyzerMSPM0"
+        detected_files = syscfg_files
+    else:
+        logging.error(f"No .ioc or .syscfg files found in directory: {target_dir}")
+        sys.exit(1)
+
     cmd = [
         sys.executable,
-        "-m", "libxr.PeripheralAnalyzerSTM32",
+        "-m", module,
         "-d", target_dir,
-        *extra_args  # Forward other arguments
+        *extra_args
     ]
 
-    logging.info(f"Detected {len(ioc_files)} .ioc file(s) in '{target_dir}':")
-    for f in ioc_files:
+    logging.info(f"Detected {len(detected_files)} configuration file(s) in '{target_dir}':")
+    for f in detected_files:
         logging.info(f"       - {f}")
     logging.debug(f"CMD: {' '.join(cmd)}")
 
     try:
         subprocess.run(cmd, check=True)
     except subprocess.CalledProcessError as e:
-        logging.error(f"PeripheralAnalyzerSTM32 exited with code {e.returncode}")
+        logging.error(f"Peripheral analyzer exited with code {e.returncode}")
         sys.exit(e.returncode)
 
 if __name__ == "__main__":

@@ -17,6 +17,7 @@ from libxr.PeripheralAnalyzerMSPM0 import (
     extract_ti_device,
     parse_syscfg_text,
 )
+from libxr.GeneratorCodeMSPM0 import write_outputs
 
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 
@@ -34,6 +35,20 @@ def find_syscfg_file(directory: str):
         if filename.endswith(".syscfg"):
             return os.path.join(directory, filename)
     return None
+
+
+def default_code_output(project_dir: str) -> str:
+    """Choose src/app_main.cpp for conventional MSPM0 project layouts."""
+    normalized = os.path.abspath(project_dir)
+    project_root = (
+        os.path.dirname(normalized)
+        if os.path.basename(normalized).lower() == "sysconfig"
+        else normalized
+    )
+    source_dir = os.path.join(project_root, "src")
+    if os.path.isdir(source_dir):
+        return os.path.join(source_dir, "app_main.cpp")
+    return os.path.join(project_root, "app_main.cpp")
 
 
 def build_yaml_config(syscfg_file: str, terminal_source: str, syscfg_text: str) -> Dict:
@@ -71,7 +86,10 @@ def main():
     parser.add_argument("-d", "--directory", required=True, help="TI SysConfig project directory")
     parser.add_argument("-o", "--output", default=".config.yaml", help="Output YAML path (default: .config.yaml)")
     parser.add_argument("-t", "--terminal", default="", help="Optional terminal device source")
-    parser.add_argument("--xrobot", action="store_true", help="Reserved flag, kept for CLI compatibility")
+    parser.add_argument("--xrobot", action="store_true", help="Generate XRobot integration")
+    parser.add_argument("--hw-cntr", action="store_true", help="Generate HardwareContainer")
+    parser.add_argument("--code-output", default="", help="Optional output app_main.cpp path")
+    parser.add_argument("--libxr-config", default="", help="Optional LibXR settings YAML")
     parser.add_argument("--commit", default="", help="Specify locked LibXR commit hash (reserved)")
     parser.add_argument("--git-source", default="auto",
                         help="Git source base URL or full repo URL, or 'auto'/'github' (reserved)")
@@ -80,7 +98,7 @@ def main():
     parser.add_argument("--force", action="store_true", help="Overwrite existing output YAML")
     parser.add_argument("--post-cmd", default="",
                         help="Optional command after YAML generation. Placeholders: "
-                             "{project_dir}, {syscfg_file}, {yaml_output}")
+                             "{project_dir}, {syscfg_file}, {yaml_output}, {code_output}")
     parser.add_argument("--dry-run", action="store_true", help="Only inspect project and print summary")
 
     args = parser.parse_args()
@@ -124,11 +142,28 @@ def main():
         yaml.dump(config, f, allow_unicode=True, sort_keys=False)
     logging.info("Generated TI baseline YAML successfully.")
 
+    code_output = args.code_output
+    if args.xrobot or args.hw_cntr or code_output:
+        if not code_output:
+            code_output = default_code_output(project_dir)
+        elif not os.path.isabs(code_output):
+            code_output = os.path.join(project_dir, code_output)
+        code_output = os.path.abspath(code_output)
+        write_outputs(
+            config,
+            code_output,
+            args.libxr_config,
+            use_xrobot=args.xrobot,
+            use_hw_cntr=args.hw_cntr,
+        )
+        logging.info(f"Generated MSPM0 LibXR code: {code_output}")
+
     if args.post_cmd:
         values = {
             "project_dir": project_dir,
             "syscfg_file": syscfg_file,
             "yaml_output": output_yaml,
+            "code_output": code_output,
         }
         try:
             command = render_template_command(args.post_cmd, values)

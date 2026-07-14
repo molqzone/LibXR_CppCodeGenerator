@@ -340,6 +340,13 @@ def _resolve_signal(pin_cfg: Dict[str, Any]) -> str:
     return "GPIO_Output"
 
 
+def _macro_token(value: Any) -> str:
+    """Normalize a SysConfig display name to its generated C macro token."""
+    token = re.sub(r"[^A-Za-z0-9_]", "_", str(value or "").strip())
+    token = re.sub(r"_+", "_", token).strip("_")
+    return token.upper()
+
+
 def _extract_gpio_pins_from_context(context: SyscfgParseContext) -> Dict[str, Dict[str, Any]]:
     """Extract GPIO pins from preprocessed SysConfig context."""
     pin_data: Dict[Tuple[str, str], Dict[str, Any]] = {}
@@ -358,13 +365,21 @@ def _extract_gpio_pins_from_context(context: SyscfgParseContext) -> Dict[str, Di
         pin_data.setdefault(key, {})
         pin_data[key][prop] = _parse_literal(raw_value)
 
-    for pin_cfg in pin_data.values():
+    for (instance_var, pin_index), pin_cfg in pin_data.items():
         pin_key = _resolve_pin_key(pin_cfg)
         if not pin_key:
             continue
 
         details: Dict[str, Any] = {"Signal": _resolve_signal(pin_cfg)}
         raw_name = str(pin_cfg.get("$name", "")).strip()
+        group_name = context.display_names.get(instance_var, instance_var)
+        pin_name = raw_name or f"PIN_{pin_index}"
+        group_token = _macro_token(group_name)
+        pin_token = _macro_token(pin_name)
+        if group_token and pin_token:
+            details["Group"] = group_name
+            details["Name"] = pin_name
+            details["Macro"] = f"{group_token}_{pin_token}"
         if raw_name and not re.match(r"^PIN_\d+$", raw_name):
             details["Label"] = raw_name
 
@@ -570,6 +585,9 @@ def _build_pwm_config(instance_props: Dict[str, Any]) -> Dict[str, Any]:
         value = instance_props[source_key]
         pwm_cfg[target_key] = _sanitize_numeric(value)
 
+    if "peripheral.$assign" in instance_props:
+        pwm_cfg["Instance"] = instance_props["peripheral.$assign"]
+
     channel_data: Dict[str, Dict[str, Any]] = defaultdict(dict)
     for prop, raw_value in instance_props.items():
         channel_match = re.match(r"PWM_CHANNEL_(\d+)\.([A-Za-z0-9_.$]+)$", prop)
@@ -585,6 +603,8 @@ def _build_pwm_config(instance_props: Dict[str, Any]) -> Dict[str, Any]:
 
         if "dutyCycle" in channel_props:
             channel_cfg["DutyCycle"] = _sanitize_numeric(channel_props["dutyCycle"])
+        if "$name" in channel_props:
+            channel_cfg["Name"] = str(channel_props["$name"])
 
         channels[f"PWM_CHANNEL_{channel_index}"] = channel_cfg
 
@@ -763,7 +783,34 @@ def _build_adc_config(instance_props: Dict[str, Any]) -> Dict[str, Any]:
         if channel_name not in adc_cfg["RegularConversions"]:
             adc_cfg["RegularConversions"].append(channel_name)
 
+    if channels_by_index:
+        adc_cfg["MemoryIndices"] = sorted(channels_by_index)
+
     return adc_cfg
+
+
+def _build_mcan_config(instance_props: Dict[str, Any]) -> Dict[str, Any]:
+    """Extract the MSPM0 MCAN fields needed by the LibXR generator."""
+    mcan_cfg: Dict[str, Any] = {}
+
+    scalar_map = {
+        "peripheral.$assign": "Instance",
+        "desiredNomRate": "NominalBitRate",
+        "desiredDataRate": "DataBitRate",
+        "fdMode": "FDMode",
+        "brsEnable": "BitRateSwitch",
+        "enableInterrupt": "Interrupt",
+    }
+    for source_key, target_key in scalar_map.items():
+        if source_key not in instance_props:
+            continue
+        value = instance_props[source_key]
+        parsed_bool = _parse_bool(value)
+        mcan_cfg[target_key] = (
+            _sanitize_numeric(value) if parsed_bool is None else parsed_bool
+        )
+
+    return mcan_cfg
 
 
 class I2CPeripheralTypeParser(PeripheralTypeParser):
@@ -784,6 +831,16 @@ class AdcPeripheralTypeParser(PeripheralTypeParser):
 
     def parse_instance(self, instance_props: Dict[str, Any]) -> Dict[str, Any]:
         return _build_adc_config(instance_props)
+
+
+class McanPeripheralTypeParser(PeripheralTypeParser):
+    """Parser for MSPM0 MCAN instances."""
+
+    def __init__(self) -> None:
+        super().__init__({"MCAN"})
+
+    def parse_instance(self, instance_props: Dict[str, Any]) -> Dict[str, Any]:
+        return _build_mcan_config(instance_props)
 
 
 def _build_spi_config(instance_props: Dict[str, Any]) -> Dict[str, Any]:
@@ -908,6 +965,7 @@ def _build_peripheral_parser_registry() -> List[PeripheralTypeParser]:
         SpiPeripheralTypeParser(),
         I2CPeripheralTypeParser(),
         AdcPeripheralTypeParser(),
+        McanPeripheralTypeParser(),
     ]
     for peripheral_type in sorted(_GENERIC_PERIPHERAL_TYPES):
         parsers.append(GenericPeripheralTypeParser({peripheral_type}))
