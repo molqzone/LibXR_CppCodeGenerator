@@ -1251,8 +1251,8 @@ class FreeRTOSParser(PeripheralParser):
 # --------------------------
 # Core Parsing Workflow
 # --------------------------
-def parse_ioc_file(ioc_path: str) -> Optional[Dict[str, Any]]:
-    """Orchestrate the parsing of an .ioc file through registered parsers."""
+def parse_ioc_file(ioc_path: str, context: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """Parse an IOC file, optionally limiting the result to one CubeMX context."""
     config = ConfigurationManager()
 
     try:
@@ -1261,6 +1261,9 @@ def parse_ioc_file(ioc_path: str) -> Optional[Dict[str, Any]]:
     except (UnicodeDecodeError, IOError) as e:
         logging.error(f"File processing failed: {str(e)}")
         return None
+
+    if context:
+        raw_map = filter_ioc_context(raw_map, context)
 
     # Timebase special fields parsing
     for key, value in raw_map.items():
@@ -1322,6 +1325,124 @@ def _extract_key_value_pairs(file_handler: TextIO) -> Dict[str, str]:
             logging.warning(f"Ignored malformed entry at line {line_num}: {line}")
 
     return raw_map
+
+
+def _ioc_context_name(value: str) -> str:
+    """Normalize context names such as CM7, CortexM7, and Cortex_M7."""
+    normalized = value.strip().replace("_", "").replace("-", "").upper()
+    if normalized.startswith("CM") and normalized[2:].isdigit():
+        return f"CORTEXM{normalized[2:]}"
+    if normalized.startswith("CORTEXM") and normalized[7:].isdigit():
+        return normalized
+    return normalized
+
+
+def _context_aliases(context: str) -> set:
+    normalized = _ioc_context_name(context)
+    if normalized.startswith("CORTEXM"):
+        core = normalized[7:]
+        return {normalized, f"CM{core}", f"CORTEX_M{core}"}
+    return {normalized}
+
+
+def _context_ip_names(raw_map: Dict[str, str], context: str) -> set:
+    """Return IP instance names assigned to a CubeMX context."""
+    aliases = _context_aliases(context)
+    context_key = next(
+        (key for key in raw_map if key.startswith("Mcu.Context") and raw_map[key] in aliases),
+        None,
+    )
+    if context_key is None:
+        context_key = next(
+            (key for key in raw_map if key.startswith("Mcu.Context")
+             and _ioc_context_name(raw_map[key]) in {_ioc_context_name(a) for a in aliases}),
+            None,
+        )
+    if context_key is None:
+        raise ValueError(f"Unknown CubeMX context: {context}")
+
+    context_name = raw_map[context_key]
+    ip_key = next((key for key in raw_map if key == f"{context_name}.IPs"), None)
+    if ip_key is None:
+        raise ValueError(f"CubeMX context {context_name} has no IP list")
+
+    names = set()
+    for item in raw_map[ip_key].split(","):
+        item = item.strip().replace("\\:", ":")
+        if not item:
+            continue
+        names.add(item.split(":", 1)[0])
+    names.add(context_name.upper())
+    return names
+
+
+def filter_ioc_context(raw_map: Dict[str, str], context: str) -> Dict[str, str]:
+    """Keep global IOC settings and entries owned by one CubeMX context."""
+    aliases = _context_aliases(context)
+    normalized_context = _ioc_context_name(context)
+    context_number = (
+        normalized_context[len("CORTEXM"):]
+        if normalized_context.startswith("CORTEXM")
+        else normalized_context
+    )
+    context_name = next(
+        (value for key, value in raw_map.items()
+         if key.startswith("Mcu.Context") and _ioc_context_name(value) == normalized_context),
+        None,
+    )
+    if context_name is None:
+        raise ValueError(f"Unknown CubeMX context: {context}")
+
+    ip_names = _context_ip_names(raw_map, context_name)
+    nvic_prefix = f"NVIC{context_number}"
+    kept: Dict[str, str] = {}
+
+    for key, value in raw_map.items():
+        prefix = key.split(".", 1)[0]
+        upper_prefix = prefix.upper()
+
+        # MCU metadata and shared clock configuration are needed by every core.
+        if prefix in {"Mcu", "RCC"}:
+            kept[key] = value
+            continue
+
+        if upper_prefix == nvic_prefix or upper_prefix in {"NVIC", "DEBUG"}:
+            kept[key] = value
+            continue
+
+        # Pin ownership is explicit in dual-core IOC files.
+        if ".PinAttribute" in key or ".ContextOwner" in key:
+            if _ioc_context_name(value) in aliases:
+                kept[key] = value
+            continue
+        if "." in key and re.match(r"^P[A-K]\d+", prefix):
+            owner = raw_map.get(f"{prefix}.PinAttribute") or raw_map.get(f"{prefix}.ContextOwner")
+            if owner is None or _ioc_context_name(owner) in aliases:
+                kept[key] = value
+            continue
+
+        # Virtual pins and context-suffixed middleware belong to their core.
+        if upper_prefix.startswith("VP_"):
+            if any(alias.replace("_", "") in upper_prefix.replace("_", "") for alias in aliases):
+                kept[key] = value
+            elif upper_prefix in {"VP_SYS_VS_SYSTICK", "VP_SYS_M4_VS_SYSTICK"}:
+                if context_number == "4" and "M4" in upper_prefix or context_number == "7" and "M4" not in upper_prefix:
+                    kept[key] = value
+            continue
+
+        if upper_prefix in {name.upper() for name in ip_names}:
+            kept[key] = value
+            continue
+
+        # Keep context-specific system/user-name entries and discard other core names.
+        if context_name and context_name.upper() in upper_prefix:
+            kept[key] = value
+            continue
+        if upper_prefix.endswith(f"_M{context_number}"):
+            kept[key] = value
+            continue
+
+    return kept
 
 
 def _link_dma_requests(config: ConfigurationManager) -> None:
@@ -1430,6 +1551,11 @@ def main() -> None:
         help="Custom output YAML file path (default: <input_file>.yaml)",
     )
     parser.add_argument("--verbose", action="store_true", help="Enable debug logging")
+    parser.add_argument(
+        "--context",
+        default="",
+        help="CubeMX context to parse (for example CortexM4 or CortexM7)",
+    )
 
     args = parser.parse_args()
 
@@ -1449,7 +1575,11 @@ def main() -> None:
         input_path = os.path.join(args.directory, ioc_file)
         logging.info(f"Processing {ioc_file}...")
 
-        config_data = parse_ioc_file(input_path)
+        try:
+            config_data = parse_ioc_file(input_path, args.context or None)
+        except ValueError as e:
+            logging.error(str(e))
+            sys.exit(1)
         if not config_data:
             continue
 
