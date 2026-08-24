@@ -393,13 +393,13 @@ sectors:
 
 ---
 
-### `xr_libxr_cmake`
+### `xr_stm32_cmake`
 
 为 STM32CubeMX 工程生成 `LibXR.CMake` 配置，并自动集成至 `CMakeLists.txt`。
 Generates `LibXR.CMake` file and injects it into the STM32CubeMX CMake project.
 
 ```bash
-usage: xr_libxr_cmake [-h] input_dir
+usage: xr_stm32_cmake [-h] input_dir
 ```
 
 #### 🔧 必选参数 (Required)
@@ -411,7 +411,7 @@ usage: xr_libxr_cmake [-h] input_dir
 
 #### ⚙️ 功能说明 (Functionality)
 
-- 自动生成 `cmake/LibXR.CMake` 文件，内容包括：
+- 自动生成工程根目录下唯一的 `cmake/LibXR.CMake` 文件，内容包括：
   Generate `cmake/LibXR.CMake` containing:
 
   - 添加 `LibXR` 子目录
@@ -435,17 +435,22 @@ usage: xr_libxr_cmake [-h] input_dir
 - 自动删除旧的 `build/` 目录(如存在)
   Automatically deletes existing `build/` directory if found
 
-- 自动向主 `CMakeLists.txt` 添加以下指令(若尚未包含)：
-  Auto-appends the following line to `CMakeLists.txt` if missing:
+- 自动向主 `CMakeLists.txt` 添加 LibXR 接入块(若尚未包含)：
+  Auto-appends a LibXR integration block to `CMakeLists.txt` if missing:
 
   ```cmake
+  set(LIBXR_SYSTEM FreeRTOS)
+  set(LIBXR_SOURCE_DIR "${CMAKE_CURRENT_LIST_DIR}/Middlewares/Third_Party/LibXR")
   include(${CMAKE_CURRENT_LIST_DIR}/cmake/LibXR.CMake)
   ```
 
+  双核 CubeMX 工程中，CM7 与 CM4 各自保留上述接入块，并分别配置、构建；两者共享工程根目录的
+  `cmake/LibXR.CMake`。每个核使用独立的 LibXR binary directory，因此不会在同一个 CMake target graph 中发生冲突。
+
 #### 📦 输出内容 (Outputs)
 
-- 生成 `cmake/LibXR.CMake` 文件
-  Generates `cmake/LibXR.CMake` file
+- 生成工程根目录的共享 `cmake/LibXR.CMake` 文件
+  Generates the shared root-level `cmake/LibXR.CMake` file
 
 - 修改主工程的 `CMakeLists.txt`，插入 `include(...)`
   Updates `CMakeLists.txt` to include `LibXR.CMake`
