@@ -119,6 +119,35 @@ class TestMSPM0Generator(unittest.TestCase):
         code = generate_code(project, load_settings(""))
 
         self.assertNotIn("MSPM0_SPI_INIT", code)
+        self.assertNotIn('#include "mspm0_spi.hpp"', code)
+
+    def test_duplicate_display_names_get_unique_cpp_identifiers(self):
+        project = sample_project()
+        project["GPIO"] = {
+            "PB17": {
+                "Signal": "GPIO_Output",
+                "Label": "En",
+                "Pull": "GPIO_NOPULL",
+                "Group": "PTC_MCU",
+                "Name": "En",
+                "Macro": "PTC_MCU_EN",
+            },
+            "PB19": {
+                "Signal": "GPIO_Output",
+                "Label": "EN",
+                "Pull": "GPIO_NOPULL",
+                "Group": "ISOLATOR",
+                "Name": "EN",
+                "Macro": "ISOLATOR_EN",
+            },
+        }
+
+        code = generate_code(project, load_settings(""), use_hw_cntr=True)
+
+        self.assertIn("static LibXR::MSPM0GPIO en(", code)
+        self.assertIn("static LibXR::MSPM0GPIO en_2(", code)
+        self.assertIn('LibXR::Entry<LibXR::GPIO>{en, {"En"}}', code)
+        self.assertIn('LibXR::Entry<LibXR::GPIO>{en_2, {"EN"}}', code)
 
     def test_write_outputs_creates_header_and_settings(self):
         with tempfile.TemporaryDirectory() as tmpdir:

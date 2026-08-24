@@ -75,6 +75,17 @@ def _identifier(value: str) -> str:
     return result or "device"
 
 
+def _unique_identifier(value: str, used: set) -> str:
+    base = _identifier(value)
+    candidate = base
+    suffix = 2
+    while candidate in used:
+        candidate = f"{base}_{suffix}"
+        suffix += 1
+    used.add(candidate)
+    return candidate
+
+
 def _macro(value: Any) -> str:
     result = re.sub(r"[^A-Za-z0-9_]", "_", str(value or "")).upper()
     return re.sub(r"_+", "_", result).strip("_")
@@ -170,7 +181,7 @@ def _gpio_pull(config: Dict[str, Any], settings: Dict[str, Any]) -> str:
 
 
 def _generate_gpio(
-    gpio: Dict[str, Any], settings: Dict[str, Any], disabled: set
+    gpio: Dict[str, Any], settings: Dict[str, Any], disabled: set, used: set
 ) -> Tuple[List[str], List[DeviceEntry]]:
     code: List[str] = []
     devices: List[DeviceEntry] = []
@@ -178,14 +189,19 @@ def _generate_gpio(
         if not isinstance(config, dict):
             continue
         display_name = str(config.get("Label", config.get("Name", pin)))
-        variable = _identifier(display_name)
-        if pin.lower() in disabled or display_name.lower() in disabled or variable in disabled:
+        base_variable = _identifier(display_name)
+        if (
+            pin.lower() in disabled
+            or display_name.lower() in disabled
+            or base_variable in disabled
+        ):
             continue
         pin_macro = _macro(config.get("Macro"))
         group_macro = _macro(config.get("Group"))
         if not pin_macro or not group_macro:
             logging.warning("Skipping GPIO %s: missing SysConfig macro metadata", pin)
             continue
+        variable = _unique_identifier(display_name, used)
         cfg = _settings_for(settings, "GPIO", display_name)
         code.extend(
             [
@@ -225,7 +241,7 @@ def _spi_prescaler(cfg: Dict[str, Any]) -> str:
 
 
 def _generate_peripherals(
-    peripherals: Dict[str, Any], settings: Dict[str, Any], disabled: set
+    peripherals: Dict[str, Any], settings: Dict[str, Any], disabled: set, used: set
 ) -> Tuple[List[str], List[str], List[DeviceEntry]]:
     resources: List[str] = []
     code: List[str] = []
@@ -233,9 +249,10 @@ def _generate_peripherals(
     generated_types = set()
 
     for instance, config in peripherals.get("UART", {}).items():
-        variable = _identifier(instance)
-        if instance.lower() in disabled or variable in disabled:
+        base_variable = _identifier(instance)
+        if instance.lower() in disabled or base_variable in disabled:
             continue
+        variable = _unique_identifier(instance, used)
         cfg = _settings_for(settings, "UART", instance)
         rx_size = int(cfg.setdefault("rx_buffer_size", 256))
         tx_queue_size = int(cfg.setdefault("tx_queue_size", 16))
@@ -253,9 +270,10 @@ def _generate_peripherals(
         generated_types.add("UART")
 
     for instance, config in peripherals.get("I2C", {}).items():
-        variable = _identifier(instance)
-        if instance.lower() in disabled or variable in disabled:
+        base_variable = _identifier(instance)
+        if instance.lower() in disabled or base_variable in disabled:
             continue
+        variable = _unique_identifier(instance, used)
         cfg = _settings_for(settings, "I2C", instance)
         stage_size = int(cfg.setdefault("stage_buffer_size", 256))
         dma_min_size = int(cfg.setdefault("dma_min_size", 8))
@@ -271,8 +289,8 @@ def _generate_peripherals(
         generated_types.add("I2C")
 
     for instance, config in peripherals.get("SPI", {}).items():
-        variable = _identifier(instance)
-        if instance.lower() in disabled or variable in disabled:
+        base_variable = _identifier(instance)
+        if instance.lower() in disabled or base_variable in disabled:
             continue
         if not isinstance(config, dict):
             continue
@@ -286,6 +304,7 @@ def _generate_peripherals(
                 instance,
             )
             continue
+        variable = _unique_identifier(instance, used)
         buffer_size = int(cfg.setdefault("buffer_size", 256))
         dma_min_size = int(cfg.setdefault("dma_min_size", 3))
         resources.extend(
@@ -310,8 +329,8 @@ def _generate_peripherals(
         generated_types.add("SPI")
 
     for instance, config in peripherals.get("ADC", {}).items():
-        variable = _identifier(instance)
-        if instance.lower() in disabled or variable in disabled:
+        base_variable = _identifier(instance)
+        if instance.lower() in disabled or base_variable in disabled:
             continue
         if not isinstance(config, dict):
             continue
@@ -319,6 +338,7 @@ def _generate_peripherals(
         if not isinstance(memory_indices, list) or not memory_indices:
             logging.warning("Skipping ADC %s: no ADC memory indices were parsed", instance)
             continue
+        variable = _unique_identifier(instance, used)
         memory_indices = [int(index) for index in memory_indices]
         cfg = _settings_for(settings, "ADC", instance)
         filter_size = int(cfg.setdefault("filter_size", 4))
@@ -369,9 +389,10 @@ def _generate_peripherals(
                 if isinstance(channel_config, dict)
                 else f"{instance}_C{channel_index}"
             )
-            variable = _identifier(display_name)
-            if display_name.lower() in disabled or variable in disabled:
+            base_variable = _identifier(display_name)
+            if display_name.lower() in disabled or base_variable in disabled:
                 continue
+            variable = _unique_identifier(display_name, used)
             channel_cfg = _settings_for(settings, "PWM", display_name)
             channel_frequency = int(channel_cfg.setdefault("frequency_hz", frequency))
             duty_cycle = channel_cfg.setdefault(
@@ -393,8 +414,8 @@ def _generate_peripherals(
             generated_types.add("PWM")
 
     for instance, config in peripherals.get("MCAN", {}).items():
-        variable = _identifier(instance)
-        if instance.lower() in disabled or variable in disabled:
+        base_variable = _identifier(instance)
+        if instance.lower() in disabled or base_variable in disabled:
             continue
         if not isinstance(config, dict):
             continue
@@ -406,6 +427,7 @@ def _generate_peripherals(
                 instance,
             )
             continue
+        variable = _unique_identifier(instance, used)
         tx_pool_size = int(cfg.setdefault("tx_pool_size", 8))
         code.append(
             f"  static LibXR::MSPM0CAN {variable}(MSPM0_CAN_INIT({_macro(instance)}, {tx_pool_size}));"
@@ -451,11 +473,12 @@ def generate_code(
 ) -> str:
     use_hw_cntr = use_hw_cntr or use_xrobot
     disabled = _disabled(settings)
+    used_identifiers = {"timebase", "peripherals"}
     gpio_code, gpio_devices = _generate_gpio(
-        project.get("GPIO", {}), settings, disabled
+        project.get("GPIO", {}), settings, disabled, used_identifiers
     )
     resources, peripheral_code, peripheral_devices = _generate_peripherals(
-        project.get("Peripherals", {}), settings, disabled
+        project.get("Peripherals", {}), settings, disabled, used_identifiers
     )
     devices = gpio_devices + peripheral_devices
 
@@ -468,16 +491,17 @@ def generate_code(
     ]
     if gpio_code:
         headers.append('#include "mspm0_gpio.hpp"')
+    generated_interfaces = {interface for _, interface, _ in peripheral_devices}
     include_map = {
-        "UART": "mspm0_uart.hpp",
-        "I2C": "mspm0_i2c.hpp",
-        "SPI": "mspm0_spi.hpp",
-        "ADC": "mspm0_adc.hpp",
-        "PWM": "mspm0_pwm.hpp",
-        "MCAN": "mspm0_can.hpp",
+        "UART": ("UART", "mspm0_uart.hpp"),
+        "I2C": ("I2C", "mspm0_i2c.hpp"),
+        "SPI": ("SPI", "mspm0_spi.hpp"),
+        "ADC": ("ADC", "mspm0_adc.hpp"),
+        "PWM": ("PWM", "mspm0_pwm.hpp"),
+        "MCAN": ("CAN", "mspm0_can.hpp"),
     }
-    for group, header in include_map.items():
-        if peripheral_groups.get(group):
+    for group, (interface, header) in include_map.items():
+        if peripheral_groups.get(group) and interface in generated_interfaces:
             headers.append(f'#include "{header}"')
     if use_hw_cntr:
         headers.append('#include "app_framework.hpp"')
