@@ -17,7 +17,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(LIBXR_SYSTEM _LIBXR_SYSTEM_)
 set(LIBXR_DRIVER st)
 set(XROBOT_MODULES_DIR ${CMAKE_CURRENT_SOURCE_DIR}/Modules)
-add_subdirectory(Middlewares/Third_Party/LibXR)
+add_subdirectory(_LIBXR_SUBDIR_ _LIBXR_BINARY_DIR_)
 target_link_libraries(xr
     PUBLIC stm32cubemx
 )
@@ -138,12 +138,22 @@ def normalize_libxr_cmake(content: str, system: str) -> str:
     return content
 
 
-def update_or_create_libxr_cmake(file_path: str, system: str) -> None:
+def update_or_create_libxr_cmake(
+    file_path: str,
+    system: str,
+    libxr_subdir: str = "Middlewares/Third_Party/LibXR",
+) -> None:
     cmake_path = Path(file_path)
 
     if cmake_path.exists():
         content = read_text_with_fallback(str(cmake_path))
         new_content = normalize_libxr_cmake(content, system)
+        new_content = re.sub(
+            r"add_subdirectory\(\s*(?:\.\./)?Middlewares/Third_Party/LibXR(?:\s+[^)]+)?\)",
+            f"add_subdirectory({libxr_subdir} LibXR-build)",
+            new_content,
+            count=1,
+        )
         if new_content != content:
             cmake_path.write_text(new_content, encoding="utf-8")
             logging.info(f"Updated existing LibXR.CMake for system: {system}")
@@ -151,7 +161,10 @@ def update_or_create_libxr_cmake(file_path: str, system: str) -> None:
             logging.info("LibXR.CMake already up to date, no changes needed.")
     else:
         cmake_path.write_text(
-            LIBXR_CMAKE_TEMPLATE.replace("_LIBXR_SYSTEM_", system),
+            LIBXR_CMAKE_TEMPLATE
+            .replace("_LIBXR_SYSTEM_", system)
+            .replace("_LIBXR_SUBDIR_", libxr_subdir)
+            .replace("_LIBXR_BINARY_DIR_", "LibXR-build"),
             encoding="utf-8"
         )
         logging.info(f"Generated LibXR.CMake at: {cmake_path}")
@@ -200,6 +213,13 @@ def main():
 
     file_path = os.path.join(cmake_dir, "LibXR.CMake")
 
+    if os.path.isdir(os.path.join(input_directory, "Middlewares", "Third_Party", "LibXR")):
+        libxr_subdir = "Middlewares/Third_Party/LibXR"
+    elif os.path.isdir(os.path.join(input_directory, "..", "Middlewares", "Third_Party", "LibXR")):
+        libxr_subdir = "../Middlewares/Third_Party/LibXR"
+    else:
+        libxr_subdir = "Middlewares/Third_Party/LibXR"
+
     freertos_enable = os.path.exists(os.path.join(input_directory, "Core", "Inc", "FreeRTOSConfig.h"))
     threadx_enable = os.path.exists(os.path.join(input_directory, "Core", "Inc", "app_threadx.h"))
 
@@ -210,7 +230,7 @@ def main():
     else:
         system = "None"
 
-    update_or_create_libxr_cmake(file_path, system)
+    update_or_create_libxr_cmake(file_path, system, libxr_subdir)
     logging.info("LibXR.CMake generated/updated successfully.")
 
 

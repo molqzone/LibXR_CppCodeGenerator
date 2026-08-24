@@ -131,28 +131,15 @@ def detect_cube_contexts(ioc_file):
     return contexts
 
 
-def select_cube_context(ioc_file, requested=""):
-    """Select a context and its generated subproject directory."""
+def select_cube_contexts(ioc_file):
+    """Return all CubeMX contexts and their generated subproject directories."""
     contexts = detect_cube_contexts(ioc_file)
     if not contexts:
-        return None
-
-    if requested:
-        normalized = _normalize_context(requested)
-        matches = [item for item in contexts if item["normalized"] == normalized]
-        if not matches:
-            choices = ", ".join(item["name"] for item in contexts)
-            raise ValueError(f"Unknown CubeMX context '{requested}'. Available: {choices}")
-        selected = matches[0]
-    else:
-        # Prefer the context with actual application peripherals; this keeps the
-        # common CM7 application context as the default for dual-core projects.
-        generic = {"CORTEX_M4", "CORTEX_M7", "DEBUG", "PWR", "RCC", "GPIO", "DMA", "BDMA", "MDMA"}
-        selected = max(
-            contexts,
-            key=lambda item: sum(1 for ip in item["ips"] if ip.replace("_", "").upper() not in generic),
-        )
-    return selected
+        return []
+    project_dir = os.path.dirname(ioc_file)
+    for context in contexts:
+        context["project_dir"] = context_project_dir(project_dir, context)
+    return contexts
 
 
 def context_project_dir(project_dir, context_info):
@@ -467,10 +454,6 @@ def main():
     parser.add_argument("-d", "--directory", required=True, help="STM32CubeMX project directory")
     parser.add_argument("-t", "--terminal", default="", help="Optional terminal device source")
     parser.add_argument("--xrobot", action="store_true", help="Support XRobot")
-    parser.add_argument(
-        "--context", "--core", dest="context", default="",
-        help="CubeMX context/core to configure (for example CM7 or CortexM7)",
-    )
     parser.add_argument("--commit", default="", help="Specify locked LibXR commit hash")
     parser.add_argument("--git-source", default="auto",
                         help="Git source base URL or full repo URL, or 'auto'/'github' (default: auto)")
@@ -509,17 +492,21 @@ def main():
         sys.exit(1)
 
     try:
-        context_info = select_cube_context(ioc_file, args.context)
-        target_dir = context_project_dir(project_dir, context_info)
+        contexts = select_cube_contexts(ioc_file)
     except ValueError as error:
         logging.error(str(error))
         sys.exit(1)
 
-    # Validate the selected single-core subproject, or a regular single-core project.
-    ensure_valid_cubemx_project(target_dir)
-    context_name = context_info["name"] if context_info else ""
-    if context_info:
-        logging.info(f"Selected CubeMX context: {context_name} ({target_dir})")
+    if contexts:
+        for context in contexts:
+            ensure_valid_cubemx_project(context["project_dir"])
+        logging.info(
+            "Detected CubeMX contexts: "
+            + ", ".join(context["name"] for context in contexts)
+        )
+    else:
+        ensure_valid_cubemx_project(project_dir)
+        contexts = [{"name": "", "project_dir": project_dir}]
 
     # Select Git source (auto benchmarks default and mirrors)
     env_mirrors = os.environ.get("XR_GIT_MIRRORS", "")
@@ -548,21 +535,19 @@ def main():
 
     create_gitignore_file(project_dir)
 
-    # Create user directory
-    user_path = create_user_directory(target_dir)
+    for context in contexts:
+        context_name = context["name"]
+        target_dir = context["project_dir"]
+        if context_name:
+            logging.info(f"Configuring CubeMX context: {context_name} ({target_dir})")
 
-    # Define paths
-    yaml_output = os.path.join(target_dir, ".config.yaml")
-    cpp_output = os.path.join(user_path, "app_main.cpp")
+        user_path = create_user_directory(target_dir)
+        yaml_output = os.path.join(target_dir, ".config.yaml")
+        cpp_output = os.path.join(user_path, "app_main.cpp")
 
-    # Process .ioc file
-    process_ioc_file(project_dir, yaml_output, context_name)
-
-    # Generate C++ code
-    generate_cpp_code(yaml_output, cpp_output, xrobot_enable)
-
-    # Generate CMakeLists.txt with selected compiler
-    generate_cmake_file(target_dir)
+        process_ioc_file(project_dir, yaml_output, context_name)
+        generate_cpp_code(yaml_output, cpp_output, xrobot_enable)
+        generate_cmake_file(target_dir)
 
     # Handle optional terminal source
     if terminal_source:
