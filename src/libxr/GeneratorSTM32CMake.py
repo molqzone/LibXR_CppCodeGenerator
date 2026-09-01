@@ -14,13 +14,22 @@ LIBXR_CMAKE_TEMPLATE = (
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # LibXR
-set(LIBXR_SYSTEM _LIBXR_SYSTEM_)
+if(NOT DEFINED LIBXR_SYSTEM)
+    set(LIBXR_SYSTEM None)
+endif()
 set(LIBXR_DRIVER st)
 set(XROBOT_MODULES_DIR ${CMAKE_CURRENT_SOURCE_DIR}/Modules)
-add_subdirectory(_LIBXR_SUBDIR_ _LIBXR_BINARY_DIR_)
+if(NOT DEFINED LIBXR_SOURCE_DIR)
+    set(LIBXR_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/Middlewares/Third_Party/LibXR)
+endif()
+if(NOT DEFINED LIBXR_BINARY_DIR)
+    set(LIBXR_BINARY_DIR ${CMAKE_CURRENT_BINARY_DIR}/LibXR-build)
+endif()
+add_subdirectory(${LIBXR_SOURCE_DIR} ${LIBXR_BINARY_DIR})
 target_link_libraries(xr
     PUBLIC stm32cubemx
 )
+
 target_compile_features(xr PUBLIC cxx_std_20)
 
 set_target_properties(${CMAKE_PROJECT_NAME} PROPERTIES
@@ -75,10 +84,19 @@ endif()
 '''
 )
 
-include_cmake_cmd = "include(${CMAKE_CURRENT_LIST_DIR}/cmake/LibXR.CMake)\n"
+LIBXR_SUBDIRECTORY_SETUP = '''if(NOT DEFINED LIBXR_SOURCE_DIR)
+    set(LIBXR_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/Middlewares/Third_Party/LibXR)
+endif()
+if(NOT DEFINED LIBXR_BINARY_DIR)
+    set(LIBXR_BINARY_DIR ${CMAKE_CURRENT_BINARY_DIR}/LibXR-build)
+endif()
+add_subdirectory(${LIBXR_SOURCE_DIR} ${LIBXR_BINARY_DIR})'''
 
+LIBXR_SYSTEM_SETUP = '''if(NOT DEFINED LIBXR_SYSTEM)
+    set(LIBXR_SYSTEM None)
+endif()'''
 
-def normalize_libxr_cmake(content: str, system: str) -> str:
+def normalize_libxr_cmake(content: str) -> str:
     content = re.sub(
         r'^\s*set\s*\(\s*CMAKE_CXX_STANDARD\s+\d+\s*\)\s*\n?',
         '',
@@ -93,20 +111,44 @@ def normalize_libxr_cmake(content: str, system: str) -> str:
     )
     content = "set(CMAKE_CXX_STANDARD 20)\nset(CMAKE_CXX_STANDARD_REQUIRED ON)\n\n" + content.lstrip('\n')
 
-    system_pattern = re.compile(
-        r'(^\s*set\s*\(\s*LIBXR_SYSTEM\s+)(\S+)(\s*\)\s*)',
-        re.MULTILINE
+    guarded_system_pattern = re.compile(
+        r'^\s*if\s*\(\s*NOT\s+DEFINED\s+LIBXR_SYSTEM\s*\)\s*\n'
+        r'\s*set\s*\(\s*LIBXR_SYSTEM\s+\S+\s*\)\s*\n'
+        r'\s*endif\s*\(\s*\)\s*\n?',
+        re.MULTILINE,
     )
-    if system_pattern.search(content):
-        content = system_pattern.sub(rf'\1{system}\3', content, count=1)
+    if guarded_system_pattern.search(content):
+        content = guarded_system_pattern.sub(LIBXR_SYSTEM_SETUP + "\n", content, count=1)
+    elif re.search(r'^\s*set\s*\(\s*LIBXR_SYSTEM\s+\S+\s*\)', content, re.MULTILINE):
+        content = re.sub(
+            r'^\s*set\s*\(\s*LIBXR_SYSTEM\s+\S+\s*\)\s*\n?',
+            LIBXR_SYSTEM_SETUP + "\n",
+            content,
+            count=1,
+            flags=re.MULTILINE,
+        )
     else:
         content = re.sub(
             r'(^\s*set\s*\(\s*LIBXR_DRIVER\s+\S+\s*\)\s*$)',
-            f"set(LIBXR_SYSTEM {system})\n\\1",
+            LIBXR_SYSTEM_SETUP + "\n\\1",
             content,
             count=1,
             flags=re.MULTILINE
         )
+
+    content = re.sub(
+        r"if\(NOT DEFINED LIBXR_SOURCE_DIR\)[\s\S]*?"
+        r"add_subdirectory\(\$\{LIBXR_SOURCE_DIR\}\s+\$\{LIBXR_BINARY_DIR\}\)",
+        LIBXR_SUBDIRECTORY_SETUP,
+        content,
+        count=1,
+    )
+    content = re.sub(
+        r"add_subdirectory\(\s*(?:\.\./)?Middlewares/Third_Party/LibXR(?:\s+[^)]+)?\)",
+        LIBXR_SUBDIRECTORY_SETUP,
+        content,
+        count=1,
+    )
 
     content = re.sub(
         r'target_compile_features\s*\(\s*xr\s+PUBLIC\s+cxx_std_\d+\s*\)',
@@ -140,31 +182,20 @@ def normalize_libxr_cmake(content: str, system: str) -> str:
 
 def update_or_create_libxr_cmake(
     file_path: str,
-    system: str,
-    libxr_subdir: str = "Middlewares/Third_Party/LibXR",
 ) -> None:
     cmake_path = Path(file_path)
 
     if cmake_path.exists():
         content = read_text_with_fallback(str(cmake_path))
-        new_content = normalize_libxr_cmake(content, system)
-        new_content = re.sub(
-            r"add_subdirectory\(\s*(?:\.\./)?Middlewares/Third_Party/LibXR(?:\s+[^)]+)?\)",
-            f"add_subdirectory({libxr_subdir} LibXR-build)",
-            new_content,
-            count=1,
-        )
+        new_content = normalize_libxr_cmake(content)
         if new_content != content:
             cmake_path.write_text(new_content, encoding="utf-8")
-            logging.info(f"Updated existing LibXR.CMake for system: {system}")
+            logging.info("Updated existing shared LibXR.CMake.")
         else:
             logging.info("LibXR.CMake already up to date, no changes needed.")
     else:
         cmake_path.write_text(
-            LIBXR_CMAKE_TEMPLATE
-            .replace("_LIBXR_SYSTEM_", system)
-            .replace("_LIBXR_SUBDIR_", libxr_subdir)
-            .replace("_LIBXR_BINARY_DIR_", "LibXR-build"),
+            LIBXR_CMAKE_TEMPLATE,
             encoding="utf-8"
         )
         logging.info(f"Generated LibXR.CMake at: {cmake_path}")
@@ -180,6 +211,49 @@ def clean_cmake_build_dirs(input_directory: Union[str, Path]) -> None:
             removed = True
     if not removed:
         logging.info("No build or cmake-build* directory found, nothing to clean.")
+
+
+def project_root_for(input_directory: Path) -> Path:
+    input_directory = input_directory.resolve()
+    if (input_directory / "Middlewares" / "Third_Party" / "LibXR").is_dir():
+        return input_directory
+    parent = input_directory.parent
+    if (parent / "Middlewares" / "Third_Party" / "LibXR").is_dir():
+        return parent
+    return input_directory
+
+
+def cmake_include_block(input_directory: Path, project_root: Path, system: str) -> str:
+    relative_root = os.path.relpath(project_root, input_directory).replace(os.sep, "/")
+    prefix = "" if relative_root == "." else f"{relative_root}/"
+    return (
+        f"set(LIBXR_SYSTEM {system})\n"
+        f"set(LIBXR_SOURCE_DIR \"${{CMAKE_CURRENT_LIST_DIR}}/{prefix}Middlewares/Third_Party/LibXR\")\n"
+        f"include(${{CMAKE_CURRENT_LIST_DIR}}/{prefix}cmake/LibXR.CMake)\n"
+    )
+
+
+def update_cmake_include(input_directory: Path, project_root: Path, system: str) -> None:
+    main_cmake_path = input_directory / "CMakeLists.txt"
+    if not main_cmake_path.exists():
+        logging.error("CMakeLists.txt not found.")
+        exit(1)
+    content = read_text_with_fallback(str(main_cmake_path))
+    block = cmake_include_block(input_directory, project_root, system)
+    include_pattern = re.compile(
+        r"(?ms)^# Add LibXR\s*\n(?:set\(LIBXR_SYSTEM[^\n]*\)\s*\n)?"
+        r"(?:set\(LIBXR_SOURCE_DIR[^\n]*\)\s*\n)?"
+        r"include\(\$\{CMAKE_CURRENT_LIST_DIR\}/(?:\.\./)?cmake/LibXR\.CMake\)\s*\n?"
+    )
+    if include_pattern.search(content):
+        new_content = include_pattern.sub("# Add LibXR\n" + block, content, count=1)
+    else:
+        new_content = content.rstrip() + "\n\n# Add LibXR\n" + block
+    if new_content != content:
+        main_cmake_path.write_text(new_content, encoding="utf-8", newline="\n")
+        logging.info("LibXR.CMake shared include updated.")
+    else:
+        logging.info("LibXR.CMake shared include already up to date, no changes needed.")
 
 
 def read_text_with_fallback(path: str) -> str:
@@ -208,17 +282,12 @@ def main():
 
     clean_cmake_build_dirs(input_directory)
 
-    cmake_dir = os.path.join(input_directory, "cmake")
+    input_path = Path(input_directory).resolve()
+    project_root = project_root_for(input_path)
+    cmake_dir = project_root / "cmake"
     os.makedirs(cmake_dir, exist_ok=True)
 
-    file_path = os.path.join(cmake_dir, "LibXR.CMake")
-
-    if os.path.isdir(os.path.join(input_directory, "Middlewares", "Third_Party", "LibXR")):
-        libxr_subdir = "Middlewares/Third_Party/LibXR"
-    elif os.path.isdir(os.path.join(input_directory, "..", "Middlewares", "Third_Party", "LibXR")):
-        libxr_subdir = "../Middlewares/Third_Party/LibXR"
-    else:
-        libxr_subdir = "Middlewares/Third_Party/LibXR"
+    file_path = cmake_dir / "LibXR.CMake"
 
     freertos_enable = os.path.exists(os.path.join(input_directory, "Core", "Inc", "FreeRTOSConfig.h"))
     threadx_enable = os.path.exists(os.path.join(input_directory, "Core", "Inc", "app_threadx.h"))
@@ -230,20 +299,6 @@ def main():
     else:
         system = "None"
 
-    update_or_create_libxr_cmake(file_path, system, libxr_subdir)
+    update_or_create_libxr_cmake(file_path)
     logging.info("LibXR.CMake generated/updated successfully.")
-
-
-    main_cmake_path = os.path.join(input_directory, "CMakeLists.txt")
-    if os.path.exists(main_cmake_path):
-        cmake_content = read_text_with_fallback(main_cmake_path)
-
-        if include_cmake_cmd not in cmake_content:
-            with open(main_cmake_path, "a", encoding="utf-8", newline="\n") as f:
-                f.write('\n# Add LibXR\n' + include_cmake_cmd)
-            logging.info("LibXR.CMake included in CMakeLists.txt.")
-        else:
-            logging.info("LibXR.CMake already included in CMakeLists.txt.")
-    else:
-        logging.error("CMakeLists.txt not found.")
-        exit(1)
+    update_cmake_include(input_path, project_root, system)
