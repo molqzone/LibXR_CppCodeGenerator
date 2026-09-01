@@ -23,6 +23,8 @@ import yaml
 
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 
+_IOC_CONTEXT_KEY_RE = re.compile(r"^Mcu\.Context\d+$", re.IGNORECASE)
+
 
 # --------------------------
 # Utility Functions
@@ -1329,11 +1331,16 @@ def _extract_key_value_pairs(file_handler: TextIO) -> Dict[str, str]:
 
 def _ioc_context_name(value: str) -> str:
     """Normalize context names such as CM7, CortexM7, and Cortex_M7."""
-    normalized = value.strip().replace("_", "").replace("-", "").upper()
-    if normalized.startswith("CM") and normalized[2:].isdigit():
+    normalized = (
+        str(value)
+        .strip()
+        .replace("_", "")
+        .replace("-", "")
+        .replace("+", "PLUS")
+        .upper()
+    )
+    if re.fullmatch(r"CM\d+(?:PLUS)?", normalized):
         return f"CORTEXM{normalized[2:]}"
-    if normalized.startswith("CORTEXM") and normalized[7:].isdigit():
-        return normalized
     return normalized
 
 
@@ -1347,17 +1354,13 @@ def _context_aliases(context: str) -> set:
 
 def _context_ip_names(raw_map: Dict[str, str], context: str) -> set:
     """Return IP instance names assigned to a CubeMX context."""
-    aliases = _context_aliases(context)
+    normalized_context = _ioc_context_name(context)
     context_key = next(
-        (key for key in raw_map if key.startswith("Mcu.Context") and raw_map[key] in aliases),
+        (key for key in raw_map
+         if _IOC_CONTEXT_KEY_RE.fullmatch(key)
+         and _ioc_context_name(raw_map[key]) == normalized_context),
         None,
     )
-    if context_key is None:
-        context_key = next(
-            (key for key in raw_map if key.startswith("Mcu.Context")
-             and _ioc_context_name(raw_map[key]) in {_ioc_context_name(a) for a in aliases}),
-            None,
-        )
     if context_key is None:
         raise ValueError(f"Unknown CubeMX context: {context}")
 
@@ -1373,28 +1376,51 @@ def _context_ip_names(raw_map: Dict[str, str], context: str) -> set:
             continue
         names.add(item.split(":", 1)[0])
     names.add(context_name.upper())
+    names.add(normalized_context)
     return names
+
+
+def _context_ip_names_by_context(raw_map: Dict[str, str]) -> Dict[str, set]:
+    """Return all context-owned IP names for virtual-pin ownership checks."""
+    result: Dict[str, set] = {}
+    for key, context_name in raw_map.items():
+        if not _IOC_CONTEXT_KEY_RE.fullmatch(key) or not context_name.strip():
+            continue
+        ip_key = f"{context_name}.IPs"
+        if ip_key not in raw_map:
+            continue
+        normalized_context = _ioc_context_name(context_name)
+        names = result.setdefault(normalized_context, set())
+        for item in raw_map[ip_key].split(","):
+            item = item.strip().replace("\\:", ":")
+            if item:
+                names.add(item.split(":", 1)[0])
+        names.add(context_name.upper())
+        names.add(normalized_context)
+    return result
 
 
 def filter_ioc_context(raw_map: Dict[str, str], context: str) -> Dict[str, str]:
     """Keep global IOC settings and entries owned by one CubeMX context."""
     aliases = _context_aliases(context)
     normalized_context = _ioc_context_name(context)
-    context_number = (
+    context_suffix = (
         normalized_context[len("CORTEXM"):]
         if normalized_context.startswith("CORTEXM")
         else normalized_context
     )
     context_name = next(
         (value for key, value in raw_map.items()
-         if key.startswith("Mcu.Context") and _ioc_context_name(value) == normalized_context),
+         if _IOC_CONTEXT_KEY_RE.fullmatch(key)
+         and _ioc_context_name(value) == normalized_context),
         None,
     )
     if context_name is None:
         raise ValueError(f"Unknown CubeMX context: {context}")
 
     ip_names = _context_ip_names(raw_map, context_name)
-    nvic_prefix = f"NVIC{context_number}"
+    all_context_ip_names = _context_ip_names_by_context(raw_map)
+    nvic_prefix = f"NVIC{context_suffix}"
     kept: Dict[str, str] = {}
 
     for key, value in raw_map.items():
@@ -1421,13 +1447,30 @@ def filter_ioc_context(raw_map: Dict[str, str], context: str) -> Dict[str, str]:
                 kept[key] = value
             continue
 
-        # Virtual pins and context-suffixed middleware belong to their core.
+        # Virtual pins are assigned to the context whose IP list owns the
+        # longest matching signal prefix (for example SYS vs SYS_M4).
         if upper_prefix.startswith("VP_"):
-            if any(alias.replace("_", "") in upper_prefix.replace("_", "") for alias in aliases):
-                kept[key] = value
-            elif upper_prefix in {"VP_SYS_VS_SYSTICK", "VP_SYS_M4_VS_SYSTICK"}:
-                if context_number == "4" and "M4" in upper_prefix or context_number == "7" and "M4" not in upper_prefix:
+            signal = upper_prefix[3:].replace("_", "").replace("-", "")
+            owners = []
+            for owner, owner_ip_names in all_context_ip_names.items():
+                for ip_name in owner_ip_names:
+                    normalized_ip = (
+                        str(ip_name)
+                        .replace("_", "")
+                        .replace("-", "")
+                        .replace("+", "PLUS")
+                        .upper()
+                    )
+                    if normalized_ip and signal.startswith(normalized_ip):
+                        owners.append((len(normalized_ip), owner))
+            if owners:
+                longest = max(length for length, _ in owners)
+                if normalized_context in {
+                    owner for length, owner in owners if length == longest
+                }:
                     kept[key] = value
+            elif any(alias.replace("_", "") in upper_prefix.replace("_", "") for alias in aliases):
+                kept[key] = value
             continue
 
         if upper_prefix in {name.upper() for name in ip_names}:
@@ -1438,7 +1481,7 @@ def filter_ioc_context(raw_map: Dict[str, str], context: str) -> Dict[str, str]:
         if context_name and context_name.upper() in upper_prefix:
             kept[key] = value
             continue
-        if upper_prefix.endswith(f"_M{context_number}"):
+        if context_suffix and upper_prefix.endswith(f"_M{context_suffix}"):
             kept[key] = value
             continue
 

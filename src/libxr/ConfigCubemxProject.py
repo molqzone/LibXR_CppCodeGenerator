@@ -2,6 +2,7 @@
 
 import logging
 import os
+import re
 import subprocess
 import shlex
 import shutil
@@ -14,6 +15,15 @@ logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 DEFAULT_MIRRORS = [
     "https://gitee.com/jiu-xiao/libxr",
 ]
+
+SIMPLE_MULTICORE_LAYOUT_ERROR = (
+    "Cannot identify an unambiguous simple multi-core CubeMX project layout"
+)
+_IOC_CONTEXT_KEY_RE = re.compile(r"^Mcu\.Context(\d+)$", re.IGNORECASE)
+_SIMPLE_CORTEX_M_CONTEXT_RE = re.compile(r"^CORTEXM\d+(?:PLUS)?$")
+_MXPROJECT_CONTEXT_SECTION_RE = re.compile(
+    r"^(?P<context>.+):PreviousGenFiles$", re.IGNORECASE
+)
 
 
 def is_git_repo(path):
@@ -105,8 +115,15 @@ def _read_ioc_map(ioc_file):
 
 
 def _normalize_context(value):
-    value = value.strip().replace("_", "").replace("-", "").upper()
-    if value.startswith("CM") and value[2:].isdigit():
+    value = (
+        str(value)
+        .strip()
+        .replace("_", "")
+        .replace("-", "")
+        .replace("+", "PLUS")
+        .upper()
+    )
+    if re.fullmatch(r"CM\d+(?:PLUS)?", value):
         return f"CORTEXM{value[2:]}"
     return value
 
@@ -114,9 +131,10 @@ def _normalize_context(value):
 def detect_cube_contexts(ioc_file):
     """Return CubeMX context metadata from an IOC file."""
     raw_map = _read_ioc_map(ioc_file)
-    contexts = []
+    indexed_contexts = []
     for key, value in raw_map.items():
-        if not key.startswith("Mcu.Context") or key == "Mcu.ContextNb":
+        match = _IOC_CONTEXT_KEY_RE.fullmatch(key)
+        if match is None:
             continue
         name = value.strip()
         if not name:
@@ -127,18 +145,197 @@ def detect_cube_contexts(ioc_file):
             item = item.strip().replace("\\:", ":")
             if item:
                 ips.append(item.split(":", 1)[0])
-        contexts.append({"name": name, "normalized": _normalize_context(name), "ips": ips})
-    return contexts
+        indexed_contexts.append(
+            (
+                int(match.group(1)),
+                {"name": name, "normalized": _normalize_context(name), "ips": ips},
+            )
+        )
+    return [context for _, context in sorted(indexed_contexts, key=lambda item: item[0])]
+
+
+def _read_mxproject_sections(mxproject_file):
+    """Read the small INI-like section format emitted by CubeMX."""
+    sections = {}
+    current_section = None
+
+    with open(mxproject_file, "rb") as file:
+        raw_content = file.read()
+    content = None
+    for encoding in ("utf-8-sig", "gb18030"):
+        try:
+            content = raw_content.decode(encoding)
+            break
+        except UnicodeDecodeError:
+            continue
+    if content is None:
+        raise UnicodeDecodeError(".mxproject", raw_content, 0, len(raw_content), "unsupported encoding")
+
+    for raw_line in content.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or line.startswith(";"):
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            current_section = line[1:-1].strip()
+            sections.setdefault(current_section, {})
+            continue
+        if current_section is None or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        sections[current_section][key.strip()] = value.strip()
+
+    return sections
+
+
+def _read_mxproject_context_paths(project_dir):
+    """Return generated source/header paths grouped by CubeMX context."""
+    mxproject_file = os.path.join(project_dir, ".mxproject")
+    try:
+        sections = _read_mxproject_sections(mxproject_file)
+    except (OSError, UnicodeError) as error:
+        raise ValueError(SIMPLE_MULTICORE_LAYOUT_ERROR) from error
+
+    context_paths = {}
+    for section_name, values in sections.items():
+        match = _MXPROJECT_CONTEXT_SECTION_RE.fullmatch(section_name)
+        if match is None:
+            continue
+
+        normalized = _normalize_context(match.group("context"))
+        paths = context_paths.setdefault(normalized, [])
+        for key, value in values.items():
+            if key.lower().startswith(("sourcepath", "headerpath")):
+                paths.extend(item.strip() for item in value.split(";") if item.strip())
+
+    return context_paths
+
+
+def _is_within_directory(parent, child):
+    try:
+        return (
+            os.path.commonpath([os.path.realpath(parent), os.path.realpath(child)])
+            == os.path.realpath(parent)
+        )
+    except ValueError:
+        # Different Windows drives cannot share a project root.
+        return False
+
+
+def _find_local_project_dirs(project_dir, directory_name):
+    """Find local generated projects matching a directory name from .mxproject."""
+    root = os.path.realpath(project_dir)
+    matches = set()
+    for current, directories, _ in os.walk(root):
+        directories[:] = [
+            directory
+            for directory in directories
+            if directory not in {
+                ".git",
+                ".history",
+                "build",
+                "cmake-build-debug",
+                "cmake-build-release",
+            }
+        ]
+        if os.path.basename(current).casefold() != directory_name.casefold():
+            continue
+        if os.path.isdir(os.path.join(current, "Core")):
+            matches.add(os.path.realpath(current))
+    return matches
+
+
+def _project_dirs_from_mxproject_path(project_dir, generated_path):
+    """Resolve one .mxproject source/header path to local project directories."""
+    path_value = generated_path.strip().strip('"').strip("'")
+    if not path_value:
+        return set()
+
+    local_path = path_value.replace("\\", os.sep).replace("/", os.sep)
+    if os.path.isabs(local_path):
+        resolved_path = os.path.realpath(local_path)
+    else:
+        resolved_path = os.path.realpath(os.path.join(project_dir, local_path))
+    if (
+        os.path.basename(os.path.dirname(resolved_path)).casefold() == "core"
+        and os.path.basename(resolved_path).casefold() in {"src", "inc"}
+    ):
+        candidate = os.path.realpath(os.path.join(resolved_path, os.pardir, os.pardir))
+        if (
+            _is_within_directory(project_dir, candidate)
+            and os.path.isdir(os.path.join(candidate, "Core"))
+        ):
+            return {candidate}
+
+    # Older .mxproject files often contain absolute paths from the machine on
+    # which CubeMX generated the project. Use the directory immediately before
+    # Core as a stable hint, then resolve it within the current project root.
+    path_parts = [
+        part
+        for part in path_value.replace("\\", "/").split("/")
+        if part not in {"", ".", ".."}
+    ]
+    matches = set()
+    for index, part in enumerate(path_parts[:-1]):
+        if (
+            part.casefold() != "core"
+            or path_parts[index + 1].casefold() not in {"src", "inc"}
+        ):
+            continue
+        if index == 0:
+            continue
+        matches.update(_find_local_project_dirs(project_dir, path_parts[index - 1]))
+    return matches
+
+
+def _project_dirs_for_context(project_dir, context_info, context_paths):
+    paths = context_paths.get(context_info["normalized"], [])
+    project_dirs = set()
+    for generated_path in paths:
+        project_dirs.update(_project_dirs_from_mxproject_path(project_dir, generated_path))
+    return project_dirs
+
+
+def _is_simple_cortex_m_context(context_info):
+    return bool(_SIMPLE_CORTEX_M_CONTEXT_RE.fullmatch(context_info["normalized"]))
 
 
 def select_cube_contexts(ioc_file):
     """Return all CubeMX contexts and their generated subproject directories."""
     contexts = detect_cube_contexts(ioc_file)
-    if not contexts:
+    if len(contexts) < 2:
         return []
-    project_dir = os.path.dirname(ioc_file)
-    for context in contexts:
-        context["project_dir"] = context_project_dir(project_dir, context)
+
+    # Context entries describe generated targets, so accepting one or a
+    # non-standard target here would silently treat a different CubeMX layout
+    # as a normal multi-core project.
+    try:
+        raw_map = _read_ioc_map(ioc_file)
+        declared_count = raw_map.get("Mcu.ContextNb", "").strip()
+        if declared_count and (
+            not declared_count.isdigit() or int(declared_count) != len(contexts)
+        ):
+            raise ValueError
+        normalized_names = [context["normalized"] for context in contexts]
+        if (
+            len(set(normalized_names)) != len(normalized_names)
+            or not all(_is_simple_cortex_m_context(context) for context in contexts)
+        ):
+            raise ValueError
+
+        project_dir = os.path.dirname(os.path.abspath(ioc_file))
+        context_paths = _read_mxproject_context_paths(project_dir)
+        resolved_dirs = []
+        for context in contexts:
+            candidates = _project_dirs_for_context(project_dir, context, context_paths)
+            if len(candidates) != 1:
+                raise ValueError
+            context["project_dir"] = next(iter(candidates))
+            resolved_dirs.append(os.path.realpath(context["project_dir"]))
+        if len(set(resolved_dirs)) != len(resolved_dirs):
+            raise ValueError
+    except (KeyError, TypeError, ValueError, OSError, UnicodeError) as error:
+        raise ValueError(SIMPLE_MULTICORE_LAYOUT_ERROR) from error
+
     return contexts
 
 
@@ -146,19 +343,21 @@ def context_project_dir(project_dir, context_info):
     """Map a CubeMX context to its generated subproject directory."""
     if context_info is None:
         return project_dir
-    normalized = context_info["normalized"]
-    core_number = normalized[len("CORTEXM"):] if normalized.startswith("CORTEXM") else normalized
-    candidates = [
-        os.path.join(project_dir, f"CM{core_number}"),
-        os.path.join(project_dir, f"M{core_number}"),
-    ]
-    for candidate in candidates:
-        if os.path.isdir(os.path.join(candidate, "Core")):
-            return candidate
-    raise ValueError(
-        f"Cannot locate generated subproject for {context_info['name']} "
-        f"(expected CM{core_number}/Core or M{core_number}/Core)"
-    )
+
+    try:
+        normalized = context_info.get("normalized") or _normalize_context(context_info["name"])
+        context = {"normalized": normalized}
+        if not _is_simple_cortex_m_context(context):
+            raise ValueError
+        context_paths = _read_mxproject_context_paths(os.path.abspath(project_dir))
+        candidates = _project_dirs_for_context(
+            os.path.abspath(project_dir), context, context_paths
+        )
+        if len(candidates) != 1:
+            raise ValueError
+        return next(iter(candidates))
+    except (KeyError, TypeError, ValueError, OSError, UnicodeError) as error:
+        raise ValueError(SIMPLE_MULTICORE_LAYOUT_ERROR) from error
 
 
 def pick_git_base(default_base="https://github.com", mirrors=None, timeout=5.0):
