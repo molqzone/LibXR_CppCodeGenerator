@@ -19,7 +19,8 @@ keywords = ["code generation", "embedded systems", "automation"]
 dependencies = [
     "pyyaml",
     "requests",
-    "packaging"
+    "packaging",
+    "xr-syntax>=0.1.0"
 ]
 
 [project.urls]

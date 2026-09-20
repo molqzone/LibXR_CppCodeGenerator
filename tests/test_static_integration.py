@@ -129,6 +129,21 @@ LegacyUserCall(peripherals);
                 self.assertIn('static '+declaration, code)
         self.assertLess(code.index('extern "C" void app_main'), code.index('static STM32Timebase'))
 
+    def test_format_and_lint_regions_are_preserved(self):
+        generated = generator.generate_full_code(self.project, True, '')
+        existing = generated.replace(
+            '// clang-format off\n',
+            '// clang-format off\nlegacy_format_layout();\n',
+            1,
+        ).replace(
+            '// NOLINTBEGIN\n',
+            '// NOLINTBEGIN\nlegacy_lint_marker();\n',
+            1,
+        )
+        regenerated = generator.generate_full_code(self.project, True, existing)
+        self.assertIn('legacy_format_layout();', regenerated)
+        self.assertIn('legacy_lint_marker();', regenerated)
+
     def test_repeat_generation_is_idempotent(self):
         first = generator.generate_full_code(self.project, True, '')
         second = generator.generate_full_code(self.project, True, first)

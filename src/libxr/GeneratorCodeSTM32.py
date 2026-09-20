@@ -8,6 +8,7 @@ import sys
 import urllib.request
 import argparse
 import yaml
+from xr_syntax.cpp import CppDocument
 
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 
@@ -974,20 +975,40 @@ def _generate_extern_declarations(project_data: dict) -> str:
 
 
 def preserve_user_blocks(existing_code: str, section: int) -> str:
-    """Preserve user code between protection markers with enhanced pattern matching."""
-    patterns = {
-        1: (r'/\* User Code Begin 1 \*/(.*?)/\* User Code End 1 \*/', ''),
-        2: (r'/\* User Code Begin 2 \*/(.*?)/\* User Code End 2 \*/', ''),
-        3: (r'/\* User Code Begin 3 \*/(.*?)/\* User Code End 3 \*/', ''),
-    }
+    """Return one numbered User Code region using the structured C++ parser."""
+    document = CppDocument.parse(existing_code)
+    target = str(section)
+    for region in document.user_regions():
+        if region.name == target:
+            content = region.body_text.strip()
+            return "  " + content if section != 1 and content else content
+    return ""
 
-    if section not in patterns:
-        return ''
 
-    pattern, default = patterns[section]
-    match = re.search(pattern, existing_code, re.DOTALL)
-    content = match.group(1).strip() if match else default
-    return '  ' + content if section != 1 and content else content
+def _preserve_generated_regions(existing_code: str, generated_code: str) -> str:
+    """Preserve User Code, clang-format and NOLINT bodies during regeneration."""
+    previous = CppDocument.parse(existing_code)
+    current = CppDocument.parse(generated_code)
+    for getter in ("user_regions", "format_regions", "lint_regions"):
+        old_regions = getattr(previous, getter)()
+        new_regions = list(getattr(current, getter)())
+        used = set()
+        for old_region in old_regions:
+            match = next(
+                (
+                    (index, candidate)
+                    for index, candidate in enumerate(new_regions)
+                    if index not in used and candidate.name == old_region.name
+                ),
+                None,
+            )
+            if match is None:
+                continue
+            index, candidate = match
+            current = current.replace_region_body(candidate, old_region.body_text)
+            new_regions = list(getattr(current, getter)())
+            used.add(index)
+    return current.render_bytes().decode("utf-8", errors="surrogateescape")
 
 
 def _generate_core_system(project_data: dict) -> str:
@@ -1154,7 +1175,6 @@ def generate_full_code(project_data: dict, use_xrobot: bool, existing_code: str)
     components = [
         _generate_header_includes(use_xrobot),
         '/* User Code Begin 1 */',
-        preserve_user_blocks(existing_code, 1),
         '/* User Code End 1 */',
         '// NOLINTBEGIN',
         '// clang-format off',
@@ -1166,7 +1186,6 @@ def generate_full_code(project_data: dict, use_xrobot: bool, existing_code: str)
         '  // clang-format on',
         '  // NOLINTEND',
         '  /* User Code Begin 2 */',
-        preserve_user_blocks(existing_code, 2),
         '  /* User Code End 2 */',
         '  // clang-format off',
         '  // NOLINTBEGIN',
@@ -1179,12 +1198,12 @@ def generate_full_code(project_data: dict, use_xrobot: bool, existing_code: str)
         '  // clang-format on',
         '  // NOLINTEND',
         '  /* User Code Begin 3 */',
-        user_code_def_3.rstrip('\n') if preserve_user_blocks(existing_code, 3) == '' else '',
-        preserve_user_blocks(existing_code, 3),
+        user_code_def_3.rstrip('\n'),
         '  /* User Code End 3 */',
         '}'
     ]
-    return '\n'.join(filter(None, components))
+    generated = '\n'.join(filter(None, components))
+    return _preserve_generated_regions(existing_code, generated)
 
 
 def generate_app_main_header(output_dir: str) -> None:
