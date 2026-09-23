@@ -986,28 +986,26 @@ def preserve_user_blocks(existing_code: str, section: int) -> str:
 
 
 def _preserve_generated_regions(existing_code: str, generated_code: str) -> str:
-    """Preserve User Code, clang-format and NOLINT bodies during regeneration."""
+    """Preserve explicit User Code bodies; regenerate format/lint-protected code.
+
+    clang-format and NOLINT control tooling, not ownership of generated code.
+    Markers nested inside User Code remain part of the preserved user body.
+    """
     previous = CppDocument.parse(existing_code)
     current = CppDocument.parse(generated_code)
-    for getter in ("user_regions", "format_regions", "lint_regions"):
-        old_regions = getattr(previous, getter)()
-        new_regions = list(getattr(current, getter)())
-        used = set()
-        for old_region in old_regions:
-            match = next(
-                (
-                    (index, candidate)
-                    for index, candidate in enumerate(new_regions)
-                    if index not in used and candidate.name == old_region.name
-                ),
-                None,
-            )
-            if match is None:
-                continue
-            index, candidate = match
-            current = current.replace_region_body(candidate, old_region.body_text)
-            new_regions = list(getattr(current, getter)())
-            used.add(index)
+    used = set()
+    for old_region in previous.user_regions():
+        regions = list(current.user_regions())
+        match = next(
+            ((index, region) for index, region in enumerate(regions)
+             if index not in used and region.name == old_region.name),
+            None,
+        )
+        if match is None:
+            continue
+        index, region = match
+        current = current.replace_region_body(region, old_region.body_text)
+        used.add(index)
     return current.render_bytes().decode("utf-8", errors="surrogateescape")
 
 
