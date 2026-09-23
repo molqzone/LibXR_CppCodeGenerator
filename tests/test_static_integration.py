@@ -129,6 +129,17 @@ LegacyUserCall(peripherals);
                 self.assertIn('static '+declaration, code)
         self.assertLess(code.index('extern "C" void app_main'), code.index('static STM32Timebase'))
 
+    def test_dma_cache_alignment_builds_with_older_cmsis(self):
+        """Cache-line alignment must not require __SCB_DCACHE_LINE_SIZE (absent in old F7 CMSIS)."""
+        project = copy.deepcopy(self.project)
+        project['Peripherals'] = {'ADC': {'ADC1': {'Channels': ['ADC_CHANNEL_0'],
+                                                   'DMA_Request': {'Mode': 'DMA_CIRCULAR'}}}}
+        code = generator.generate_dma_resources(project)
+        self.assertIn('alignas(XR_DCACHE_LINE_SIZE)', code)
+        self.assertNotIn('alignas(__SCB_DCACHE_LINE_SIZE)', code)
+        self.assertIn('#if defined(__SCB_DCACHE_LINE_SIZE)', code)
+        self.assertIn('#define XR_DCACHE_LINE_SIZE 32U', code)
+
     def test_generated_format_and_lint_bodies_are_refreshed(self):
         generated = generator.generate_full_code(self.project, True, '')
         existing = generated.replace(

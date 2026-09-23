@@ -422,7 +422,7 @@ def generate_dma_resources(project_data: dict) -> str:
         # padding. Keep the array extent so RawData and split buffers are unchanged.
         return "\n".join([
             "#if defined(__DCACHE_PRESENT) && (__DCACHE_PRESENT == 1U)",
-            "static struct alignas(__SCB_DCACHE_LINE_SIZE)",
+            "static struct alignas(XR_DCACHE_LINE_SIZE)",
             "{",
             f"  {data_type} data[{count}];",
             f"}} {name}_storage{section};",
@@ -564,7 +564,18 @@ def generate_dma_resources(project_data: dict) -> str:
 
     # Final output with section header if any code generated
     if dma_code:
-        output = "/* DMA Resources */\n"
+        # Older CMSIS core_cm7.h (e.g. STM32F7 Cube packs) lacks the line-size
+        # macro; the Cortex-M7 data cache line is fixed at 32 bytes.
+        output = "\n".join([
+            "/* DMA Resources */",
+            "#if defined(__DCACHE_PRESENT) && (__DCACHE_PRESENT == 1U)",
+            "#if defined(__SCB_DCACHE_LINE_SIZE)",
+            "#define XR_DCACHE_LINE_SIZE __SCB_DCACHE_LINE_SIZE",
+            "#else",
+            "#define XR_DCACHE_LINE_SIZE 32U",
+            "#endif",
+            "#endif",
+        ]) + "\n"
         output += "\n".join(dma_code)
     else:
         output = "/* No DMA Resources generated. */"
