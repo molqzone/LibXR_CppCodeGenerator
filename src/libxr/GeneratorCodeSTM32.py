@@ -12,12 +12,12 @@ from xr_syntax.cpp import CppDocument
 
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 
-PIN_DERIVED_GPIO_ALIAS_RE = re.compile(r"^(P[A-K]\d+)(?:_|$)")
 
 # --------------------------
 # Global Configuration
 # --------------------------
-device_aliases = {"power_manager": {"type": "PowerManager", "aliases": ["power_manager"]}}
+# Generated device objects and their LibXR interface, registered with XR_REGISTER.
+registered_devices = {"power_manager": "PowerManager"}
 libxr_settings = {
     "terminal_source": "",
     "software_timer": {"priority": 2, "stack_depth": 1024},
@@ -42,65 +42,11 @@ libxr_settings = {
 # --------------------------
 # Configuration Initialization
 # --------------------------
-def _normalize_alias_list(aliases) -> list:
-    if aliases is None:
-        return []
-    if isinstance(aliases, (list, tuple, set)):
-        return [str(alias) for alias in aliases if alias is not None]
-    return [str(aliases)]
-
-
-def _normalize_device_alias_entry(dev: str, entry) -> dict:
-    if isinstance(entry, dict):
-        dev_type = entry.get("type", "Unknown") or "Unknown"
-        aliases = _normalize_alias_list(entry.get("aliases", []))
-    elif isinstance(entry, (list, tuple, set, str)):
-        dev_type = "Unknown"
-        aliases = _normalize_alias_list(entry)
-    else:
-        logging.warning(f"Ignoring invalid device alias entry for '{dev}'")
-        return None
-
-    return {
-        "type": str(dev_type),
-        "aliases": aliases,
-    }
-
-
-def _normalize_device_aliases(raw_aliases) -> dict:
-    if raw_aliases is None:
-        return {}
-    if not isinstance(raw_aliases, dict):
-        logging.warning("Ignoring invalid device_aliases config, expected a mapping")
-        return {}
-
-    normalized = {}
-    for dev, entry in raw_aliases.items():
-        dev_name = str(dev)
-        meta = _normalize_device_alias_entry(dev_name, entry)
-        if meta is not None:
-            normalized[dev_name] = meta
-
-    return normalized
-
-
-def initialize_device_aliases(use_xrobot: bool) -> None:
-    global device_aliases
-    device_aliases.clear()
-
-    if not use_xrobot:
-        return
-
-    saved_aliases = _normalize_device_aliases(libxr_settings.get("device_aliases", {}))
-
-    # 插入默认设备
-    if "power_manager" not in saved_aliases:
-        saved_aliases["power_manager"] = {
-            "type": "PowerManager",
-            "aliases": ["power_manager"]
-        }
-
-    device_aliases.update(saved_aliases)
+def initialize_registry(use_xrobot: bool) -> None:
+    """Reset the generated-device registry; only XRobot output registers devices."""
+    registered_devices.clear()
+    if use_xrobot:
+        registered_devices["power_manager"] = "PowerManager"
 
 
 # --------------------------
@@ -126,22 +72,7 @@ def parse_arguments():
 # Device Registration
 # --------------------------
 def _register_device(name: str, dev_type: str):
-    global device_aliases
-    if name not in device_aliases:
-        device_aliases[name] = {
-            "type": dev_type,
-            "aliases": [name]
-        }
-        return
-
-    meta = _normalize_device_alias_entry(name, device_aliases[name])
-    if meta is None:
-        meta = {"type": dev_type, "aliases": [name]}
-    device_aliases[name] = meta
-    meta["type"] = dev_type
-    aliases = meta.setdefault("aliases", [])
-    if name not in aliases:
-        aliases.append(name)
+    registered_devices[name] = dev_type
 
 
 # --------------------------
@@ -177,12 +108,6 @@ def load_configuration(file_path: str, use_xrobot: bool) -> dict:
     try:
         with open(file_path, "r", encoding="utf-8") as f:
             config = yaml.safe_load(f)
-
-            if use_xrobot:
-                if 'device_aliases' in config:
-                    libxr_settings['device_aliases'] = _normalize_device_aliases(
-                        config['device_aliases']
-                    )
 
             # Basic schema validation
             required_sections = ["Mcu", "GPIO", "Peripherals"]
@@ -276,6 +201,17 @@ def load_libxr_config(output_dir: str, config_source: str) -> None:
         logging.warning(f"Failed to process library config: {str(e)}")
 
 
+def save_libxr_config(config_path: str) -> None:
+    """Write the effective settings, dropping empty sections and legacy keys."""
+    # device_aliases was the legacy runtime alias table; it is no longer used.
+    cleaned_config = {
+        k: v for k, v in libxr_settings.items()
+        if not (isinstance(v, dict) and len(v) == 0) and k != "device_aliases"
+    }
+    with open(config_path, "w", encoding="utf-8", newline="\n") as f:
+        yaml.dump(cleaned_config, f, allow_unicode=True, sort_keys=False)
+
+
 def _deep_merge(base: dict, update: dict) -> dict:
     """Recursively merge nested dictionaries with type checking."""
     for key, value in update.items():
@@ -317,46 +253,6 @@ def generate_gpio_alias(port: str, gpio_data: dict, project_data: dict) -> str:
     _register_device(var_name, "GPIO")
 
     return f"{var_name}({port_define}, {pin_define}{irq_str})"
-
-
-def _merge_pin_derived_gpio_aliases() -> None:
-    """Attach stale pin-derived GPIO aliases to the currently generated pin object.
-
-    Older ``libxr_config.yaml`` files may retain aliases such as
-    ``PC14_OSC32_IN`` from CubeMX pin tokens. When the current IOC has no
-    ``GPIO_Label`` for that pin, the generator creates the C++ object as the
-    physical pin name, for example ``PC14``. In that case the old name should
-    remain a hardware alias, not a separate C++ variable reference.
-    """
-    global device_aliases
-    device_aliases = _normalize_device_aliases(device_aliases)
-
-    for dev, meta in list(device_aliases.items()):
-        if meta.get("type") not in ("GPIO", "Unknown"):
-            continue
-
-        candidates = [dev]
-        candidates.extend(_normalize_alias_list(meta.get("aliases", [])))
-        target = None
-        for candidate in candidates:
-            match = PIN_DERIVED_GPIO_ALIAS_RE.match(str(candidate))
-            if match:
-                pin_name = match.group(1)
-                pin_meta = device_aliases.get(pin_name)
-                if isinstance(pin_meta, dict) and pin_meta.get("type") == "GPIO":
-                    target = pin_name
-                    break
-
-        if target is None or target == dev:
-            continue
-
-        target_meta = device_aliases[target]
-        aliases = set(_normalize_alias_list(target_meta.get("aliases", [])))
-        aliases.add(target)
-        aliases.add(dev)
-        aliases.update(_normalize_alias_list(meta.get("aliases", [])))
-        target_meta["aliases"] = sorted(aliases)
-        del device_aliases[dev]
 
 
 def _get_exti_irq(pin_num: int, port: str, is_exti: bool, mcu_family: str) -> str:
@@ -1102,8 +998,7 @@ def configure_terminal(project_data: dict) -> str:
     if terminal_source != "":
         dev = terminal_source.lower()
         # Device must be registered and of type UART, otherwise log a warning and skip
-        info = device_aliases.get(dev)
-        if not info or info.get("type") != "UART":
+        if registered_devices.get(dev) != "UART":
             logging.warning(f"terminal_source '{terminal_source}' is not registered as UART, terminal will not be initialized!")
             return code
         dev = terminal_source.upper()
@@ -1154,20 +1049,13 @@ def configure_terminal(project_data: dict) -> str:
 def generate_xrobot_registrations() -> str:
     """Expose named BSP objects to the static entry without a runtime container.
 
-    Peripheral generation already materializes ADC/PWM channels as named C++
-    references. Saved string aliases remain optional generator configuration;
-    they are not emitted as a second runtime lookup system.
+    Every generated device object is registered under its own C++ name; the
+    YAML configuration selects hardware by these names.
     """
-    _merge_pin_derived_gpio_aliases()
-    libxr_settings["device_aliases"] = {
-        name: {"type": meta["type"], "aliases": sorted(set(meta.get("aliases", [])))}
-        for name, meta in device_aliases.items()
-    }
     lines = []
-    for name, meta in device_aliases.items():
+    for name, cpp_type in registered_devices.items():
         if not re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]*", name):
             raise ValueError(f"Static registration needs an existing C++ name: {name}")
-        cpp_type = meta["type"]
         if not isinstance(cpp_type, str) or not cpp_type or cpp_type == "Unknown":
             raise ValueError(f"Explicit registration type is missing for {name}")
         if not cpp_type.startswith("LibXR::"):
@@ -1314,7 +1202,7 @@ def main():
         # Load configurations
         project_data = load_configuration(args.input, use_xrobot)
         load_libxr_config(os.path.dirname(args.output), args.libxr_config)
-        initialize_device_aliases(use_xrobot)
+        initialize_registry(use_xrobot)
 
         output_dir = os.path.dirname(args.output)
         os.makedirs(output_dir, exist_ok=True)
@@ -1335,13 +1223,7 @@ def main():
 
         config_path = os.path.join(output_dir, "libxr_config.yaml")
 
-        with open(config_path, "w", encoding="utf-8", newline="\n") as f:
-            cleaned_config = {
-                k: v for k, v in libxr_settings.items()
-                if not (isinstance(v, dict) and len(v) == 0)
-                   and not (k == "device_aliases" and not args.xrobot)
-            }
-            yaml.dump(cleaned_config, f, allow_unicode=True, sort_keys=False)
+        save_libxr_config(config_path)
 
         logging.info(f"Successfully generated: {output_dir}")
 

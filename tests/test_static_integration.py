@@ -15,7 +15,7 @@ class StaticEntry(unittest.TestCase):
     def setUp(self):
         importlib.reload(generator)
         self.project = {'Mcu': {'Type': 'STM32F407IGH6', 'Family': 'STM32F4'}, 'GPIO': {}, 'Peripherals': {}}
-        generator.initialize_device_aliases(True)
+        generator.initialize_registry(True)
 
     def test_new_xrobot_default_is_static(self):
         code = generator.generate_full_code(self.project, True, '')
@@ -33,7 +33,7 @@ class StaticEntry(unittest.TestCase):
         self.assertNotIn('#include "app_framework.hpp"', code)
 
     def test_libxr_only_has_no_tooling_dependency(self):
-        generator.initialize_device_aliases(False)
+        generator.initialize_registry(False)
         code = generator.generate_full_code(self.project, False, '')
         self.assertNotIn('XR_REGISTER', code)
         self.assertNotIn('xrobot_main.hpp', code)
@@ -47,7 +47,7 @@ class StaticEntry(unittest.TestCase):
         self.assertEqual(error.exception.code, 2)
 
     def test_named_channels_and_template_types(self):
-        generator.device_aliases.clear()
+        generator.registered_devices.clear()
         generator._register_device('adc0', 'ADC')
         generator._register_device('terminal', 'Terminal<32, 64, 8, 5>')
         text = generator.generate_xrobot_registrations()
@@ -57,7 +57,7 @@ class StaticEntry(unittest.TestCase):
         self.assertNotIn('"adc0"', text)
 
     def test_unnamed_registration_is_diagnosed(self):
-        generator.device_aliases.clear()
+        generator.registered_devices.clear()
         generator._register_device('adc.GetChannel(0)', 'ADC')
         with self.assertRaisesRegex(ValueError, r'existing C\+\+ name'):
             generator.generate_xrobot_registrations()
