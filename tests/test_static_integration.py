@@ -56,6 +56,16 @@ class StaticEntry(unittest.TestCase):
         self.assertNotIn('Entry<', text)
         self.assertNotIn('"adc0"', text)
 
+    def test_legacy_device_aliases_are_dropped(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / 'libxr_config.yaml'
+            path.write_text('device_aliases:\n  usart3:\n    type: UART\n    aliases: [uart_dr16]\n', encoding='utf-8')
+            generator.load_libxr_config(temporary, '')
+            generator.save_libxr_config(str(path))
+            text = path.read_text(encoding='utf-8')
+            self.assertNotIn('device_aliases', text)
+            self.assertNotIn('uart_dr16', text)
+
     def test_unnamed_registration_is_diagnosed(self):
         generator.registered_devices.clear()
         generator._register_device('adc.GetChannel(0)', 'ADC')
