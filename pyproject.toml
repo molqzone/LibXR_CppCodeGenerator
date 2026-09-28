@@ -20,7 +20,7 @@ dependencies = [
     "pyyaml",
     "requests",
     "packaging",
-    "xr-syntax>=0.1.0"
+    "xr-syntax==0.2.0"
 ]
 
 [project.urls]
