@@ -20,6 +20,7 @@ dependencies = [
     "pyyaml",
     "requests",
     "packaging",
+    "ruamel.yaml>=0.17.21,<0.19",
     "xr-syntax==0.2.0"
 ]
 

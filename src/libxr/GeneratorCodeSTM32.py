@@ -10,6 +10,9 @@ import argparse
 import yaml
 from xr_syntax.cpp import CppDocument, identifier_occurrences
 
+from libxr import LibXRConfigFile as libxr_config_file
+from libxr.LibXRConfigFile import LibXRConfigError
+
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 
 
@@ -39,6 +42,8 @@ libxr_settings = {
     },
     "SYSTEM": "None"
 }
+# Round-trip document of the loaded libxr_config.yaml (comments, user keys).
+libxr_config_document = None
 
 
 # --------------------------
@@ -182,62 +187,78 @@ def load_configuration(file_path: str, use_xrobot: bool) -> dict:
 # Library Configuration
 # --------------------------
 def load_libxr_config(output_dir: str, config_source: str) -> None:
-    """Load or create library configuration with version compatibility check."""
-    global libxr_settings
+    """Load libxr_config.yaml (or --libxr-config) into the effective settings.
+
+    A configuration that exists but cannot be read or parsed stops
+    generation; defaults never silently replace it.
+    """
+    global libxr_settings, libxr_config_document
     config_path = os.path.join(output_dir, "libxr_config.yaml")
 
     if config_source:
-        try:
-            external_cfg = {}
-            if config_source.startswith("http://") or config_source.startswith("https://"):
-                logging.info(f"Downloading libxr_config.yaml from {config_source}")
+        if config_source.startswith("http://") or config_source.startswith("https://"):
+            logging.info(f"Downloading libxr_config.yaml from {config_source}")
+            try:
                 with urllib.request.urlopen(config_source) as response:
-                    external_cfg = yaml.safe_load(response.read().decode()) or {}
-            elif os.path.exists(config_source):
-                logging.info(f"Using external libxr_config.yaml from {config_source}")
-                with open(config_source, "r", encoding="utf-8") as f:
-                    external_cfg = yaml.safe_load(f) or {}
-            else:
-                logging.warning(f"Cannot locate config source: {config_source}")
-                return
-
-            external_cfg.pop("SYSTEM", None)
-
-            libxr_settings = _deep_merge(libxr_settings, external_cfg)
-        except Exception as e:
-            logging.warning(f"Failed to load external config: {e}")
+                    text = response.read().decode("utf-8")
+            except (OSError, UnicodeDecodeError) as error:
+                raise LibXRConfigError(f"Cannot download {config_source}: {error}") from error
+            document, saved_config = libxr_config_file.parse(text, config_source)
+        elif os.path.exists(config_source):
+            logging.info(f"Using external libxr_config.yaml from {config_source}")
+            document, saved_config = libxr_config_file.read(config_source)
+        else:
+            raise LibXRConfigError(f"Cannot locate config source: {config_source}")
+    elif os.path.exists(config_path):
+        document, saved_config = libxr_config_file.read(config_path)
+        if saved_config.get("config_version", 1) > 1:
+            logging.warning("Config file format is newer than expected")
+    else:
+        logging.info("Creating new library configuration file")
+        libxr_config_document = libxr_config_file.new_document()
         return
 
-    try:
-        if os.path.exists(config_path):
-            with open(config_path, "r", encoding="utf-8") as f:
-                saved_config = yaml.safe_load(f) or {}
+    saved_config.pop("SYSTEM", None)
+    libxr_settings = _deep_merge(libxr_settings, saved_config)
+    libxr_config_document = document
 
-                if saved_config.get("config_version", 1) > 1:
-                    logging.warning("Config file format is newer than expected")
 
-                saved_config.pop("SYSTEM", None)
-
-                libxr_settings = _deep_merge(libxr_settings, saved_config)
-        else:
-            logging.info("Creating new library configuration file")
-            os.makedirs(output_dir, exist_ok=True)
-            with open(config_path, "w", encoding="utf-8", newline="\n") as f:
-                yaml.dump(libxr_settings, f, allow_unicode=True, sort_keys=False)
-
-    except Exception as e:
-        logging.warning(f"Failed to process library config: {str(e)}")
+def _report_dropped_device_aliases(aliases) -> None:
+    """Name every alias of the removed device_aliases table for migration."""
+    pairs = []
+    if isinstance(aliases, dict):
+        for device, entry in aliases.items():
+            names = entry.get("aliases", []) if isinstance(entry, dict) else entry
+            if isinstance(names, str):
+                names = [names]
+            for name in names or []:
+                pairs.append(f"{name} -> {device}")
+    logging.warning(
+        "Removed the legacy device_aliases table from libxr_config.yaml; generated "
+        "objects are registered only under their own names. Update configurations "
+        "that used these aliases (alias -> device):")
+    for pair in pairs or [repr(aliases)]:
+        logging.warning(f"  {pair}")
 
 
 def save_libxr_config(config_path: str) -> None:
-    """Write the effective settings, dropping empty sections and legacy keys."""
+    """Write the effective settings, dropping empty sections and legacy keys.
+
+    Keys the generator does not interpret (such as the ``generator`` pin) and
+    comments are kept.
+    """
     # device_aliases was the legacy runtime alias table; it is no longer used.
+    if "device_aliases" in libxr_settings:
+        _report_dropped_device_aliases(libxr_settings["device_aliases"])
     cleaned_config = {
         k: v for k, v in libxr_settings.items()
         if not (isinstance(v, dict) and len(v) == 0) and k != "device_aliases"
     }
-    with open(config_path, "w", encoding="utf-8", newline="\n") as f:
-        yaml.dump(cleaned_config, f, allow_unicode=True, sort_keys=False)
+    document = libxr_config_document
+    if document is None:
+        document = libxr_config_file.new_document()
+    libxr_config_file.update(document, cleaned_config)
+    libxr_config_file.write(config_path, document)
 
 
 def _deep_merge(base: dict, update: dict) -> dict:
@@ -248,7 +269,8 @@ def _deep_merge(base: dict, update: dict) -> dict:
             if isinstance(node, dict):
                 _deep_merge(node, value)
             else:
-                logging.warning(f"Config type conflict for key '{key}', expected dict")
+                raise LibXRConfigError(
+                    f"Config type conflict for key '{key}': expected {type(node).__name__}, got a mapping")
         else:
             base[key] = value
     return base
