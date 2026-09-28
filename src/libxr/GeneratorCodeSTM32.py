@@ -1425,13 +1425,13 @@ def main():
 
         use_xrobot = args.xrobot
 
+        # A bare file name writes into the current directory.
+        output_dir = os.path.dirname(args.output) or os.curdir
+
         # Load configurations
         project_data = load_configuration(args.input, use_xrobot)
-        load_libxr_config(os.path.dirname(args.output), args.libxr_config)
+        load_libxr_config(output_dir, args.libxr_config)
         initialize_registry(use_xrobot)
-
-        output_dir = os.path.dirname(args.output)
-        os.makedirs(output_dir, exist_ok=True)
 
         # Generate code
         existing_code = ""
@@ -1442,6 +1442,7 @@ def main():
         output_code = generate_full_code(project_data, use_xrobot, existing_code)
 
         # Write output
+        os.makedirs(output_dir, exist_ok=True)
         with open(args.output, "w", encoding="utf-8", newline="\n") as f:
             f.write(output_code)
 

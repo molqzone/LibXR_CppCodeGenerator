@@ -2,6 +2,7 @@
 import contextlib
 import importlib
 import io
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -114,6 +115,17 @@ class LibXRConfigFile(unittest.TestCase):
     def test_missing_explicit_config_source_is_an_error(self):
         with self.assertRaisesRegex(config_file.LibXRConfigError, 'Cannot locate'):
             generator.load_libxr_config(str(self.directory), str(self.directory / 'absent.yaml'))
+
+    def test_bare_output_file_name_writes_into_current_directory(self):
+        (self.directory / 'input.yaml').write_text(yaml.safe_dump(PROJECT), encoding='utf-8')
+        argv = ['xr_gen_code_stm32', '-i', 'input.yaml', '-o', 'app_main.cpp']
+        previous = Path.cwd()
+        os.chdir(self.directory)
+        self.addCleanup(os.chdir, previous)
+        with patch('sys.argv', argv), patch('libxr.PackageInfo.LibXRPackageInfo.check_and_print'):
+            generator.main()
+        for name in ('app_main.cpp', 'app_main.h', 'libxr_config.yaml', 'flash_map.hpp'):
+            self.assertTrue((self.directory / name).is_file(), name)
 
     def test_failed_generation_writes_nothing(self):
         (self.directory / 'input.yaml').write_text(yaml.safe_dump(PROJECT), encoding='utf-8')
