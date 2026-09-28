@@ -8,7 +8,7 @@ import sys
 import urllib.request
 import argparse
 import yaml
-from xr_syntax.cpp import CppDocument
+from xr_syntax.cpp import CppDocument, identifier_occurrences
 
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 
@@ -261,6 +261,74 @@ def _sanitize_cpp_identifier(name: str) -> str:
     return re.sub(r'\W|^(?=\d)', '_', name)
 
 
+CPP_KEYWORDS = frozenset("""
+alignas alignof and and_eq asm auto bitand bitor bool break case catch char
+char8_t char16_t char32_t class compl concept const consteval constexpr
+constinit const_cast continue co_await co_return co_yield decltype default
+delete do double dynamic_cast else enum explicit export extern false float for
+friend goto if inline int long mutable namespace new noexcept not not_eq
+nullptr operator or or_eq private protected public register reinterpret_cast
+requires return short signed sizeof static static_assert static_cast struct
+switch template this thread_local throw true try typedef typeid typename union
+unsigned using virtual void volatile wchar_t while xor xor_eq
+""".split())
+
+# Object-like CMSIS/HAL macros a GPIO object name would be expanded into.
+_CMSIS_INSTANCE_MACRO = re.compile(
+    r"GPIO[A-Z]|(?:ADC|DAC|TIM|LPTIM|HRTIM|SPI|I2S|I2C|I3C|USART|UART|LPUART|"
+    r"CAN|FDCAN|DMA|BDMA|GPDMA|HPDMA|LPDMA|MDMA|DMAMUX|DMA2D|SAI|SDMMC|SDIO|"
+    r"QUADSPI|OCTOSPI|OCTOSPIM|XSPI|FMC|FSMC|COMP|OPAMP|DFSDM|MDF|ADF|IWDG|"
+    r"WWDG|RTC|TAMP|CRC|RNG|HASH|CRYP|AES|SAES|PKA|ETH|LTDC|DCMI|DCMIPP|PSSI|"
+    r"USB_OTG_FS|USB_OTG_HS|USB|UCPD|TSC|LCD|CEC|SPDIFRX|SWPMI|MDIOS|RCC|PWR|"
+    r"FLASH|EXTI|SYSCFG|DBGMCU|SCB|NVIC|SysTick|MPU|FPU|ITM|DWT|CoreDebug|TPI|"
+    r"ICACHE|DCACHE|GTZC|VREFBUF|CORDIC|FMAC|JPEG|RAMCFG|OTFDEC|IPCC|HSEM)\d*")
+_HAL_MACROS = frozenset({"NULL", "UNUSED", "UID_BASE"})
+
+
+def _gpio_object_name(port: str, gpio_data: dict) -> str:
+    return _sanitize_cpp_identifier(gpio_data.get("Label", "") or port)
+
+
+def check_gpio_names(project_data: dict, generated_code: str, use_xrobot: bool) -> None:
+    """Reject GPIO object names that the generated app_main cannot declare.
+
+    A GPIO object is named after its CubeMX label. A label that is a C++
+    keyword or reserved identifier, a CMSIS/HAL macro, a macro CubeMX derives
+    from another label, or any other name the generated code uses would fail
+    to compile or silently shadow that name inside app_main.
+    """
+    gpio = project_data.get("GPIO", {})
+    label_macros = {}
+    for data in gpio.values():
+        label = data.get("Label", "")
+        if label:
+            for suffix in ("_Pin", "_GPIO_Port", "_EXTI_IRQn"):
+                label_macros[f"{label}{suffix}"] = label
+    counts = {}
+    for occurrence in identifier_occurrences(generated_code):
+        counts[occurrence.text] = counts.get(occurrence.text, 0) + 1
+    # Declaration, plus the XR_REGISTER line with --xrobot.
+    expected_uses = 2 if use_xrobot else 1
+    problems = []
+    for port, data in gpio.items():
+        name = _gpio_object_name(port, data)
+        where = f"GPIO object '{name}' (pin {port.split('-')[0]})"
+        if name in CPP_KEYWORDS:
+            problems.append(f"{where} is a C++ keyword")
+        elif "__" in name or re.match(r"_[A-Z]", name):
+            problems.append(f"{where} is a reserved C++ identifier")
+        elif name in label_macros:
+            problems.append(f"{where} is the CubeMX macro of GPIO label '{label_macros[name]}'")
+        elif (name in _HAL_MACROS or name.endswith("_IRQn")
+              or _CMSIS_INSTANCE_MACRO.fullmatch(name)):
+            problems.append(f"{where} is a CMSIS/HAL macro or IRQ name")
+        elif counts.get(name, 0) > expected_uses:
+            problems.append(f"{where} collides with a name the generated code uses")
+    if problems:
+        raise ValueError(
+            "rename these GPIO labels in CubeMX:\n  " + "\n  ".join(problems))
+
+
 def generate_gpio_alias(port: str, gpio_data: dict, project_data: dict) -> str:
     base_port = port.split("-")[0]
     port_define = f"GPIO{base_port[1]}"
@@ -276,9 +344,10 @@ def generate_gpio_alias(port: str, gpio_data: dict, project_data: dict) -> str:
                                project_data.get("Mcu", {}).get("Family", "STM32F4"))
     irq_str = f", {irq_define}" if irq_define else ""
 
-    var_name = _sanitize_cpp_identifier(label or port)
+    var_name = _gpio_object_name(port, gpio_data)
 
-    _register_device(var_name, "GPIO")
+    _register_device(var_name, "GPIO",
+                     f"GPIO label {label} on {base_port}" if label else f"GPIO {base_port}")
 
     return f"{var_name}({port_define}, {pin_define}{irq_str})"
 
@@ -1234,6 +1303,7 @@ def generate_full_code(project_data: dict, use_xrobot: bool, existing_code: str)
         '}'
     ]
     generated = '\n'.join(filter(None, components))
+    check_gpio_names(project_data, generated, use_xrobot)
     return _preserve_generated_regions(existing_code, generated)
 
 
