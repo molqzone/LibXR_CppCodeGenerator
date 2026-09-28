@@ -26,6 +26,32 @@ class StaticEntry(unittest.TestCase):
         self.assertNotIn('ApplicationManager', code)
         self.assertIn('#include "xrobot_main.hpp"', code)
 
+    def test_generator_owns_xrobot_main_after_user_code(self):
+        code = generator.generate_full_code(self.project, True, '')
+        self.assertTrue(code.endswith(
+            '  /* User Code Begin 3 */\n  /* User Code End 3 */\n  XROBOT_MAIN();\n}'))
+        self.assertEqual(code.count('XROBOT_MAIN'), 1)
+        self.assertEqual(generator.preserve_user_blocks(code, 3), '')
+
+    def test_leftover_user_xrobot_main_requires_migration(self):
+        old = generator.generate_full_code(self.project, True, '').replace(
+            '  /* User Code End 3 */\n  XROBOT_MAIN();\n',
+            '  UserSetup();\n  XROBOT_MAIN();\n  /* User Code End 3 */\n')
+        with self.assertRaisesRegex(ValueError, r'line \d+: User Code 3 still calls XROBOT_MAIN\(\).*delete'):
+            generator.generate_full_code(self.project, True, old)
+
+    def test_comment_mentioning_xrobot_main_is_user_code(self):
+        old = generator.generate_full_code(self.project, True, '').replace(
+            '  /* User Code End 3 */', '  // XROBOT_MAIN(); now follows this region\n  /* User Code End 3 */')
+        code = generator.generate_full_code(self.project, True, old)
+        self.assertIn('// XROBOT_MAIN(); now follows this region', code)
+
+    def test_libxr_only_keeps_user_xrobot_code_untouched(self):
+        generator.initialize_registry(False)
+        base = generator.generate_full_code(self.project, False, '')
+        self.assertNotIn('XROBOT', base)
+        self.assertIn('Thread::Sleep(UINT32_MAX);', generator.preserve_user_blocks(base, 3))
+
     def test_xrobot_does_not_reenable_container(self):
         code = generator.generate_full_code(self.project, True, '')
         self.assertIn('XROBOT_MAIN();', code)

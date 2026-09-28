@@ -1151,8 +1151,29 @@ def generate_xrobot_registrations() -> str:
 # --------------------------
 # Main Generator
 # --------------------------
+def reject_user_xrobot_main(existing_code: str) -> None:
+    """XROBOT_MAIN() belongs to the generator; a User Code copy is a leftover.
+
+    Older generators emitted the call as the default body of User Code 3.
+    Keeping that copy would leave a second entry call, so the user deletes it.
+    """
+    if not existing_code.strip():
+        return
+    document = CppDocument.parse(existing_code)
+    for region in document.user_regions():
+        for invocation in document.invocation_views("XROBOT_MAIN"):
+            if region.body_span.start <= invocation.span.start < region.body_span.end:
+                raise ValueError(
+                    f"line {invocation.line}: User Code {region.name} still calls "
+                    f"{invocation.text}. The generator now emits XROBOT_MAIN() after "
+                    "the User Code regions of app_main; delete this call from the "
+                    "User Code region and regenerate. Nothing was written.")
+
+
 def generate_full_code(project_data: dict, use_xrobot: bool, existing_code: str) -> str:
-    user_code_def_3 = '  XROBOT_MAIN();\n' if use_xrobot else f"  while(true) {{\n    Thread::Sleep(UINT32_MAX);\n  }}\n"
+    if use_xrobot:
+        reject_user_xrobot_main(existing_code)
+    user_code_def_3 = '' if use_xrobot else f"  while(true) {{\n    Thread::Sleep(UINT32_MAX);\n  }}\n"
     components = [
         _generate_header_includes(use_xrobot),
         '/* User Code Begin 1 */',
@@ -1181,6 +1202,7 @@ def generate_full_code(project_data: dict, use_xrobot: bool, existing_code: str)
         '  /* User Code Begin 3 */',
         user_code_def_3.rstrip('\n'),
         '  /* User Code End 3 */',
+        '  XROBOT_MAIN();' if use_xrobot else '',
         '}'
     ]
     generated = '\n'.join(filter(None, components))
