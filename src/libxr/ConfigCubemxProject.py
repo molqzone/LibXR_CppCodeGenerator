@@ -4,7 +4,6 @@ import logging
 import os
 import subprocess
 import shlex
-import shutil
 import sys
 
 import argparse
@@ -40,21 +39,6 @@ def is_git_worktree_root(path):
         return os.path.realpath(result.stdout.strip()) == os.path.realpath(path)
     except subprocess.CalledProcessError:
         return False
-
-
-def get_git_dir(path):
-    result = subprocess.run(
-        ["git", "-C", path, "rev-parse", "--git-dir"],
-        capture_output=True,
-        text=True
-    )
-    if result.returncode != 0:
-        logging.warning(f"Failed to resolve git dir for {path}: {result.stderr.strip()}")
-        return ""
-    git_dir = result.stdout.strip()
-    if not os.path.isabs(git_dir):
-        git_dir = os.path.normpath(os.path.join(path, git_dir))
-    return git_dir
 
 
 def is_git_clean(path):
@@ -178,30 +162,8 @@ def is_commit_ancestor(repo_path, older_commit, newer_commit):
     return result.returncode == 0
 
 
-def remove_path(path):
-    if os.path.islink(path) or os.path.isfile(path):
-        os.remove(path)
-    elif os.path.isdir(path):
-        shutil.rmtree(path, ignore_errors=True)
-
-
-def repair_submodule_checkout(project_dir, rel_path, checkout_path):
-    logging.warning("LibXR submodule checkout is invalid; recreating it from registered metadata.")
-    run_command(
-        ["git", "-C", project_dir, "submodule", "deinit", "-f", "--", rel_path],
-        ignore_error=True
-    )
-
-    git_dir = get_git_dir(project_dir)
-    if git_dir:
-        module_git_dir = os.path.join(git_dir, "modules", *rel_path.split("/"))
-        if os.path.exists(module_git_dir):
-            logging.info(f"Removing stale LibXR submodule gitdir: {module_git_dir}")
-            remove_path(module_git_dir)
-
-    if os.path.exists(checkout_path) or os.path.islink(checkout_path):
-        logging.info(f"Removing stale LibXR submodule worktree: {checkout_path}")
-        remove_path(checkout_path)
+def is_empty_directory(path):
+    return os.path.isdir(path) and not os.path.islink(path) and not os.listdir(path)
 
 
 def add_libxr(project_dir, libxr_commit=None, git_base="https://github.com",
@@ -257,6 +219,14 @@ def add_libxr(project_dir, libxr_commit=None, git_base="https://github.com",
     existing_checkout = checkout_path_present and is_git_worktree_root(libxr_path)
     added_submodule = False
 
+    # An existing LibXR directory may hold the user's own commits or sources;
+    # it is never deleted, moved or re-cloned.
+    if checkout_path_present and not existing_checkout and not is_empty_directory(libxr_path):
+        logging.error(
+            f"{libxr_path} exists but is not a valid Git checkout; it was left untouched. "
+            "Move it away or turn it into a LibXR checkout, then run again.")
+        sys.exit(1)
+
     if registered:
         if existing_checkout:
             run_command(
@@ -265,8 +235,6 @@ def add_libxr(project_dir, libxr_commit=None, git_base="https://github.com",
             )
             logging.info("LibXR submodule already exists; preserving current checkout.")
         else:
-            if checkout_path_present:
-                repair_submodule_checkout(project_dir, sub_rel_path_posix, libxr_path)
             run_command(
                 ["git", "-C", project_dir, "submodule", "sync", "--", sub_rel_path_posix],
                 ignore_error=False
@@ -302,7 +270,7 @@ def add_libxr(project_dir, libxr_commit=None, git_base="https://github.com",
         if libxr_commit:
             target_commit = libxr_commit
             logging.info(f"Checking out LibXR to requested commit {target_commit}")
-        elif added_submodule and default_libxr_commit:
+        elif added_submodule and not existing_checkout and default_libxr_commit:
             target_commit = default_libxr_commit
             logging.info(f"Initializing new LibXR submodule to default commit {target_commit}")
         elif dirty:

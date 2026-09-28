@@ -157,6 +157,43 @@ def run_policy_checks(root: Path) -> None:
     )
     assert_head(checkout, old_commit, "explicit commit")
 
+    project, checkout = create_project(
+        root, "empty-directory", remote,
+        recorded_commit=old_commit, checkout_commit=old_commit
+    )
+    git("submodule", "deinit", "-f", "--", "Middlewares/Third_Party/LibXR", cwd=project)
+    if not checkout.is_dir() or any(checkout.iterdir()):
+        raise AssertionError("empty directory: deinit did not leave an empty checkout path")
+    add_libxr(project, default_libxr_commit=default_commit)
+    assert_head(checkout, default_commit, "empty checkout directory")
+
+    project, checkout = create_project(
+        root, "not-a-checkout", remote,
+        recorded_commit=old_commit, checkout_commit=old_commit
+    )
+    git("submodule", "deinit", "-f", "--", "Middlewares/Third_Party/LibXR", cwd=project)
+    (checkout / "user_sources.cpp").write_text("keep", encoding="utf-8")
+    try:
+        add_libxr(project, default_libxr_commit=default_commit)
+    except SystemExit as error:
+        if error.code != 1:
+            raise AssertionError(f"not a checkout: unexpected exit code {error.code}")
+    else:
+        raise AssertionError("not a checkout: a non-Git LibXR directory was accepted")
+    if sorted(path.name for path in checkout.iterdir()) != ["user_sources.cpp"]:
+        raise AssertionError("not a checkout: the existing directory was modified")
+
+    project = root / "adopted-clone"
+    project.mkdir()
+    git("init", "-b", "master", cwd=project)
+    git("config", "user.name", "Smoke Test", cwd=project)
+    git("config", "user.email", "smoke@example.com", cwd=project)
+    checkout = project / "Middlewares" / "Third_Party" / "LibXR"
+    git("clone", str(remote), str(checkout), cwd=root)
+    git("checkout", newer_commit, cwd=checkout)
+    add_libxr(project, git_base=str(remote), default_libxr_commit=default_commit)
+    assert_head(checkout, newer_commit, "adopted existing clone")
+
 
 def main() -> int:
     with allow_file_protocol(), tempfile.TemporaryDirectory(
