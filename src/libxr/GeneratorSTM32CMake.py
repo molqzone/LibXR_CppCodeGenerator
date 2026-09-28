@@ -191,8 +191,36 @@ def update_or_create_libxr_cmake(file_path: str, system: str, use_xrobot: bool) 
         logging.info(f"Generated LibXR.CMake at: {cmake_path}")
 
 
+# Inserted after CubeMX's set(STARM_TOOLCHAIN_CONFIG "<default>") line, which
+# stays the only place that names the default profile.
+STARM_PROFILE_SELECTION = '''
+# LibXR: -DSTARM_TOOLCHAIN_CONFIG=<profile> selects the profile of a build
+# directory; a default changed by xr_stm32_toolchain_switch also reaches
+# existing build directories.
+set(_xr_starm_default ${STARM_TOOLCHAIN_CONFIG})
+unset(STARM_TOOLCHAIN_CONFIG)
+if(NOT DEFINED CACHE{STARM_TOOLCHAIN_CONFIG} OR
+   (DEFINED CACHE{XR_STARM_TOOLCHAIN_DEFAULT} AND
+    NOT XR_STARM_TOOLCHAIN_DEFAULT STREQUAL _xr_starm_default))
+  set(STARM_TOOLCHAIN_CONFIG ${_xr_starm_default} CACHE STRING "ST Arm Clang runtime profile" FORCE)
+endif()
+set(XR_STARM_TOOLCHAIN_DEFAULT ${_xr_starm_default} CACHE INTERNAL "Default STARM_TOOLCHAIN_CONFIG of this file")
+set_property(CACHE STARM_TOOLCHAIN_CONFIG PROPERTY STRINGS STARM_HYBRID STARM_NEWLIB STARM_PICOLIBC)'''
+
+
 def normalize_starm_clang_toolchain(file_path: Union[str, Path]) -> None:
-    """Keep CubeMX's ST Arm Clang runtime profile selectable from the CMake cache."""
+    """Make CubeMX's ST Arm Clang runtime profile selectable per build directory.
+
+    xr_stm32_toolchain_switch selects the default profile by rewriting
+    set(STARM_TOOLCHAIN_CONFIG "...") in this file, and a build may select
+    another one with -DSTARM_TOOLCHAIN_CONFIG=... . Earlier versions turned
+    the default line itself into a CACHE STRING: a cache entry is only
+    initialized by the first configure of a build directory, so the switch
+    never reached an existing build tree. The default stays a plain line; the
+    inserted selection block keeps the profile in the cache and replaces it
+    when the file default differs from the one recorded at the last
+    configure (the toolchain file is re-read on every configure).
+    """
     path = Path(file_path)
     if not path.exists():
         return
@@ -200,7 +228,10 @@ def normalize_starm_clang_toolchain(file_path: Union[str, Path]) -> None:
     content = read_text_with_fallback(str(path))
     line_pattern = re.compile(
         r'^(\s*set\s*\(\s*STARM_TOOLCHAIN_CONFIG\s+")([^"]+)'
-        r'("(?:\s+CACHE\s+STRING\s+"[^"]*")?\s*\)\s*)$',
+        r'"(?:\s+CACHE\s+STRING\s+"[^"]*")?\s*\)[ \t]*$'
+        # Property list written by earlier versions after a CACHE default.
+        r'(?:\nset_property\s*\(\s*CACHE\s+STARM_TOOLCHAIN_CONFIG\s+PROPERTY\s+STRINGS'
+        r'\s+STARM_HYBRID\s+STARM_NEWLIB\s+STARM_PICOLIBC\s*\))?',
         re.MULTILINE,
     )
     match = line_pattern.search(content)
@@ -208,20 +239,10 @@ def normalize_starm_clang_toolchain(file_path: Union[str, Path]) -> None:
         logging.warning("STARM_TOOLCHAIN_CONFIG not found in %s", path)
         return
 
-    default_config = match.group(2)
-    replacement = (
-        f'{match.group(1)}{default_config}" CACHE STRING '
-        '"ST Arm Clang runtime profile")'
-    )
+    replacement = f'{match.group(1)}{match.group(2)}")'
+    if STARM_PROFILE_SELECTION not in content:
+        replacement += STARM_PROFILE_SELECTION
     new_content = content[:match.start()] + replacement + content[match.end():]
-
-    property_block = (
-        'set_property(CACHE STARM_TOOLCHAIN_CONFIG PROPERTY STRINGS\n'
-        '             STARM_HYBRID STARM_NEWLIB STARM_PICOLIBC)'
-    )
-    if property_block not in new_content:
-        insert_at = match.start() + len(replacement)
-        new_content = new_content[:insert_at] + '\n' + property_block + new_content[insert_at:]
 
     # CubeMX emits an if/elseif block that computes multilib flags. Initialize the
     # variable explicitly and reject misspelled runtime profiles.
@@ -250,7 +271,7 @@ def normalize_starm_clang_toolchain(file_path: Union[str, Path]) -> None:
         # the package's Python 3.8 support while still emitting deterministic LF.
         with path.open("w", encoding="utf-8", newline="\n") as stream:
             stream.write(new_content)
-        logging.info("Made STARM_TOOLCHAIN_CONFIG cache-selectable in %s", path)
+        logging.info("Normalized STARM_TOOLCHAIN_CONFIG in %s", path)
 
 
 def clean_cmake_build_dirs(input_directory: Union[str, Path]) -> None:
