@@ -363,7 +363,8 @@ def generate_gpio_alias(port: str, gpio_data: dict, project_data: dict) -> str:
         pin_define = f"{label}_Pin"
 
     irq_define = _get_exti_irq(pin_num, base_port, gpio_data.get("GPXTI", False),
-                               project_data.get("Mcu", {}).get("Family", "STM32F4"))
+                               project_data.get("Mcu", {}).get("Family", "STM32F4"),
+                               project_data.get("Mcu", {}).get("Type") or "")
     irq_str = f", {irq_define}" if irq_define else ""
 
     var_name = _gpio_object_name(port, gpio_data)
@@ -374,7 +375,15 @@ def generate_gpio_alias(port: str, gpio_data: dict, project_data: dict) -> str:
     return f"{var_name}({port_define}, {pin_define}{irq_str})"
 
 
-def _get_exti_irq(pin_num: int, port: str, is_exti: bool, mcu_family: str) -> str:
+# EXTI interrupt vectors per CubeMX family (Mcu.Family), from the device
+# vector tables. These families share EXTI0_1/EXTI2_3/EXTI4_15:
+_EXTI_SHARED_LINE_FAMILIES = frozenset({"STM32F0", "STM32G0", "STM32L0", "STM32C0", "STM32U0"})
+# These have one vector per line, EXTI0_IRQn..EXTI15_IRQn (as do the STM32H7R/S
+# parts of the STM32H7 family); the others share EXTI9_5 and EXTI15_10.
+_EXTI_PER_LINE_FAMILIES = frozenset({"STM32H5", "STM32U3", "STM32U5", "STM32L5", "STM32WBA", "STM32N6"})
+
+
+def _get_exti_irq(pin_num: int, port: str, is_exti: bool, mcu_family: str, mcu_type: str = "") -> str:
     if not is_exti:
         return ""
 
@@ -384,10 +393,12 @@ def _get_exti_irq(pin_num: int, port: str, is_exti: bool, mcu_family: str) -> st
         elif port.startswith("PB"):
             return "GPIOB_IRQn"
 
-    if mcu_family == "STM32F0" or mcu_family == 'STM32G0' or mcu_family == 'STM32L0':
+    if mcu_family in _EXTI_SHARED_LINE_FAMILIES:
         if pin_num <= 1: return "EXTI0_1_IRQn"
         if pin_num <= 3: return "EXTI2_3_IRQn"
         return "EXTI4_15_IRQn"
+    elif mcu_family in _EXTI_PER_LINE_FAMILIES or mcu_type.startswith(("STM32H7R", "STM32H7S")):
+        return f"EXTI{pin_num}_IRQn"
     else:
         if 5 <= pin_num <= 9: return "EXTI9_5_IRQn"
         if 10 <= pin_num <= 15: return "EXTI15_10_IRQn"

@@ -60,5 +60,41 @@ class GpioObjectNames(unittest.TestCase):
         self.assertRejected({'PA0': {}, 'PB1': {'Label': 'PA0'}}, "'PA0' .*collides")
 
 
+class ExtiInterrupts(unittest.TestCase):
+    def irq(self, family, pin, mcu_type=''):
+        return generator._get_exti_irq(pin, f'PA{pin}', True, family, mcu_type)
+
+    def test_per_line_families(self):
+        for family in ('STM32H5', 'STM32U3', 'STM32U5', 'STM32L5', 'STM32WBA', 'STM32N6'):
+            with self.subTest(family=family):
+                self.assertEqual([self.irq(family, pin) for pin in (0, 5, 9, 10, 15)],
+                                 ['EXTI0_IRQn', 'EXTI5_IRQn', 'EXTI9_IRQn', 'EXTI10_IRQn', 'EXTI15_IRQn'])
+        self.assertEqual(self.irq('STM32H7', 12, 'STM32H7S3L8Hx'), 'EXTI12_IRQn')
+
+    def test_grouped_families(self):
+        self.assertEqual([self.irq('STM32H7', pin, 'STM32H723VGTx') for pin in (4, 5, 15)],
+                         ['EXTI4_IRQn', 'EXTI9_5_IRQn', 'EXTI15_10_IRQn'])
+        for family in ('STM32F0', 'STM32G0', 'STM32L0', 'STM32C0', 'STM32U0'):
+            with self.subTest(family=family):
+                self.assertEqual([self.irq(family, pin) for pin in (1, 2, 4)],
+                                 ['EXTI0_1_IRQn', 'EXTI2_3_IRQn', 'EXTI4_15_IRQn'])
+
+    def test_h5_pin_uses_its_own_vector(self):
+        importlib.reload(generator)
+        generator.initialize_registry(False)
+        project = {'Mcu': {'Type': 'STM32H563ZITx', 'Family': 'STM32H5'},
+                   'GPIO': {'PC13': {'Label': 'KEY', 'GPXTI': True}}, 'Peripherals': {}}
+        code = generator.generate_full_code(project, False, '')
+        self.assertIn('static STM32GPIO KEY(KEY_GPIO_Port, KEY_Pin, EXTI13_IRQn);', code)
+
+    def test_project_without_part_number_is_mapped_by_family(self):
+        importlib.reload(generator)
+        generator.initialize_registry(False)
+        project = {'Mcu': {'Type': None, 'Family': 'STM32H7'},
+                   'GPIO': {'PC13': {'Label': 'KEY', 'GPXTI': True}}, 'Peripherals': {}}
+        code = generator.generate_full_code(project, False, '')
+        self.assertIn('static STM32GPIO KEY(KEY_GPIO_Port, KEY_Pin, EXTI15_10_IRQn);', code)
+
+
 if __name__ == '__main__':
     unittest.main()
