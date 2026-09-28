@@ -335,6 +335,28 @@ def create_user_directory(project_dir):
     return user_path
 
 
+def set_terminal_source(user_path, terminal_source):
+    """Record the -t/--terminal device as terminal_source in User/libxr_config.yaml.
+
+    xr_gen_code_stm32 reads the terminal device from this file, so the choice
+    persists for later regenerations. Other keys and comments are kept.
+    """
+    from libxr import LibXRConfigFile as libxr_config_file
+
+    config_path = os.path.join(user_path, "libxr_config.yaml")
+    try:
+        if os.path.exists(config_path):
+            document, _ = libxr_config_file.read(config_path)
+        else:
+            document = libxr_config_file.new_document()
+    except libxr_config_file.LibXRConfigError as error:
+        logging.error(str(error))
+        sys.exit(1)
+    libxr_config_file.set_value(document, "terminal_source", terminal_source)
+    libxr_config_file.write(config_path, document)
+    logging.info(f"Set terminal_source to {terminal_source} in {config_path}")
+
+
 def process_ioc_file(project_dir, yaml_output):
     """Parse the .ioc file and generate YAML configuration."""
     logging.info("Parsing .ioc file...")
@@ -385,7 +407,9 @@ def main():
 
     parser = argparse.ArgumentParser(description="Automate STM32CubeMX project setup")
     parser.add_argument("-d", "--directory", required=True, help="STM32CubeMX project directory")
-    parser.add_argument("-t", "--terminal", default="", help="Optional terminal device source")
+    parser.add_argument("-t", "--terminal", default="",
+                        help="Terminal device (e.g. usart1, usb_fs_cdc); stored as "
+                             "terminal_source in User/libxr_config.yaml")
     parser.add_argument("--xrobot", action="store_true", help="Support XRobot")
     parser.add_argument("--commit", default="", help="Specify locked LibXR commit hash")
     parser.add_argument("--git-source", default="auto",
@@ -462,6 +486,10 @@ def main():
     yaml_output = os.path.join(project_dir, ".config.yaml")
     cpp_output = os.path.join(user_path, "app_main.cpp")
 
+    # Record the terminal device for the code generator
+    if terminal_source:
+        set_terminal_source(user_path, terminal_source)
+
     # Process .ioc file
     process_ioc_file(project_dir, yaml_output)
 
@@ -470,10 +498,6 @@ def main():
 
     # Generate CMakeLists.txt with selected compiler
     generate_cmake_file(project_dir)
-
-    # Handle optional terminal source
-    if terminal_source:
-        logging.info("Modifying terminal device source...")
 
     logging.info("[Pass] All tasks completed successfully!")
 
