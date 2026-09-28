@@ -150,7 +150,7 @@ LegacyUserCall(peripherals);
         project['Peripherals'] = {
             'ADC': {'ADC1': {'Channels': ['ADC_CHANNEL_0']}},
             'USART': {'USART1': {}}, 'I2C': {'I2C1': {}}, 'SPI': {'SPI1': {}},
-            'CAN': {'CAN1': {}}, 'FDCAN': {'FDCAN1': {}},
+            'CAN': {'CAN1': {}}, 'FDCAN': {'FDCAN2': {}},
             'TIM': {'TIM1': {'Channels': {'CH1': {}}}},
         }
         generator.libxr_settings['terminal_source'] = 'usart1'
@@ -159,11 +159,44 @@ LegacyUserCall(peripherals);
         for declaration in ('STM32Timebase timebase', 'STM32PowerManager power_manager',
             'STM32GPIO LED', 'STM32ADC adc1', 'auto& adc1_adc_channel_0',
             'STM32UART usart1', 'STM32I2C i2c1', 'STM32SPI spi1', 'STM32CAN can1',
-            'STM32CANFD fdcan1', 'STM32PWM pwm_tim1_ch1', 'RamFS ramfs',
+            'STM32CANFD fdcan2', 'STM32PWM pwm_tim1_ch1', 'RamFS ramfs',
             'Terminal<32, 32, 5, 5> terminal', 'LibXR::Thread term_thread'):
             with self.subTest(declaration=declaration):
                 self.assertIn('static '+declaration, code)
         self.assertLess(code.index('extern "C" void app_main'), code.index('static STM32Timebase'))
+
+    def test_fdcan_is_also_registered_as_classic_can(self):
+        project = copy.deepcopy(self.project)
+        project['Peripherals'] = {'FDCAN': {'FDCAN1': {}, 'FDCAN3': {}}}
+        code = generator.generate_full_code(project, True, '')
+        self.assertIn('  static STM32CANFD fdcan1(&hfdcan1, 5);\n  LibXR::CAN& can1 = fdcan1;\n', code)
+        self.assertIn('  static STM32CANFD fdcan3(&hfdcan3, 5);\n  LibXR::CAN& can3 = fdcan3;\n', code)
+        self.assertIn('  XR_REGISTER(fdcan1, LibXR::FDCAN);\n  XR_REGISTER(can1, LibXR::CAN);\n', code)
+        self.assertIn('  XR_REGISTER(fdcan3, LibXR::FDCAN);\n  XR_REGISTER(can3, LibXR::CAN);\n', code)
+        self.assertLess(code.index('LibXR::CAN& can1'), code.index('XR_REGISTER(can1'))
+
+    def test_fdcan_alias_is_xrobot_only(self):
+        generator.initialize_registry(False)
+        project = copy.deepcopy(self.project)
+        project['Peripherals'] = {'FDCAN': {'FDCAN1': {}}, 'CAN': {'CAN1': {}}}
+        code = generator.generate_full_code(project, False, '')
+        self.assertIn('static STM32CANFD fdcan1', code)
+        self.assertNotIn('LibXR::CAN& can1', code)
+
+    def test_fdcan_alias_colliding_with_classic_can_is_rejected(self):
+        for peripherals in ({'CAN': {'CAN1': {}}, 'FDCAN': {'FDCAN1': {}}},
+                            {'FDCAN': {'FDCAN1': {}}, 'CAN': {'CAN1': {}}}):
+            with self.subTest(order=list(peripherals)):
+                generator.initialize_registry(True)
+                project = copy.deepcopy(self.project)
+                project['Peripherals'] = peripherals
+                with self.assertRaisesRegex(ValueError, r"'can1'.*LibXR::CAN alias of fdcan1|LibXR::CAN alias of fdcan1.*'can1'"):
+                    generator.generate_full_code(project, True, '')
+
+    def test_every_registered_name_has_one_type(self):
+        generator._register_device('usart1', 'UART')
+        with self.assertRaisesRegex(ValueError, "'usart1'.*collides"):
+            generator._register_device('usart1', 'GPIO')
 
     def test_dma_cache_alignment_builds_with_older_cmsis(self):
         """Cache-line alignment must not require __SCB_DCACHE_LINE_SIZE (absent in old F7 CMSIS)."""

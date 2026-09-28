@@ -18,6 +18,8 @@ logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 # --------------------------
 # Generated device objects and their LibXR interface, registered with XR_REGISTER.
 registered_devices = {"power_manager": "PowerManager"}
+# What produced each registered name, for collision diagnostics.
+registered_origins = {}
 libxr_settings = {
     "terminal_source": "",
     "software_timer": {"priority": 2, "stack_depth": 1024},
@@ -45,8 +47,9 @@ libxr_settings = {
 def initialize_registry(use_xrobot: bool) -> None:
     """Reset the generated-device registry; only XRobot output registers devices."""
     registered_devices.clear()
+    registered_origins.clear()
     if use_xrobot:
-        registered_devices["power_manager"] = "PowerManager"
+        _register_device("power_manager", "PowerManager", "power manager")
 
 
 # --------------------------
@@ -71,14 +74,37 @@ def parse_arguments():
 # --------------------------
 # Device Registration
 # --------------------------
-def _register_device(name: str, dev_type: str):
+def _register_device(name: str, dev_type: str, origin: str = ""):
+    """Record one generated object; one name has exactly one registered type."""
+    origin = origin or f"{dev_type} object"
+    if name in registered_devices:
+        raise ValueError(
+            f"Generated name '{name}' ({origin}) collides with the existing "
+            f"'{name}' ({registered_origins.get(name, registered_devices[name])}); "
+            "every generated object needs its own name")
     registered_devices[name] = dev_type
+    registered_origins[name] = origin
+
+
+def _generate_fdcan_can_alias(instance: str) -> str:
+    """Expose an FDCAN object under the classic CAN interface as well.
+
+    fdcanN stays registered as LibXR::FDCAN; the reference canN names the
+    same object as LibXR::CAN, so each registered name keeps one type.
+    """
+    fdcan_name = instance.lower()
+    match = re.fullmatch(r"fdcan(\d+)", fdcan_name)
+    if match is None:
+        raise ValueError(f"Cannot derive the CAN alias of FDCAN instance '{instance}'")
+    can_name = f"can{match.group(1)}"
+    _register_device(can_name, "CAN", f"LibXR::CAN alias of {fdcan_name}")
+    return f"  LibXR::CAN& {can_name} = {fdcan_name};\n"
 
 
 # --------------------------
 # Peripheral Instance Generation
 # --------------------------
-def generate_peripheral_instances(project_data: dict) -> str:
+def generate_peripheral_instances(project_data: dict, use_xrobot: bool = False) -> str:
     """Generate initialization code for all peripherals with topological sorting."""
     code_sections = {
         "adc": [],
@@ -89,6 +115,8 @@ def generate_peripheral_instances(project_data: dict) -> str:
     for p_type, instances in project_data.get("Peripherals", {}).items():
         for instance_name, config in instances.items():
             section, code = PeripheralFactory.create(p_type, instance_name, config)
+            if use_xrobot and p_type.upper() == "FDCAN" and code:
+                code += _generate_fdcan_can_alias(instance_name)
             if section in code_sections:
                 code_sections[section].append(code)
 
@@ -605,7 +633,7 @@ class PeripheralFactory:
         instance_cfg = libxr_settings['CAN'].setdefault(instance, {})
         queue_size = instance_cfg.setdefault('queue_size', 5)
 
-        _register_device(f"{instance.lower()}", "CAN")
+        _register_device(f"{instance.lower()}", "CAN", f"classic CAN peripheral {instance}")
         return ("main",
                 f'  static STM32CAN {instance.lower()}(&h{instance.lower()}, {queue_size});\n')
 
@@ -1193,7 +1221,7 @@ def generate_full_code(project_data: dict, use_xrobot: bool, existing_code: str)
         '  // NOLINTBEGIN',
         _generate_core_system(project_data),
         generate_gpio_config(project_data),
-        generate_peripheral_instances(project_data),
+        generate_peripheral_instances(project_data, use_xrobot),
         configure_terminal(project_data),
         configure_watchdog(project_data),
         generate_xrobot_registrations() if use_xrobot else '',
