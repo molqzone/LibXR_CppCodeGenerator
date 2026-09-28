@@ -1,25 +1,11 @@
 <h1 align="center">
-
-## Static XRobot integration
-
-The `--xrobot` path emits named `XR_REGISTER(object, ExplicitType)` declarations
-and `XROBOT_MAIN()` instead of a runtime HardwareContainer/ApplicationManager.
-ADC channels are borrowed references. Existing user blocks are preserved and
-must be migrated explicitly when they still call the old entry. Without
-`--xrobot`, ordinary LibXR/BSP generation remains independent of XRobot.
-
-Use the matching static XRobot tooling and Module sources. Generate the BSP
-source, then the XRobot header, and build with the original native CMake/vendor
-entry. No board pin layout or build frontend is standardized by this change.
-The source regression tests are in `tests/test_static_integration.py`.
-
 <img src="https://github.com/xrobot-org/LibXR_CppCodeGenerator/raw/main/imgs/XRobot.jpeg" width="300">
 </h1><br>
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
-[![GitHub Repo](https://img.shields.io/github/stars/Jiu-xiao/libxr?style=social)](https://github.com/xrobot-org/libxr)
+[![GitHub Repo](https://img.shields.io/github/stars/xrobot-org/libxr?style=social)](https://github.com/xrobot-org/libxr)
 [![Documentation](https://img.shields.io/badge/docs-online-brightgreen)](https://xrobot.work/libxr/)
-[![GitHub Issues](https://img.shields.io/github/issues/Jiu-xiao/LibXR_CppCodeGenerator)](https://github.com/xrobot-org/LibXR_CppCodeGenerator/issues)
+[![GitHub Issues](https://img.shields.io/github/issues/xrobot-org/LibXR_CppCodeGenerator)](https://github.com/xrobot-org/LibXR_CppCodeGenerator/issues)
 [![CI/CD - Python Package](https://github.com/xrobot-org/LibXR_CppCodeGenerator/actions/workflows/python-publish.yml/badge.svg)](https://github.com/xrobot-org/LibXR_CppCodeGenerator/actions/workflows/python-publish.yml)
 [![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2FJiu-xiao%2FLibXR_CppCodeGenerator.svg?type=shield)](https://app.fossa.com/projects/git%2Bgithub.com%2FJiu-xiao%2FLibXR_CppCodeGenerator?ref=badge_shield)
 
@@ -35,11 +21,37 @@ The source regression tests are in `tests/test_static_integration.py`.
 - ⚙️ 支持多种后端架构，默认支持 STM32 平台。
   Supports multiple backends; STM32 is the default.
 
-- 🔌 支持多重别名注册与查找。
-  Supports multi-alias registration and lookup.
+- 📦 可与 XRobot 框架集成：每个生成的设备对象以自身名字和唯一类型静态注册。
+  Integrates with XRobot: every generated device object is registered statically under its own name with one type.
 
-- 📦 可与 XRobot 框架集成，实现模块自动注册与调度管理。
-  Enables integration with the XRobot application framework.
+## Static XRobot integration 静态 XRobot 集成
+
+`--xrobot` 生成具名的 `XR_REGISTER(object, Type)` 声明，不生成运行期
+HardwareContainer/ApplicationManager。不带 `--xrobot` 时不生成任何 XRobot 代码。
+With `--xrobot`, the generator emits named `XR_REGISTER(object, Type)`
+declarations instead of a runtime HardwareContainer/ApplicationManager. Without
+`--xrobot`, no XRobot code is generated.
+
+- 每个名字只注册一种类型。每个 FDCAN 对象 `fdcanN` 注册为 `LibXR::FDCAN`，并额外生成
+  同作用域的基类引用 `LibXR::CAN& canN = fdcanN;` 注册为 `LibXR::CAN`。若芯片同时有
+  CAN 与 FDCAN 导致 `canN` 重名，生成失败。
+  One name has one type. Each FDCAN object `fdcanN` is registered as
+  `LibXR::FDCAN`, and a reference `LibXR::CAN& canN = fdcanN;` in the same scope
+  is registered as `LibXR::CAN`. If a chip has both CAN and FDCAN controllers so
+  that `canN` collides, generation fails.
+- `XROBOT_MAIN();` 由生成器维护，位于 `app_main` 的 User Code 区域之后。
+  `XROBOT_MAIN();` is owned by the generator and follows the User Code regions of
+  `app_main`.
+- 迁移：旧版本把 `XROBOT_MAIN();` 放在 User Code 3 中。若 User Code 区域中仍有该调用，
+  生成器报告其行号并停止、不写任何文件；删除该行后重新生成。
+  Migration: older versions placed `XROBOT_MAIN();` in User Code 3. If a User Code
+  region still calls it, the generator reports the line and stops without writing
+  anything; delete that line and regenerate.
+
+先生成 BSP 源码，再用 XRobot 工具生成 `User/xrobot_main.hpp`，然后按工程原有的
+CMake 流程构建。
+Generate the BSP source first, then `User/xrobot_main.hpp` with the XRobot tool,
+then build with the project's own CMake flow.
 
 ## 📥 Installation 安装
 
@@ -89,20 +101,39 @@ These commands work across platforms (STM32 and others):
 ### `xr_parse`
 
 ```bash
-xr_parse -i config.yaml
+xr_parse -d DIRECTORY [xr_parse_ioc options]
 ```
 
-解析通用的 YAML 硬件配置文件，提取外设定义。
-Parses a generic YAML hardware configuration and extracts peripheral definitions.
+目录中有 `.ioc` 文件时转发给 `xr_parse_ioc`；目前只支持 STM32 工程。
+Forwards to `xr_parse_ioc` when the directory contains an `.ioc` file; only STM32
+projects are supported so far.
 
 ### `xr_gen_code`
 
 ```bash
-xr_gen_code -i config.yaml [--xrobot]
+xr_gen_code -i config.yaml [xr_gen_code_stm32 options]
 ```
 
-根据 YAML 配置生成平台无关的 C++ 硬件抽象层代码，可选生成 XRobot 集成代码。
-Generates platform-agnostic C++ hardware abstraction code from YAML.
+输入文件所在目录有 `.ioc` 文件时转发给 `xr_gen_code_stm32`，否则不做任何事。
+Forwards to `xr_gen_code_stm32` when the input file's directory contains an
+`.ioc` file; otherwise it does nothing.
+
+### 重新生成 BSP（CI 所用命令）Regenerating a BSP (what CI runs)
+
+XRobot BSP 的 CI 用以下命令重新生成 BSP 对象，并检查结果与提交内容一致：
+XRobot BSP CI regenerates the BSP objects with these commands and checks that the
+result matches the committed files:
+
+```bash
+xr_parse_ioc -d . -o .ci-tools/cubemx.yaml
+xr_gen_code_stm32 -i .ci-tools/cubemx.yaml -o User/app_main.cpp --xrobot --libxr-config User/libxr_config.yaml
+```
+
+`User/libxr_config.yaml` 顶层可有 `generator:` 键（本工具的发布版本号或 40 位提交 SHA），
+BSP CI 用它安装固定版本的生成器。生成器保留该键及文件中的注释。
+`User/libxr_config.yaml` may contain a top-level `generator:` key (a release
+version or 40-hex commit SHA of this tool) that BSP CI uses to install the pinned
+generator. The generator keeps this key and the file's comments.
 
 ---
 
@@ -132,8 +163,10 @@ Parses `.ioc`, generates YAML and C++ code, patches interrupt handlers, and init
 
 - `-t, --terminal <TERMINAL>`：
 
-  串口设备名称(如 `usart1` `usb_fs_cdc`)
-  Terminal device name (e.g. `usart1` `usb_fs_cdc`).
+  终端设备名称(如 `usart1` `usb_fs_cdc`)，写入 `User/libxr_config.yaml` 的 `terminal_source`，
+  之后的重新生成沿用该设置。
+  Terminal device name (e.g. `usart1` `usb_fs_cdc`). It is stored as
+  `terminal_source` in `User/libxr_config.yaml`, so later regenerations keep it.
 
 - `--xrobot`：
 
@@ -152,6 +185,12 @@ Parses `.ioc`, generates YAML and C++ code, patches interrupt handlers, and init
   default, even if the project gitlink already records the default while the checkout itself is stale. A
   checkout that is already current, newer than the package default, has diverged from it, or contains local
   changes is preserved. Use `--commit` to request an exact revision explicitly.
+
+  已存在的 `Middlewares/Third_Party/LibXR` 目录不会被删除、移动或重新克隆；若它不是有效的
+  Git checkout（且非空），命令报错并保持目录不变。
+  An existing `Middlewares/Third_Party/LibXR` directory is never deleted, moved or
+  re-cloned; if it is not a valid Git checkout (and not empty), the command stops
+  with an error and leaves it untouched.
 
 - `--git-source`
 
@@ -215,12 +254,18 @@ Note: CubeMX script mode may still launch the GUI. `--auto-confirm` is a best-ef
 
 #### 📦 输出内容 (Outputs)
 
-- `.config.yaml`:
+- `.config.yaml`：
 
-  自动生成的 C++ 驱动代码(如 `app_main.cpp`)
-  Generated C++ driver code (e.g. `app_main.cpp`)
+  由 `.ioc` 解析得到的配置
+  Configuration parsed from the `.ioc` file
 
-- `CMakeLists.txt`、`.gitignore`
+- `User/app_main.cpp`、`User/app_main.h`、`User/libxr_config.yaml`、`User/flash_map.hpp`：
+
+  生成的 C++ 代码与配置（见 `xr_gen_code_stm32`）
+  Generated C++ code and configuration (see `xr_gen_code_stm32`)
+
+- `cmake/LibXR.CMake`、`CMakeLists.txt`、`.gitignore`（见 `xr_stm32_cmake`）
+  (see `xr_stm32_cmake`)
 
 - 初始化的 Git 仓库及 LibXR 子模块
   Initialized Git repository and LibXR submodule
@@ -331,30 +376,44 @@ usage: xr_gen_code_stm32 [-h] -i INPUT -o OUTPUT [--xrobot] [--libxr-config LIBX
 
 - `-o`：
 
-  生成代码输出目录
-  Output directory
+  生成的 `app_main.cpp` 路径；其余输出写入同一目录（只给文件名时为当前目录）
+  Path of the generated `app_main.cpp`; the other outputs go to the same
+  directory (the current directory for a bare file name)
 
 #### ⚙️ Optional
 
 - `--xrobot`：
 
-  启用 XRobot glue 代码生成
-  Enable XRobot glue generation
+  生成 XRobot 静态注册与 `XROBOT_MAIN();`（见上文 Static XRobot integration）
+  Emit XRobot static registrations and `XROBOT_MAIN();` (see Static XRobot integration)
 
 - `--libxr-config`：
 
-  自定义 libxr_config.yaml 路径(可为本地或远程)
-  Path or URL to runtime config YAML
+  自定义 libxr_config.yaml 路径(可为本地或远程)；无法找到、读取或解析时生成失败
+  Path or URL to runtime config YAML; generation fails if it cannot be found,
+  read or parsed
 
 #### 📦 Outputs
 
 - `app_main.cpp`：
-  主入口文件，包含所有初始化逻辑
-  Main entry point with all initialization logic
+  主入口文件，包含所有初始化逻辑。`/* User Code Begin N */` 与 `/* User Code End N */`
+  之间的内容在重新生成时保留。标记缺失、重复、改名、不成对或位于 `#if` 等条件编译块内时，
+  生成器报告并停止、不写任何文件。GPIO 标签作为对象名，若是 C++ 关键字、宏或与生成代码中的
+  名字冲突，生成器同样报错。
+  Main entry point with all initialization logic. Code between
+  `/* User Code Begin N */` and `/* User Code End N */` is kept on regeneration.
+  If a marker is missing, duplicated, renamed, unpaired or inside a preprocessor
+  conditional, the generator reports it and stops without writing anything. GPIO
+  labels become object names; a label that is a C++ keyword, a macro, or a name
+  the generated code already uses is reported as an error as well.
 
 - `libxr_config.yaml`：
-  运行时配置文件，可自定义缓冲区大小、队列等参数
-  Runtime config YAML, can be customized with buffer size, queue, etc.
+  运行时配置文件，可自定义缓冲区大小、队列等参数；重新生成时保留注释和未知键（如 `generator:`）。
+  文件无法读取或解析时生成失败，不会被默认值覆盖。
+  Runtime config YAML, can be customized with buffer size, queue, etc. Comments
+  and keys the generator does not use (such as `generator:`) are kept. A file
+  that cannot be read or parsed stops generation instead of being reset to
+  defaults.
 
 - `flash_map.hpp`：
   自动生成的 Flash 扇区表，供 Flash 抽象层使用
@@ -403,13 +462,13 @@ sectors:
 
 ---
 
-### `xr_libxr_cmake`
+### `xr_stm32_cmake`
 
 为 STM32CubeMX 工程生成 `LibXR.CMake` 配置，并自动集成至 `CMakeLists.txt`。
 Generates `LibXR.CMake` file and injects it into the STM32CubeMX CMake project.
 
 ```bash
-usage: xr_libxr_cmake [-h] input_dir
+usage: xr_stm32_cmake [-h] input_dir
 ```
 
 #### 🔧 必选参数 (Required)
@@ -435,6 +494,13 @@ usage: xr_libxr_cmake [-h] input_dir
 
   - 添加 `User/*.cpp` 为源文件
     Add `User/*.cpp` to project sources
+
+  - 仅当 `User/app_main.cpp` 由 `xr_gen_code_stm32 --xrobot` 生成时，设置
+    `XROBOT_MODULES_DIR` 指向 `Modules/`；纯 LibXR 工程不设置。已存在的 `LibXR.CMake`
+    不会被修改，与工程不一致时给出警告。
+    Set `XROBOT_MODULES_DIR` to `Modules/` only when `User/app_main.cpp` was
+    generated by `xr_gen_code_stm32 --xrobot`; LibXR-only projects do not set it.
+    An existing `LibXR.CMake` is not changed; a mismatch is reported as a warning.
 
 - 自动检测是否启用 FreeRTOS：
   Auto-detect FreeRTOS configuration:
@@ -549,8 +615,17 @@ xr_stm32_toolchain_switch clang --picolibc
 - 自动修改 `CMakePresets.json`，切换默认工具链
   Automatically modify `CMakePresets.json` to switch the default toolchain
 
-- 如使用 Clang，同步修改 `cmake/starm-clang.cmake` 的标准库类型
-  If using Clang, synchronize the standard library type in `cmake/starm-clang.cmake`
+- 如使用 Clang，同步修改 `cmake/starm-clang.cmake` 中的默认标准库类型；已有构建目录在下次
+  配置/构建时即使用新值。单个构建目录也可用 `-DSTARM_TOOLCHAIN_CONFIG=<profile>` 选择
+  （需先运行 `xr_stm32_cmake`）。
+  If using Clang, synchronize the default standard library type in
+  `cmake/starm-clang.cmake`; existing build directories use the new value on their
+  next configure or build. A single build directory can also select a profile with
+  `-DSTARM_TOOLCHAIN_CONFIG=<profile>` (after `xr_stm32_cmake` has run).
+
+- 在 gcc 与 clang 之间切换会更换编译器，需在新的构建目录中重新配置。
+  Switching between gcc and clang changes the compiler; configure a new build
+  directory.
 
 ---
 
@@ -638,8 +713,8 @@ It does not include any drivers or business logic by itself. Instead, it focuses
   Parameter management, configuration system, and event system
 - ApplicationRunner / ThreadManager 等应用调度器
   ApplicationRunner and ThreadManager for runtime coordination
-- 不直接访问硬件，依赖 LibXR 的 PeripheralManager
-  Does not access hardware directly, relies on LibXR's PeripheralManager
+- 不直接访问硬件，使用 BSP 以 `XR_REGISTER` 注册的具名对象
+  Does not access hardware directly; uses the named objects the BSP registers with `XR_REGISTER`
 
 ---
 
@@ -654,8 +729,8 @@ It does not include any drivers or business logic by itself. Instead, it focuses
 - 与 **LibXR / XRobot** 结合时，以 `XR_REGISTER(object, ExplicitType)` 暴露已生成的具名对象，不生成运行期 `HardwareContainer`
   With **LibXR / XRobot**, exposes generated named objects through `XR_REGISTER(object, ExplicitType)` rather than a runtime `HardwareContainer`.
 
-- 支持生成模块入口代码、配置逻辑名与硬件名的映射，便于快速适配不同硬件配置
-  Supports generating module entry code and logical-to-physical hardware name mapping for quick adaptation to different platforms.
+- 模块配置直接按生成的对象名选择硬件，便于适配不同硬件配置
+  Module configurations select hardware directly by the generated object names, for quick adaptation to different hardware.
 
 #### 🔗 Links
 
