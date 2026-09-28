@@ -892,6 +892,88 @@ def preserve_user_blocks(existing_code: str, section: int) -> str:
     return ""
 
 
+_USER_MARKER_TEXT = re.compile(r"(?://|/\*)\s*User\s*Code\s*(?:Begin|End)\b", re.IGNORECASE)
+_USER_MARKER_BEGIN = re.compile(r"/\*\s*User Code Begin(?:\s+(.+?))?\s*\*/")
+_USER_MARKER_END = re.compile(r"/\*\s*User Code End(?:\s+(.+?))?\s*\*/")
+_PREPROC_DIRECTIVE = re.compile(r"#\s*(\w+)")
+
+
+def _source_line(source: bytes, offset: int) -> int:
+    return source.count(b"\n", 0, offset) + 1
+
+
+def validate_user_regions(existing_code: str, region_names) -> None:
+    """Refuse a rewrite that would drop code the user placed around markers.
+
+    Only the bodies of the generator's own User Code regions survive a
+    rewrite. A marker that is malformed, renamed, duplicated, unpaired,
+    missing or inside a preprocessor conditional would silently lose code or
+    change what the preprocessor keeps, so every such marker is reported.
+    """
+    if not existing_code.strip():
+        return
+    document = CppDocument.parse(existing_code)
+    source = document.render_bytes()
+    expected = list(region_names)
+    problems = []
+    elements = sorted(
+        (element for element in document.root.descendants(include_trivia=True)
+         if element.kind == "comment" or element.kind.startswith("preproc_")),
+        key=lambda element: element.span.start,
+    )
+    depth = 0
+    open_region = None
+    seen = []
+    for element in elements:
+        line = _source_line(source, element.span.start)
+        if element.kind != "comment":
+            directive = _PREPROC_DIRECTIVE.match(element.text.strip())
+            keyword = directive.group(1) if directive else ""
+            if keyword in ("if", "ifdef", "ifndef"):
+                depth += 1
+            elif keyword == "endif":
+                depth = max(0, depth - 1)
+            continue
+        text = element.text.strip()
+        if not _USER_MARKER_TEXT.match(text):
+            continue
+        begin = _USER_MARKER_BEGIN.fullmatch(text)
+        end = _USER_MARKER_END.fullmatch(text)
+        if begin is None and end is None:
+            problems.append(f"line {line}: malformed User Code marker {text}")
+            continue
+        name = ((begin or end).group(1) or "").strip()
+        if depth:
+            problems.append(
+                f"line {line}: {text} is inside a preprocessor conditional")
+        if name not in expected:
+            problems.append(
+                f"line {line}: {text} names a region the generator does not emit "
+                f"(expected {', '.join(expected)})")
+        if begin is not None:
+            if open_region is not None:
+                problems.append(
+                    f"line {line}: {text} opens before User Code End {open_region}")
+            if name in seen:
+                problems.append(f"line {line}: {text} is duplicated")
+            seen.append(name)
+            open_region = name
+        else:
+            if open_region != name:
+                problems.append(f"line {line}: {text} has no matching Begin marker")
+            else:
+                open_region = None
+    if open_region is not None:
+        problems.append(f"User Code Begin {open_region} has no matching End marker")
+    for name in expected:
+        if name not in seen:
+            problems.append(f"User Code Begin {name} / End {name} markers are missing")
+    if problems:
+        raise ValueError(
+            "existing User Code markers cannot be preserved safely; nothing was "
+            "written. Fix the markers and regenerate:\n  " + "\n  ".join(problems))
+
+
 def _preserve_generated_regions(existing_code: str, generated_code: str) -> str:
     """Preserve explicit User Code bodies; regenerate format/lint-protected code.
 
@@ -900,6 +982,8 @@ def _preserve_generated_regions(existing_code: str, generated_code: str) -> str:
     """
     previous = CppDocument.parse(existing_code)
     current = CppDocument.parse(generated_code)
+    validate_user_regions(
+        existing_code, [region.name for region in current.user_regions()])
     used = set()
     for old_region in previous.user_regions():
         regions = list(current.user_regions())
