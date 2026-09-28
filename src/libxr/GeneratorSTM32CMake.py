@@ -7,6 +7,8 @@ import re
 from pathlib import Path
 from typing import Union
 
+from xr_syntax.cpp import CppDocument
+
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 
 LIBXR_CMAKE_TEMPLATE = (
@@ -16,8 +18,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # LibXR
 set(LIBXR_SYSTEM _LIBXR_SYSTEM_)
 set(LIBXR_DRIVER st)
-set(XROBOT_MODULES_DIR ${CMAKE_CURRENT_SOURCE_DIR}/Modules)
-add_subdirectory(Middlewares/Third_Party/LibXR)
+_XROBOT_MODULES_DIR_add_subdirectory(Middlewares/Third_Party/LibXR)
 target_link_libraries(xr
     PUBLIC stm32cubemx
 )
@@ -75,7 +76,28 @@ endif()
 '''
 )
 
+XROBOT_MODULES_DIR_LINE = "set(XROBOT_MODULES_DIR ${CMAKE_CURRENT_SOURCE_DIR}/Modules)\n"
+
 include_cmake_cmd = "include(${CMAKE_CURRENT_LIST_DIR}/cmake/LibXR.CMake)\n"
+
+
+def project_uses_xrobot(input_directory: str) -> bool:
+    """Report whether User/app_main.cpp was generated with --xrobot.
+
+    xr_gen_code_stm32 --xrobot includes xrobot_main.hpp outside the User Code
+    regions; xr_cubemx_cfg generates that file before the CMake integration.
+    """
+    app_main = os.path.join(input_directory, "User", "app_main.cpp")
+    if not os.path.isfile(app_main):
+        return False
+    document = CppDocument.parse(read_text_with_fallback(app_main))
+    regions = [region.body_span for region in document.user_regions()]
+    for include in document.include_views():
+        start = include.node.span.start
+        if include.header == "xrobot_main.hpp" and not any(
+                span.start <= start < span.end for span in regions):
+            return True
+    return False
 
 
 def normalize_libxr_cmake(content: str, system: str) -> str:
@@ -138,7 +160,7 @@ def normalize_libxr_cmake(content: str, system: str) -> str:
     return content
 
 
-def update_or_create_libxr_cmake(file_path: str, system: str) -> None:
+def update_or_create_libxr_cmake(file_path: str, system: str, use_xrobot: bool) -> None:
     cmake_path = Path(file_path)
 
     if cmake_path.exists():
@@ -149,9 +171,21 @@ def update_or_create_libxr_cmake(file_path: str, system: str) -> None:
             logging.info(f"Updated existing LibXR.CMake for system: {system}")
         else:
             logging.info("LibXR.CMake already up to date, no changes needed.")
+        # The existing file is user-owned here; report a mismatch only.
+        declares_modules = re.search(r'^\s*set\s*\(\s*XROBOT_MODULES_DIR\b', new_content,
+                                     flags=re.MULTILINE) is not None
+        if declares_modules and not use_xrobot:
+            logging.warning("LibXR.CMake sets XROBOT_MODULES_DIR, but User/app_main.cpp was not "
+                            "generated with --xrobot; remove that line for a LibXR-only project.")
+        elif use_xrobot and not declares_modules:
+            logging.warning("User/app_main.cpp uses XRobot, but LibXR.CMake does not set "
+                            "XROBOT_MODULES_DIR; add: " + XROBOT_MODULES_DIR_LINE.strip())
     else:
+        # XRobot projects build their Modules through LibXR; plain LibXR
+        # projects must not name a Modules directory.
         cmake_path.write_text(
-            LIBXR_CMAKE_TEMPLATE.replace("_LIBXR_SYSTEM_", system),
+            LIBXR_CMAKE_TEMPLATE.replace("_LIBXR_SYSTEM_", system).replace(
+                "_XROBOT_MODULES_DIR_", XROBOT_MODULES_DIR_LINE if use_xrobot else ""),
             encoding="utf-8"
         )
         logging.info(f"Generated LibXR.CMake at: {cmake_path}")
@@ -272,7 +306,7 @@ def main():
     else:
         system = "None"
 
-    update_or_create_libxr_cmake(file_path, system)
+    update_or_create_libxr_cmake(file_path, system, project_uses_xrobot(input_directory))
     logging.info("LibXR.CMake generated/updated successfully.")
 
     normalize_starm_clang_toolchain(os.path.join(cmake_dir, "starm-clang.cmake"))
