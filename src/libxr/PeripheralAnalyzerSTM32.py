@@ -953,15 +953,15 @@ class USBParser(PeripheralParser):
         Args:
             p_type (str): The type of peripheral to process (should be "USB").
         """
-        usb_names = set()
-        # 1. Find all USB peripheral names in the raw_map
+        # 1. Find all USB peripheral names in the raw_map, in .ioc order
+        usb_names = {}
         for key, value in self.raw_map.items():
             if self._ioc_key_startswith(key, "Mcu.IP") and "USB" in value:
-                usb_names.add(value)
+                usb_names.setdefault(value)
             elif re.match(r"^USB(_OTG(_FS|_HS))?\.", key):
-                usb_names.add(self._ioc_key_root(key))
+                usb_names.setdefault(self._ioc_key_root(key))
 
-        logging.info(f"[USBParser] Detected USB peripherals: {usb_names}")
+        logging.info(f"[USBParser] Detected USB peripherals: {list(usb_names)}")
 
         for usb_name in usb_names:
             self._ensure_usb_instance(usb_name)
@@ -1440,7 +1440,7 @@ def main() -> None:
         logging.error(f"Invalid input directory: {args.directory}")
         sys.exit(1)
 
-    ioc_files = [f for f in os.listdir(args.directory) if f.endswith(".ioc")]
+    ioc_files = sorted(f for f in os.listdir(args.directory) if f.endswith(".ioc"))
     if not ioc_files:
         logging.error("No .ioc files found in target directory")
         sys.exit(1)

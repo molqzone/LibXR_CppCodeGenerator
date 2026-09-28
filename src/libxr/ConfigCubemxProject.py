@@ -91,7 +91,7 @@ def run_command(cmd, ignore_error=False):
 
 def find_ioc_file(directory):
     """Search for a .ioc file in the specified directory."""
-    for file in os.listdir(directory):
+    for file in sorted(os.listdir(directory)):
         if file.endswith(".ioc"):
             return os.path.join(directory, file)
     return None
