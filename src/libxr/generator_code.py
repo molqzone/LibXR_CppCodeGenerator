@@ -19,7 +19,7 @@ def is_stm32_project(path: str) -> bool:
 
 
 def main():
-    from libxr.PackageInfo import LibXRPackageInfo
+    from libxr.package_info import LibXRPackageInfo
 
     LibXRPackageInfo.check_and_print()
     
@@ -42,7 +42,7 @@ def main():
         sys.exit(0)
 
     # Forward all original arguments (not just known) to the generator
-    cmd: List[str] = [sys.executable, "-m", "libxr.GeneratorCodeSTM32", *sys.argv[1:]]
+    cmd: List[str] = [sys.executable, "-m", "libxr.generator_code_stm32", *sys.argv[1:]]
 
     logging.info("STM32 project detected (found .ioc file in input path).")
     logging.debug(f"CMD: {' '.join(cmd)}")

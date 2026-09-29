@@ -1412,7 +1412,7 @@ def _format_peripheral_config(p_type: str, config: Dict) -> str:
 # Main Entry Point
 # --------------------------
 def main() -> None:
-    from libxr.PackageInfo import LibXRPackageInfo
+    from libxr.package_info import LibXRPackageInfo
 
     LibXRPackageInfo.check_and_print()
 

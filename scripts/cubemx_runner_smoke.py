@@ -19,7 +19,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_DIR = REPO_ROOT / "src"
 sys.path.insert(0, str(SRC_DIR))
 
-from libxr.CubeMXGenerator import (
+from libxr.cubemx_generator import (
     build_cubemx_command,
     generate_cubemx_project,
 )  # noqa: E402

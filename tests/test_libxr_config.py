@@ -10,8 +10,8 @@ from unittest.mock import patch
 
 import yaml
 
-from libxr import GeneratorCodeSTM32 as generator
-from libxr import LibXRConfigFile as config_file
+from libxr import generator_code_stm32 as generator
+from libxr import libxr_config_file as config_file
 
 
 PROJECT = {
@@ -122,7 +122,7 @@ class LibXRConfigFile(unittest.TestCase):
         previous = Path.cwd()
         os.chdir(self.directory)
         self.addCleanup(os.chdir, previous)
-        with patch('sys.argv', argv), patch('libxr.PackageInfo.LibXRPackageInfo.check_and_print'):
+        with patch('sys.argv', argv), patch('libxr.package_info.LibXRPackageInfo.check_and_print'):
             generator.main()
         for name in ('app_main.cpp', 'app_main.h', 'libxr_config.yaml', 'flash_map.hpp'):
             self.assertTrue((self.directory / name).is_file(), name)
@@ -134,7 +134,7 @@ class LibXRConfigFile(unittest.TestCase):
         broken = 'Terminal: [unclosed\n'
         (output.parent / 'libxr_config.yaml').write_text(broken, encoding='utf-8')
         argv = ['xr_gen_code_stm32', '-i', str(self.directory / 'input.yaml'), '-o', str(output)]
-        with patch('sys.argv', argv), patch('libxr.PackageInfo.LibXRPackageInfo.check_and_print'), \
+        with patch('sys.argv', argv), patch('libxr.package_info.LibXRPackageInfo.check_and_print'), \
                 contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as error:
             generator.main()
         self.assertEqual(error.exception.code, 1)

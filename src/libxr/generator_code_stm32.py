@@ -10,8 +10,8 @@ import argparse
 import yaml
 from xr_syntax.cpp import CppDocument, identifier_occurrences
 
-from libxr import LibXRConfigFile as libxr_config_file
-from libxr.LibXRConfigFile import LibXRConfigError
+from libxr import libxr_config_file
+from libxr.libxr_config_file import LibXRConfigError
 
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 
@@ -1395,7 +1395,7 @@ def inject_flash_layout(project_data: dict, output_dir: str) -> None:
     :param output_dir: Output directory for generated flash_map.hpp
     """
     try:
-        from libxr.STM32FlashGenerator import layout_flash, flash_info_to_dict
+        from libxr.stm32_flash_generator import layout_flash, flash_info_to_dict
         mcu_model = project_data.get("Mcu", {}).get("Type", "").strip()
         if not mcu_model:
             logging.warning("Cannot find MCU name, skipping FlashLayout generation")
@@ -1426,7 +1426,7 @@ def inject_flash_layout(project_data: dict, output_dir: str) -> None:
 
 
 def main():
-    from libxr.PackageInfo import LibXRPackageInfo
+    from libxr.package_info import LibXRPackageInfo
 
     LibXRPackageInfo.check_and_print()
 

@@ -9,11 +9,11 @@ import argparse
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 
 def main():
-    from libxr.PackageInfo import LibXRPackageInfo
+    from libxr.package_info import LibXRPackageInfo
 
     LibXRPackageInfo.check_and_print()
 
-    parser = argparse.ArgumentParser(description="Run PeripheralAnalyzerSTM32 on a specified directory.")
+    parser = argparse.ArgumentParser(description="Run xr_parse_ioc on a specified directory.")
     parser.add_argument(
         "-d", "--directory",
         required=True,
@@ -36,7 +36,7 @@ def main():
     # Construct the command to run the parser
     cmd = [
         sys.executable,
-        "-m", "libxr.PeripheralAnalyzerSTM32",
+        "-m", "libxr.peripheral_analyzer_stm32",
         "-d", target_dir,
         *extra_args  # Forward other arguments
     ]
@@ -49,7 +49,7 @@ def main():
     try:
         subprocess.run(cmd, check=True)
     except subprocess.CalledProcessError as e:
-        logging.error(f"PeripheralAnalyzerSTM32 exited with code {e.returncode}")
+        logging.error(f"xr_parse_ioc exited with code {e.returncode}")
         sys.exit(e.returncode)
 
 if __name__ == "__main__":

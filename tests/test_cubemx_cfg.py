@@ -6,8 +6,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from libxr import ConfigCubemxProject as cubemx_cfg
-from libxr import GeneratorCodeSTM32 as generator
+from libxr import config_cubemx_project as cubemx_cfg
+from libxr import generator_code_stm32 as generator
 
 
 class TerminalOption(unittest.TestCase):

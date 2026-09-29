@@ -18,7 +18,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_DIR = REPO_ROOT / "src"
 sys.path.insert(0, str(SRC_DIR))
 
-from libxr.ConfigCubemxProject import add_libxr  # noqa: E402
+from libxr.config_cubemx_project import add_libxr  # noqa: E402
 
 
 def git(*args: str, cwd: Optional[Path] = None) -> str:

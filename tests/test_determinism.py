@@ -66,13 +66,13 @@ LIBXR_CONFIG = textwrap.dedent("""\
 GENERATE = textwrap.dedent("""\
     import sys
     from unittest.mock import patch
-    from libxr import GeneratorCodeSTM32, PeripheralAnalyzerSTM32
-    with patch('libxr.PackageInfo.LibXRPackageInfo.check_and_print'):
+    from libxr import generator_code_stm32, peripheral_analyzer_stm32
+    with patch('libxr.package_info.LibXRPackageInfo.check_and_print'):
         sys.argv = ['xr_parse_ioc', '-d', 'project', '-o', 'project/cubemx.yaml']
-        PeripheralAnalyzerSTM32.main()
+        peripheral_analyzer_stm32.main()
         sys.argv = ['xr_gen_code_stm32', '-i', 'project/cubemx.yaml',
                     '-o', 'project/User/app_main.cpp', '--xrobot']
-        GeneratorCodeSTM32.main()
+        generator_code_stm32.main()
     """)
 
 

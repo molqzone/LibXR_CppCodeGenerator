@@ -9,8 +9,8 @@ import textwrap
 import unittest
 from pathlib import Path
 
-from libxr import GeneratorSTM32CMake as stm32_cmake
-from libxr import STM32ToolchainSwitch as toolchain_switch
+from libxr import generator_stm32_cmake as stm32_cmake
+from libxr import stm32_toolchain_switch as toolchain_switch
 
 
 # Profile section of a CubeMX-generated cmake/starm-clang.cmake.

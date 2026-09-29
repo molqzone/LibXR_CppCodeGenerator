@@ -8,7 +8,7 @@ from unittest.mock import patch
 import contextlib
 import io
 
-from libxr import GeneratorCodeSTM32 as generator
+from libxr import generator_code_stm32 as generator
 
 
 class StaticEntry(unittest.TestCase):

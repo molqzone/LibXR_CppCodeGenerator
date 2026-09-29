@@ -5,8 +5,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from libxr import GeneratorCodeSTM32 as generator
-from libxr import GeneratorSTM32CMake as stm32_cmake
+from libxr import generator_code_stm32 as generator
+from libxr import generator_stm32_cmake as stm32_cmake
 
 
 PROJECT = {'Mcu': {'Type': 'STM32F407IGH6', 'Family': 'STM32F4'}, 'GPIO': {}, 'Peripherals': {}}
@@ -29,7 +29,7 @@ class ModulesDirectory(unittest.TestCase):
 
     def run_cmake_generator(self):
         with patch('sys.argv', ['xr_stm32_cmake', str(self.project)]), \
-                patch('libxr.PackageInfo.LibXRPackageInfo.check_and_print'):
+                patch('libxr.package_info.LibXRPackageInfo.check_and_print'):
             stm32_cmake.main()
         return (self.project / 'cmake' / 'LibXR.CMake').read_text(encoding='utf-8')
 

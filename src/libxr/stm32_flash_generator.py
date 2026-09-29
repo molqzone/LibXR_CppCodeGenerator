@@ -389,7 +389,7 @@ def _local_name(tag: str) -> str:
 
 
 def main():
-    from libxr.PackageInfo import LibXRPackageInfo
+    from libxr.package_info import LibXRPackageInfo
 
     LibXRPackageInfo.check_and_print()
 

@@ -298,7 +298,7 @@ def set_terminal_source(user_path, terminal_source):
     xr_gen_code_stm32 reads the terminal device from this file, so the choice
     persists for later regenerations. Other keys and comments are kept.
     """
-    from libxr import LibXRConfigFile as libxr_config_file
+    from libxr import libxr_config_file
 
     config_path = os.path.join(user_path, "libxr_config.yaml")
     try:
@@ -358,7 +358,7 @@ def ensure_valid_cubemx_project(path: str):
 
 
 def main():
-    from libxr.PackageInfo import LibXRPackageInfo
+    from libxr.package_info import LibXRPackageInfo
 
     LibXRPackageInfo.check_and_print()
 
