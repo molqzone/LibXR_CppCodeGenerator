@@ -100,7 +100,7 @@ class HashSeedIndependence(unittest.TestCase):
                                              'cubemx.yaml'])
         self.assertIn(b'STM32USBDeviceOtgFS usb_fs', reference['User/app_main.cpp'])
         self.assertIn(b'STM32USBDeviceOtgHS usb_hs', reference['User/app_main.cpp'])
-        for seed, output in zip(seeds[1:], outputs[1:]):
+        for seed, output in zip(seeds[1:], outputs[1:], strict=True):
             for name in reference:
                 with self.subTest(seed=seed, file=name):
                     self.assertEqual(output[name], reference[name])

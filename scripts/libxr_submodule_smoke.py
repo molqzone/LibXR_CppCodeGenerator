@@ -174,7 +174,9 @@ def run_policy_checks(root: Path) -> None:
         add_libxr(project, default_libxr_commit=default_commit)
     except SystemExit as error:
         if error.code != 1:
-            raise AssertionError(f"not a checkout: unexpected exit code {error.code}")
+            raise AssertionError(
+                f"not a checkout: unexpected exit code {error.code}"
+            ) from error
     else:
         raise AssertionError("not a checkout: a non-Git LibXR directory was accepted")
     if sorted(path.name for path in checkout.iterdir()) != ["user_sources.cpp"]:

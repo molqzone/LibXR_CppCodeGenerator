@@ -122,7 +122,7 @@ def _same(current, value) -> bool:
     if isinstance(current, (list, tuple)) or isinstance(value, (list, tuple)):
         return (isinstance(current, (list, tuple)) and isinstance(value, (list, tuple))
                 and len(current) == len(value)
-                and all(_same(a, b) for a, b in zip(current, value)))
+                and all(_same(a, b) for a, b in zip(current, value, strict=True)))
     if isinstance(current, bool) != isinstance(value, bool):
         return False
     if isinstance(current, str) != isinstance(value, str):

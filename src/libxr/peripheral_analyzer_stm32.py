@@ -572,7 +572,7 @@ class ADCParser(PeripheralParser):
         If both ADC_CHANNEL_TEMPSENSOR_ADCn and ADC_CHANNEL_TEMPSENSOR exist,
         keep the suffixed variant(s) and drop the generic one.
         """
-        for adc_name, adc_cfg in self.config.peripherals["ADC"].items():
+        for adc_cfg in self.config.peripherals["ADC"].values():
             # Basic dedupe
             chs  = list(dict.fromkeys(adc_cfg.get("Channels", [])))
             regs = list(dict.fromkeys(adc_cfg.get("RegularConversions", [])))
@@ -733,7 +733,7 @@ class USARTParser(PeripheralParser):
                     self._handle_operation_mode(p_type, uart_name, value)
 
         # Second pass: infer missing UART instances based on GPIO signals
-        for pin_name, pin_cfg in self.config.pin_registry.items():
+        for pin_cfg in self.config.pin_registry.values():
             signal = pin_cfg.get("Signal", "")
             if "_TX" in signal or "_RX" in signal:
                 uart_root = self._signal_root(signal)
@@ -1098,7 +1098,7 @@ class DMAParser(PeripheralParser):
         Marks dma_type for each config, and for each TX/RX config,
         automatically sets DMA_TX/DMA_RX and their type for buffer generation.
         """
-        for config_key, cfg in self.config.dma_configs.items():
+        for cfg in self.config.dma_configs.values():
             peripheral_full = cfg["peripheral"]
             dma_type = cfg.get("dma_type", "DMA")
             p_name, direction = self._parse_dma_request_endpoint(peripheral_full)
@@ -1315,7 +1315,7 @@ def _extract_key_value_pairs(file_handler: TextIO) -> dict[str, str]:
 
 def _link_dma_requests(config: ConfigurationManager) -> None:
     """Associate DMA requests with corresponding peripherals."""
-    for req_id, peripheral in config.dma_requests.items():
+    for peripheral in config.dma_requests.values():
         p_name, direction = PeripheralParser._parse_dma_request_endpoint(peripheral)
         direction_key = f"DMA_{direction.upper()}" if direction != "general" else "DMA"
 

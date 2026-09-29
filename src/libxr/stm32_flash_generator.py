@@ -113,7 +113,7 @@ def get_flash_kb(model: str) -> int:
     try:
         return FLASH_SIZE_CODES[model[10]]
     except (KeyError, IndexError):
-        raise ValueError(f"Unrecognized capacity code for {model}")
+        raise ValueError(f"Unrecognized capacity code for {model}") from None
 
 
 def layout_flash(model: str) -> FlashInfo:

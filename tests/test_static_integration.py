@@ -67,9 +67,10 @@ class StaticEntry(unittest.TestCase):
 
     def test_removed_container_option_is_rejected(self):
         self.assertFalse(hasattr(generator, 'generate_xrobot_hardware_container'))
-        with patch('sys.argv', ['generator', '-i', 'input.yaml', '-o', 'app.cpp', '--hw-cntr']):
-            with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as error:
-                generator.parse_arguments()
+        argv = ['generator', '-i', 'input.yaml', '-o', 'app.cpp', '--hw-cntr']
+        with patch('sys.argv', argv), contextlib.redirect_stderr(io.StringIO()), \
+                self.assertRaises(SystemExit) as error:
+            generator.parse_arguments()
         self.assertEqual(error.exception.code, 2)
 
     def test_named_channels_and_template_types(self):

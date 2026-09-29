@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import ctypes
 import logging
 import os
@@ -233,7 +234,7 @@ def _iter_cubemx_candidates() -> Iterable[str]:
 
     if os.name == "nt":
         local_appdata = os.environ.get("LOCALAPPDATA", "")
-        program_files = os.environ.get("ProgramFiles", "")
+        program_files = os.environ.get("PROGRAMFILES", "")
         candidates = [
             "STM32CubeMX.exe",
             os.path.join(local_appdata, "Programs", "STM32CubeMX", "STM32CubeMX.exe"),
@@ -248,8 +249,7 @@ def _iter_cubemx_candidates() -> Iterable[str]:
             "/usr/local/bin/STM32CubeMX",
         ]
 
-    for candidate in candidates:
-        yield candidate
+    yield from candidates
 
 
 def resolve_cubemx_command(explicit_cmd: str = "") -> str:
@@ -940,14 +940,9 @@ def _prepare_script_path(project_dir: str, script_path: str, keep_script: bool) 
     if keep_script:
         return os.path.join(project_dir, "cubemx_generate.txt"), False
 
-    handle = tempfile.NamedTemporaryFile(
-        prefix="cubemx_generate_",
-        suffix=".txt",
-        dir=project_dir,
-        delete=False,
-    )
-    handle.close()
-    return handle.name, True
+    fd, name = tempfile.mkstemp(prefix="cubemx_generate_", suffix=".txt", dir=project_dir)
+    os.close(fd)
+    return name, True
 
 
 def _normalize_expect_paths(project_dir: str, expect_paths: Sequence[str]) -> list[str]:
@@ -1004,98 +999,92 @@ def generate_cubemx_project(
     stdout_lines: list[str] = []
     stderr_lines: list[str] = []
 
-    stdout_handle = None
-    stderr_handle = None
-    if log_dir:
-        stdout_handle = open(os.path.join(log_dir, "cubemx_stdout.log"), "w", encoding="utf-8", newline="\n")
-        stderr_handle = open(os.path.join(log_dir, "cubemx_stderr.log"), "w", encoding="utf-8", newline="\n")
-        _write_text_file(os.path.join(log_dir, "cubemx_command.txt"), _shell_join(command) + "\n")
+    with contextlib.ExitStack() as logs:
+        stdout_handle = None
+        stderr_handle = None
+        if log_dir:
+            stdout_handle = logs.enter_context(
+                open(os.path.join(log_dir, "cubemx_stdout.log"), "w", encoding="utf-8", newline="\n")
+            )
+            stderr_handle = logs.enter_context(
+                open(os.path.join(log_dir, "cubemx_stderr.log"), "w", encoding="utf-8", newline="\n")
+            )
+            _write_text_file(os.path.join(log_dir, "cubemx_command.txt"), _shell_join(command) + "\n")
 
-    def consume_stream(stream, sink: list[str], handle) -> None:
-        try:
-            for line in iter(stream.readline, ""):
-                sink.append(line)
-                if handle is not None:
-                    handle.write(line)
-                    handle.flush()
-        finally:
-            stream.close()
-
-    try:
-        # CubeMX path is resolved before this point and arguments are passed as
-        # a list with shell disabled, so project paths cannot be shell-expanded.
-        popen_kwargs = {}
-        if os.name != "nt":
-            popen_kwargs["start_new_session"] = True
-
-        process = subprocess.Popen(  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit
-            command,
-            cwd=project_dir,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            errors="replace",
-            bufsize=1,
-            shell=False,
-            **popen_kwargs,
-        )
-    except Exception:
-        if stdout_handle is not None:
-            stdout_handle.close()
-        if stderr_handle is not None:
-            stderr_handle.close()
-        if should_cleanup_script:
+        def consume_stream(stream, sink: list[str], handle) -> None:
             try:
-                os.remove(actual_script_path)
-            except OSError:
-                pass
-        raise
+                for line in iter(stream.readline, ""):
+                    sink.append(line)
+                    if handle is not None:
+                        handle.write(line)
+                        handle.flush()
+            finally:
+                stream.close()
 
-    stop_event = threading.Event()
-    watch_thread = None
-    if auto_confirm:
-        watch_thread = _DialogWatchThread(process.pid, stop_event)
-        watch_thread.start()
+        try:
+            # CubeMX path is resolved before this point and arguments are passed as
+            # a list with shell disabled, so project paths cannot be shell-expanded.
+            popen_kwargs = {}
+            if os.name != "nt":
+                popen_kwargs["start_new_session"] = True
 
-    stdout_thread = threading.Thread(target=consume_stream, args=(process.stdout, stdout_lines, stdout_handle), daemon=True)
-    stderr_thread = threading.Thread(target=consume_stream, args=(process.stderr, stderr_lines, stderr_handle), daemon=True)
-    stdout_thread.start()
-    stderr_thread.start()
+            process = subprocess.Popen(  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit
+                command,
+                cwd=project_dir,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                errors="replace",
+                bufsize=1,
+                shell=False,
+                **popen_kwargs,
+            )
+        except Exception:
+            if should_cleanup_script:
+                with contextlib.suppress(OSError):
+                    os.remove(actual_script_path)
+            raise
 
-    timeout_error: TimeoutError | None = None
-    dialog_error: BaseException | None = None
-    deadline = time.time() + timeout
-    try:
-        while True:
-            if watch_thread is not None and watch_thread.error is not None:
-                dialog_error = watch_thread.error
-                _terminate_process_tree(process)
-                returncode = process.wait(timeout=5)
-                break
-            returncode = process.poll()
-            if returncode is not None:
-                break
-            if time.time() >= deadline:
-                _terminate_process_tree(process)
-                returncode = process.wait(timeout=5)
-                timeout_error = TimeoutError(f"STM32CubeMX timed out after {timeout} seconds")
-                break
-            time.sleep(0.2)
-    finally:
-        stop_event.set()
-        if watch_thread is not None:
-            watch_thread.join(timeout=2.0)
+        stop_event = threading.Event()
+        watch_thread = None
+        if auto_confirm:
+            watch_thread = _DialogWatchThread(process.pid, stop_event)
+            watch_thread.start()
 
-    stdout_thread.join(timeout=2.0)
-    stderr_thread.join(timeout=2.0)
+        stdout_thread = threading.Thread(target=consume_stream, args=(process.stdout, stdout_lines, stdout_handle), daemon=True)
+        stderr_thread = threading.Thread(target=consume_stream, args=(process.stderr, stderr_lines, stderr_handle), daemon=True)
+        stdout_thread.start()
+        stderr_thread.start()
 
-    stdout_text = "".join(stdout_lines)
-    stderr_text = "".join(stderr_lines)
+        timeout_error: TimeoutError | None = None
+        dialog_error: BaseException | None = None
+        deadline = time.time() + timeout
+        try:
+            while True:
+                if watch_thread is not None and watch_thread.error is not None:
+                    dialog_error = watch_thread.error
+                    _terminate_process_tree(process)
+                    returncode = process.wait(timeout=5)
+                    break
+                returncode = process.poll()
+                if returncode is not None:
+                    break
+                if time.time() >= deadline:
+                    _terminate_process_tree(process)
+                    returncode = process.wait(timeout=5)
+                    timeout_error = TimeoutError(f"STM32CubeMX timed out after {timeout} seconds")
+                    break
+                time.sleep(0.2)
+        finally:
+            stop_event.set()
+            if watch_thread is not None:
+                watch_thread.join(timeout=2.0)
 
-    if stdout_handle is not None:
-        stdout_handle.close()
-    if stderr_handle is not None:
-        stderr_handle.close()
+        stdout_thread.join(timeout=2.0)
+        stderr_thread.join(timeout=2.0)
+
+        stdout_text = "".join(stdout_lines)
+        stderr_text = "".join(stderr_lines)
 
     result = CubeMXRunResult(
         command=command,
@@ -1107,10 +1096,8 @@ def generate_cubemx_project(
     )
 
     if should_cleanup_script:
-        try:
+        with contextlib.suppress(OSError):
             os.remove(actual_script_path)
-        except OSError:
-            pass
 
     if timeout_error is not None:
         raise timeout_error

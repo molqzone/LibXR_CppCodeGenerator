@@ -17,10 +17,10 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_DIR = REPO_ROOT / "src"
 sys.path.insert(0, str(SRC_DIR))
 
-from libxr.cubemx_generator import (
+from libxr.cubemx_generator import (  # noqa: E402
     build_cubemx_command,
     generate_cubemx_project,
-)  # noqa: E402
+)
 
 FAKE_CUBEMX = r"""
 import os

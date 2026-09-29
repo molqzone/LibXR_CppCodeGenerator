@@ -385,14 +385,18 @@ def _get_exti_irq(pin_num: int, port: str, is_exti: bool, mcu_family: str, mcu_t
             return "GPIOB_IRQn"
 
     if mcu_family in _EXTI_SHARED_LINE_FAMILIES:
-        if pin_num <= 1: return "EXTI0_1_IRQn"
-        if pin_num <= 3: return "EXTI2_3_IRQn"
+        if pin_num <= 1:
+            return "EXTI0_1_IRQn"
+        if pin_num <= 3:
+            return "EXTI2_3_IRQn"
         return "EXTI4_15_IRQn"
     elif mcu_family in _EXTI_PER_LINE_FAMILIES or mcu_type.startswith(("STM32H7R", "STM32H7S")):
         return f"EXTI{pin_num}_IRQn"
     else:
-        if 5 <= pin_num <= 9: return "EXTI9_5_IRQn"
-        if 10 <= pin_num <= 15: return "EXTI15_10_IRQn"
+        if 5 <= pin_num <= 9:
+            return "EXTI9_5_IRQn"
+        if 10 <= pin_num <= 15:
+            return "EXTI15_10_IRQn"
         return f"EXTI{pin_num}_IRQn"
 
 
@@ -854,7 +858,6 @@ class PeripheralFactory:
 
         # Get the final value from settings for code generation
         ep0_sz = int(inst_cfg["ep0_packet_size"])
-        tx_buf_sz = int(inst_cfg["tx_buffer_size"])   # USB DMA
         rx_buf_sz = int(inst_cfg["rx_buffer_size"])   # USB DMA
         tx_fifo_size = int(inst_cfg["tx_fifo_size"])  # EP1 HW FIFO
         rx_fifo_size = int(inst_cfg["rx_fifo_size"])  # EP1 HW FIFO
@@ -1129,8 +1132,6 @@ def _generate_core_system(project_data: dict) -> str:
     timebase_init = '  static STM32Timebase timebase;'  # Default to SysTick
 
     if source != 'SysTick':
-        timer_type = 'TIM' if source.startswith('TIM') else \
-            'LPTIM' if source.startswith('LPTIM') else 'HRTIM'
         handler = f'h{source.lower()}'
         timebase_init = f'  static STM32TimerTimebase timebase(&{handler});'
 
@@ -1345,7 +1346,11 @@ void app_main(void);
 #endif
 """
 
-    if not os.path.exists(header_path) or open(header_path).read() != content:
+    current = None
+    if os.path.exists(header_path):
+        with open(header_path, encoding="utf-8") as f:
+            current = f.read()
+    if current != content:
         with open(header_path, "w", encoding="utf-8", newline="\n") as f:
             f.write(content)
         logging.info(f"Generated header: {header_path}")
@@ -1366,7 +1371,6 @@ def generate_flash_map_cpp(flash_info: dict) -> str:
     ]
 
     for s in flash_info["sectors"]:
-        index = s["index"]
         address = int(s["address"], 16)
         size_kb = int(s["size_kb"])
         lines.append(f"  {{0x{address:08X}, 0x{(size_kb * 1024):08X}}},")
