@@ -340,8 +340,9 @@ Parses `.ioc` files and creates `.config.yaml` with a readable summary.
 #### ⚙️ 可选参数 (Optional)
 
 - `-o, --output <FILE>`
-  自定义 YAML 输出路径(默认与 `.ioc` 同名)
-  Custom YAML output path (default: `<input_file>.yaml`).
+  YAML 输出路径，默认为 DIRECTORY 下的 `.config.yaml`。目录中有多个 `.ioc` 文件时报错。
+  Output YAML path; the default is `.config.yaml` in DIRECTORY. A directory with
+  several `.ioc` files is an error.
 
 - `--verbose`
   启用调试日志，输出详细解析过程

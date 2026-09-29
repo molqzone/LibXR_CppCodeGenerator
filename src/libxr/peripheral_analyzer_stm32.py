@@ -1407,7 +1407,7 @@ def main() -> None:
     parser.add_argument(
         "-o",
         "--output",
-        help="Custom output YAML file path (default: <input_file>.yaml)",
+        help="output YAML file (default: .config.yaml in DIRECTORY)",
     )
     parser.add_argument("--verbose", action="store_true", help="Enable debug logging")
 
@@ -1424,6 +1424,14 @@ def main() -> None:
     if not ioc_files:
         logging.error("No .ioc files found in target directory")
         sys.exit(1)
+    if len(ioc_files) > 1:
+        # 一个目录对应一个 CubeMX 工程；多个 .ioc 会写进同一个输出文件。
+        # One directory is one CubeMX project; several .ioc files would share the output.
+        logging.error(
+            f"{args.directory} holds several .ioc files ({', '.join(ioc_files)}); "
+            "run xr_parse_ioc on a directory with one CubeMX project"
+        )
+        sys.exit(1)
 
     for ioc_file in ioc_files:
         input_path = os.path.join(args.directory, ioc_file)
@@ -1433,7 +1441,7 @@ def main() -> None:
         if not config_data:
             continue
 
-        output_path = args.output or os.path.splitext(input_path)[0] + ".yaml"
+        output_path = args.output or os.path.join(args.directory, ".config.yaml")
         if save_to_yaml(config_data, output_path):
             print_summary(config_data)
 
