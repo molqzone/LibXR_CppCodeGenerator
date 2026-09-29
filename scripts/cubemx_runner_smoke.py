@@ -10,10 +10,8 @@ import sys
 import tempfile
 import textwrap
 import time
-
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Iterator
-
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_DIR = REPO_ROOT / "src"
@@ -23,7 +21,6 @@ from libxr.cubemx_generator import (
     build_cubemx_command,
     generate_cubemx_project,
 )  # noqa: E402
-
 
 FAKE_CUBEMX = r"""
 import os

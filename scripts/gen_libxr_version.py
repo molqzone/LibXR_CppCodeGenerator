@@ -1,6 +1,6 @@
 import logging
-import subprocess
 import os
+import subprocess
 
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 

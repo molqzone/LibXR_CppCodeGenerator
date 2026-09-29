@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 
+import argparse
 import logging
 import os
-import sys
 import subprocess
-import argparse
-from typing import List
+import sys
 
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 
@@ -42,7 +41,7 @@ def main():
         sys.exit(0)
 
     # Forward all original arguments (not just known) to the generator
-    cmd: List[str] = [sys.executable, "-m", "libxr.generator_code_stm32", *sys.argv[1:]]
+    cmd: list[str] = [sys.executable, "-m", "libxr.generator_code_stm32", *sys.argv[1:]]
 
     logging.info("STM32 project detected (found .ioc file in input path).")
     logging.debug(f"CMD: {' '.join(cmd)}")

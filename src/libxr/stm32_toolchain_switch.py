@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 import argparse
 import json
-import os
 import logging
+import os
 import re
 import sys
 
@@ -31,7 +31,7 @@ def patch_cmakepresets(compiler):
     if not os.path.exists(CMAKE_PRESETS_PATH):
         logging.error(f"{CMAKE_PRESETS_PATH} not found.")
         sys.exit(1)
-    with open(CMAKE_PRESETS_PATH, "r", encoding="utf-8") as f:
+    with open(CMAKE_PRESETS_PATH, encoding="utf-8") as f:
         presets = json.load(f)
     default_preset = None
     for preset in presets.get("configurePresets", []):
@@ -67,7 +67,7 @@ def patch_clang_stdlib(starm_config):
     if not os.path.exists(cmake_file):
         logging.error(f"{cmake_file} not found.")
         sys.exit(1)
-    with open(cmake_file, "r", encoding="utf-8") as f:
+    with open(cmake_file, encoding="utf-8") as f:
         lines = f.readlines()
     pat = re.compile(
         r'(set\s*\(\s*STARM_TOOLCHAIN_CONFIG\s+")([^"]+)(".*\))'

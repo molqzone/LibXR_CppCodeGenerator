@@ -5,7 +5,7 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import List, Optional, Pattern, Tuple
+from re import Pattern
 
 import yaml
 
@@ -25,24 +25,24 @@ class FlashInfo:
 
     model: str
     flash_base: int
-    flash_sectors: List[FlashSector]
-    flash_size_kb: Optional[int] = None
+    flash_sectors: list[FlashSector]
+    flash_size_kb: int | None = None
 
 
 @dataclass(frozen=True)
 class FlashRule:
     name: str
-    prefix: Optional[str]
-    contains: Optional[str]
-    regex: Optional[Pattern[str]]
-    flash_kb: Optional[int]
-    flash_kb_min: Optional[int]
-    flash_kb_max: Optional[int]
+    prefix: str | None
+    contains: str | None
+    regex: Pattern[str] | None
+    flash_kb: int | None
+    flash_kb_min: int | None
+    flash_kb_max: int | None
     layout_type: str
-    size_bytes: Optional[int]
-    pattern_kb: Tuple[int, ...]
-    bank_kb: Optional[int]
-    bank_address_stride_kb: Optional[int]
+    size_bytes: int | None
+    pattern_kb: tuple[int, ...]
+    bank_kb: int | None
+    bank_address_stride_kb: int | None
 
 
 FLASH_SIZE_CODES = {
@@ -108,7 +108,7 @@ def get_flash_kb(model: str) -> int:
         return 512
     if model.startswith("STM32U5"):
         code = model[10]
-        return U5_FLASH_SIZE_CODES.get(code, None)
+        return U5_FLASH_SIZE_CODES.get(code)
 
     try:
         return FLASH_SIZE_CODES[model[10]]
@@ -151,7 +151,7 @@ def flash_info_to_dict(info: FlashInfo) -> dict:
 def _build_flash_info(
     model: str,
     flash_kb: int,
-    sector_entries: List[Tuple[int, int]],
+    sector_entries: list[tuple[int, int]],
 ) -> FlashInfo:
     sectors = []
 
@@ -173,9 +173,9 @@ def _build_flash_info(
 
 
 def _build_contiguous_sector_entries(
-    sector_sizes: List[int],
+    sector_sizes: list[int],
     start_address: int = _FLASH_BASE,
-) -> List[Tuple[int, int]]:
+) -> list[tuple[int, int]]:
     sector_entries = []
     address = start_address
 
@@ -186,7 +186,7 @@ def _build_contiguous_sector_entries(
     return sector_entries
 
 
-def _build_uniform_sector_sizes(flash_kb: int, size_bytes: int) -> List[int]:
+def _build_uniform_sector_sizes(flash_kb: int, size_bytes: int) -> list[int]:
     total_bytes = flash_kb * 1024
     if total_bytes % size_bytes != 0:
         raise ValueError(
@@ -195,7 +195,7 @@ def _build_uniform_sector_sizes(flash_kb: int, size_bytes: int) -> List[int]:
     return [size_bytes] * (total_bytes // size_bytes)
 
 
-def _build_sequence_sector_sizes(flash_kb: int, pattern_kb: Tuple[int, ...]) -> List[int]:
+def _build_sequence_sector_sizes(flash_kb: int, pattern_kb: tuple[int, ...]) -> list[int]:
     remaining_kb = flash_kb
     sector_sizes = []
 
@@ -215,9 +215,9 @@ def _build_sequence_sector_sizes(flash_kb: int, pattern_kb: Tuple[int, ...]) -> 
 def _build_banked_sector_entries(
     flash_kb: int,
     bank_kb: int,
-    pattern_kb: Tuple[int, ...],
+    pattern_kb: tuple[int, ...],
     bank_address_stride_kb: int,
-) -> List[Tuple[int, int]]:
+) -> list[tuple[int, int]]:
     if sum(pattern_kb) != bank_kb:
         raise ValueError(
             f"Bank pattern {pattern_kb} does not sum to bank size {bank_kb}KB"
@@ -254,7 +254,7 @@ def _build_banked_sector_entries(
 def _build_sector_entries_from_rule(
     rule: FlashRule,
     flash_kb: int,
-) -> List[Tuple[int, int]]:
+) -> list[tuple[int, int]]:
     if rule.layout_type == "uniform":
         if rule.size_bytes is None:
             raise ValueError(f"Rule {rule.name} is missing size_bytes")
@@ -282,7 +282,7 @@ def _build_sector_entries_from_rule(
 
 
 @lru_cache(maxsize=1)
-def _load_flash_rules() -> Tuple[FlashRule, ...]:
+def _load_flash_rules() -> tuple[FlashRule, ...]:
     rule_path = Path(__file__).resolve().with_name("STM32FlashLayoutRules.xml")
     root = ET.parse(rule_path).getroot()
     rules = []
@@ -295,7 +295,7 @@ def _load_flash_rules() -> Tuple[FlashRule, ...]:
         layout_elem = child_elements[0]
         layout_tag = _local_name(layout_elem.tag)
         size_bytes = None
-        pattern_kb: Tuple[int, ...] = tuple()
+        pattern_kb: tuple[int, ...] = tuple()
         bank_kb = None
 
         if layout_tag == "uniform":
@@ -331,7 +331,7 @@ def _load_flash_rules() -> Tuple[FlashRule, ...]:
     return tuple(rules)
 
 
-def _match_flash_rule(model: str, flash_kb: int) -> Optional[FlashRule]:
+def _match_flash_rule(model: str, flash_kb: int) -> FlashRule | None:
     for rule in _load_flash_rules():
         if rule.prefix is not None and not model.startswith(rule.prefix):
             continue
@@ -357,7 +357,7 @@ def _parse_rule_size_bytes(elem: ET.Element) -> int:
     raise ValueError("uniform layout must provide size_bytes or size_kb")
 
 
-def _parse_pattern_kb(spec: str) -> Tuple[int, ...]:
+def _parse_pattern_kb(spec: str) -> tuple[int, ...]:
     pattern = []
     for token in spec.replace(" ", "").split(","):
         if not token:
@@ -376,11 +376,11 @@ def _parse_pattern_kb(spec: str) -> Tuple[int, ...]:
     return tuple(pattern)
 
 
-def _normalize_optional(value: Optional[str]) -> Optional[str]:
+def _normalize_optional(value: str | None) -> str | None:
     return value.upper() if value else None
 
 
-def _parse_optional_int(value: Optional[str]) -> Optional[int]:
+def _parse_optional_int(value: str | None) -> int | None:
     return int(value, 0) if value is not None else None
 
 

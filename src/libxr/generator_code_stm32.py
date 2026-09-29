@@ -1,12 +1,13 @@
 #!/usr/bin/env python
 """STM32 Peripheral Code Generator - Core Module (Optimized)"""
 
+import argparse
 import logging
 import os
 import re
 import sys
 import urllib.request
-import argparse
+
 import yaml
 from xr_syntax.cpp import CppDocument, identifier_occurrences
 
@@ -139,7 +140,7 @@ def generate_peripheral_instances(project_data: dict, use_xrobot: bool = False) 
 def load_configuration(file_path: str, use_xrobot: bool) -> dict:
     """Load and validate project YAML configuration with enhanced error reporting."""
     try:
-        with open(file_path, "r", encoding="utf-8") as f:
+        with open(file_path, encoding="utf-8") as f:
             config = yaml.safe_load(f)
 
             # Basic schema validation
@@ -283,17 +284,7 @@ def _sanitize_cpp_identifier(name: str) -> str:
     return re.sub(r'\W|^(?=\d)', '_', name)
 
 
-CPP_KEYWORDS = frozenset("""
-alignas alignof and and_eq asm auto bitand bitor bool break case catch char
-char8_t char16_t char32_t class compl concept const consteval constexpr
-constinit const_cast continue co_await co_return co_yield decltype default
-delete do double dynamic_cast else enum explicit export extern false float for
-friend goto if inline int long mutable namespace new noexcept not not_eq
-nullptr operator or or_eq private protected public register reinterpret_cast
-requires return short signed sizeof static static_assert static_cast struct
-switch template this thread_local throw true try typedef typeid typename union
-unsigned using virtual void volatile wchar_t while xor xor_eq
-""".split())
+CPP_KEYWORDS = frozenset(["alignas", "alignof", "and", "and_eq", "asm", "auto", "bitand", "bitor", "bool", "break", "case", "catch", "char", "char8_t", "char16_t", "char32_t", "class", "compl", "concept", "const", "consteval", "constexpr", "constinit", "const_cast", "continue", "co_await", "co_return", "co_yield", "decltype", "default", "delete", "do", "double", "dynamic_cast", "else", "enum", "explicit", "export", "extern", "false", "float", "for", "friend", "goto", "if", "inline", "int", "long", "mutable", "namespace", "new", "noexcept", "not", "not_eq", "nullptr", "operator", "or", "or_eq", "private", "protected", "public", "register", "reinterpret_cast", "requires", "return", "short", "signed", "sizeof", "static", "static_assert", "static_cast", "struct", "switch", "template", "this", "thread_local", "throw", "true", "try", "typedef", "typeid", "typename", "union", "unsigned", "using", "virtual", "void", "volatile", "wchar_t", "while", "xor", "xor_eq"])
 
 # Object-like CMSIS/HAL macros a GPIO object name would be expanded into.
 _CMSIS_INSTANCE_MACRO = re.compile(
@@ -1247,7 +1238,7 @@ def configure_terminal(project_data: dict) -> str:
                      static_cast<LibXR::Thread::Priority>({thread_priority}));
 """
         else:
-            code += f"""\
+            code += """\
   static auto terminal_task = Timer::CreateTask(terminal.TaskFun, &terminal, 10);
   Timer::Add(terminal_task);
   Timer::Start(terminal_task);
@@ -1303,7 +1294,7 @@ def reject_user_xrobot_main(existing_code: str) -> None:
 def generate_full_code(project_data: dict, use_xrobot: bool, existing_code: str) -> str:
     if use_xrobot:
         reject_user_xrobot_main(existing_code)
-    user_code_def_3 = '' if use_xrobot else f"  while(true) {{\n    Thread::Sleep(UINT32_MAX);\n  }}\n"
+    user_code_def_3 = '' if use_xrobot else "  while(true) {\n    Thread::Sleep(UINT32_MAX);\n  }\n"
     components = [
         _generate_header_includes(use_xrobot),
         '/* User Code Begin 1 */',
@@ -1395,7 +1386,7 @@ def inject_flash_layout(project_data: dict, output_dir: str) -> None:
     :param output_dir: Output directory for generated flash_map.hpp
     """
     try:
-        from libxr.stm32_flash_generator import layout_flash, flash_info_to_dict
+        from libxr.stm32_flash_generator import flash_info_to_dict, layout_flash
         mcu_model = project_data.get("Mcu", {}).get("Type", "").strip()
         if not mcu_model:
             logging.warning("Cannot find MCU name, skipping FlashLayout generation")
@@ -1447,7 +1438,7 @@ def main():
         # Generate code
         existing_code = ""
         if os.path.exists(args.output):
-            with open(args.output, "r", encoding="utf-8") as f:
+            with open(args.output, encoding="utf-8") as f:
                 existing_code = f.read()
 
         output_code = generate_full_code(project_data, use_xrobot, existing_code)

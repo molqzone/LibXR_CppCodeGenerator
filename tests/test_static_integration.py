@@ -1,12 +1,12 @@
 """Static XRobot output integration; no model invocation or vendor regeneration."""
+import contextlib
 import copy
 import importlib
-import tempfile
-from pathlib import Path
-import unittest
-from unittest.mock import patch
-import contextlib
 import io
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
 
 from libxr import generator_code_stm32 as generator
 

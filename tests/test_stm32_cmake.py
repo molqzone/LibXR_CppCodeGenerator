@@ -8,7 +8,6 @@ from unittest.mock import patch
 from libxr import generator_code_stm32 as generator
 from libxr import generator_stm32_cmake as stm32_cmake
 
-
 PROJECT = {'Mcu': {'Type': 'STM32F407IGH6', 'Family': 'STM32F4'}, 'GPIO': {}, 'Peripherals': {}}
 
 

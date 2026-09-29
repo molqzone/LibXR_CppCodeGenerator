@@ -7,7 +7,6 @@ import textwrap
 import unittest
 from pathlib import Path
 
-
 IOC = textwrap.dedent("""\
     Mcu.Family=STM32F4
     Mcu.Name=STM32F407I(E-G)Hx

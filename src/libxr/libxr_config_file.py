@@ -13,7 +13,8 @@ import io
 import yaml
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
-from ruamel.yaml.error import CommentMark, YAMLError as RoundTripYAMLError
+from ruamel.yaml.error import CommentMark
+from ruamel.yaml.error import YAMLError as RoundTripYAMLError
 from ruamel.yaml.tokens import CommentToken
 
 
@@ -58,7 +59,7 @@ def parse(text: str, origin: str):
 def read(path: str):
     """Return (round-trip document, plain settings) of a libxr_config.yaml file."""
     try:
-        with open(path, "r", encoding="utf-8") as stream:
+        with open(path, encoding="utf-8") as stream:
             text = stream.read()
     except (OSError, UnicodeDecodeError) as error:
         raise LibXRConfigError(f"Cannot read {path}: {error}") from error

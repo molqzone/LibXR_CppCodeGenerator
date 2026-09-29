@@ -8,17 +8,15 @@ import argparse
 import ctypes
 import logging
 import os
-import signal
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
 import threading
 import time
-
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
-
 
 LOGGER = logging.getLogger(__name__)
 
@@ -176,7 +174,7 @@ def _is_dialog_class(class_name: str) -> bool:
     return any(keyword in lowered_class for keyword in DIALOG_CLASS_KEYWORDS)
 
 
-def _java_user_state_options() -> List[str]:
+def _java_user_state_options() -> list[str]:
     java_home = os.path.abspath(os.path.expanduser("~"))
     prefs_root = os.path.join(java_home, ".java")
     return [
@@ -186,7 +184,7 @@ def _java_user_state_options() -> List[str]:
 
 
 def _can_use_generic_dialog_fallback(
-    confirm_counts: Dict[int, int],
+    confirm_counts: dict[int, int],
     window_id: int,
     flat_text: str,
     class_name: str,
@@ -196,7 +194,7 @@ def _can_use_generic_dialog_fallback(
     return False
 
 
-def _consume_generic_dialog_fallback(confirm_counts: Dict[int, int], window_id: int) -> bool:
+def _consume_generic_dialog_fallback(confirm_counts: dict[int, int], window_id: int) -> bool:
     count = confirm_counts.get(window_id, 0)
     if count >= GENERIC_DIALOG_CONFIRM_LIMIT:
         if count == GENERIC_DIALOG_CONFIRM_LIMIT:
@@ -340,7 +338,7 @@ def build_cubemx_command(
     launch_mode: str = "auto",
     java_cmd: str = "",
     silent: bool = False,
-) -> List[str]:
+) -> list[str]:
     launch_mode = launch_mode.lower()
     if launch_mode not in {"auto", "direct", "java"}:
         raise ValueError(f"Unsupported launch mode: {launch_mode}")
@@ -355,7 +353,7 @@ def build_cubemx_command(
             "Use --launch-mode direct for STM32CubeMX.exe."
         )
 
-    command: List[str]
+    command: list[str]
     if use_java:
         resolved_java = resolve_java_command(cubemx_cmd, java_cmd)
         command = [
@@ -376,7 +374,7 @@ def build_cubemx_command(
     return command
 
 
-def find_ioc_file(directory: str) -> Optional[str]:
+def find_ioc_file(directory: str) -> str | None:
     for file_name in sorted(os.listdir(directory)):
         if file_name.endswith(".ioc"):
             return os.path.join(directory, file_name)
@@ -385,7 +383,7 @@ def find_ioc_file(directory: str) -> Optional[str]:
 
 @dataclass
 class CubeMXRunResult:
-    command: List[str]
+    command: list[str]
     script_path: str
     stdout: str
     stderr: str
@@ -425,8 +423,8 @@ class _WindowsDialogController(_BaseDialogController):
         self.kernel32.CreateToolhelp32Snapshot.restype = self.wintypes.HANDLE
         self.kernel32.Process32FirstW.restype = self.wintypes.BOOL
         self.kernel32.Process32NextW.restype = self.wintypes.BOOL
-        self._last_action: Dict[int, float] = {}
-        self._generic_confirm_count: Dict[int, int] = {}
+        self._last_action: dict[int, float] = {}
+        self._generic_confirm_count: dict[int, int] = {}
 
     def pump_once(self) -> None:
         hwnds = self._enum_windows()
@@ -444,8 +442,8 @@ class _WindowsDialogController(_BaseDialogController):
             if self._accept_window(hwnd, class_name, child_items):
                 self._last_action[hwnd] = time.time()
 
-    def _enum_windows(self) -> List[int]:
-        hwnds: List[int] = []
+    def _enum_windows(self) -> list[int]:
+        hwnds: list[int] = []
         process_ids = self._related_process_ids()
         enum_proc = ctypes.WINFUNCTYPE(ctypes.c_bool, self.wintypes.HWND, self.wintypes.LPARAM)
 
@@ -481,7 +479,7 @@ class _WindowsDialogController(_BaseDialogController):
         if snapshot in (-1, self.wintypes.HANDLE(-1).value):
             return ids
 
-        parent_by_pid: Dict[int, int] = {}
+        parent_by_pid: dict[int, int] = {}
         try:
             entry = ProcessEntry()
             entry.dwSize = ctypes.sizeof(entry)
@@ -503,8 +501,8 @@ class _WindowsDialogController(_BaseDialogController):
                     queue.append(pid)
         return ids
 
-    def _child_items(self, hwnd: int) -> List[Tuple[int, str, str]]:
-        items: List[Tuple[int, str, str]] = []
+    def _child_items(self, hwnd: int) -> list[tuple[int, str, str]]:
+        items: list[tuple[int, str, str]] = []
         enum_proc = ctypes.WINFUNCTYPE(ctypes.c_bool, self.wintypes.HWND, self.wintypes.LPARAM)
 
         def callback(child_hwnd: int, _lparam: int) -> bool:
@@ -527,7 +525,7 @@ class _WindowsDialogController(_BaseDialogController):
         self.user32.GetClassNameW(hwnd, buffer, len(buffer))
         return buffer.value
 
-    def _flatten_window_text(self, title: str, class_name: str, child_items: Sequence[Tuple[int, str, str]]) -> str:
+    def _flatten_window_text(self, title: str, class_name: str, child_items: Sequence[tuple[int, str, str]]) -> str:
         parts = [title, class_name]
         for _, child_class, text in child_items:
             parts.extend((child_class, text))
@@ -541,7 +539,7 @@ class _WindowsDialogController(_BaseDialogController):
     def _can_use_keyboard_fallback(self, hwnd: int, flat_text: str, class_name: str) -> bool:
         return _can_use_generic_dialog_fallback(self._generic_confirm_count, hwnd, flat_text, class_name)
 
-    def _is_progress_window(self, flat_text: str, child_items: Sequence[Tuple[int, str, str]]) -> bool:
+    def _is_progress_window(self, flat_text: str, child_items: Sequence[tuple[int, str, str]]) -> bool:
         if any(keyword in flat_text for keyword in PROGRESS_KEYWORDS):
             return True
         for _, _, text in child_items:
@@ -554,7 +552,7 @@ class _WindowsDialogController(_BaseDialogController):
         last = self._last_action.get(hwnd, 0.0)
         return (time.time() - last) < 2.0
 
-    def _accept_window(self, hwnd: int, class_name: str, child_items: Sequence[Tuple[int, str, str]]) -> bool:
+    def _accept_window(self, hwnd: int, class_name: str, child_items: Sequence[tuple[int, str, str]]) -> bool:
         flat_text = self._flatten_window_text(self._window_text(hwnd), class_name, child_items)
         if _is_account_login_text(flat_text):
             raise DialogBlockedError(_st_login_blocked_message())
@@ -607,7 +605,7 @@ class _WindowsDialogController(_BaseDialogController):
 
 class _LinuxX11DialogController(_BaseDialogController):
     def __init__(self, process_id: int):
-        from Xlib import X, XK, display  # type: ignore
+        from Xlib import XK, X, display  # type: ignore
         from Xlib.ext import xtest  # type: ignore
 
         self.X = X
@@ -621,8 +619,8 @@ class _LinuxX11DialogController(_BaseDialogController):
         self.name_atom = self.display.intern_atom("_NET_WM_NAME")
         self.utf8_atom = self.display.intern_atom("UTF8_STRING")
         self.class_atom = self.display.intern_atom("WM_CLASS")
-        self._last_action: Dict[int, float] = {}
-        self._generic_confirm_count: Dict[int, int] = {}
+        self._last_action: dict[int, float] = {}
+        self._generic_confirm_count: dict[int, int] = {}
 
     def pump_once(self) -> None:
         process_ids = self._related_process_ids()
@@ -667,7 +665,7 @@ class _LinuxX11DialogController(_BaseDialogController):
                         continue
                     stat_path = os.path.join("/proc", entry, "stat")
                     try:
-                        with open(stat_path, "r", encoding="utf-8", errors="ignore") as stat_file:
+                        with open(stat_path, encoding="utf-8", errors="ignore") as stat_file:
                             fields = stat_file.read().split()
                     except OSError:
                         continue
@@ -773,7 +771,7 @@ class _LinuxX11DialogController(_BaseDialogController):
         except Exception:
             return False
 
-    def _window_abs_geometry(self, window) -> Optional[Tuple[int, int, int, int]]:
+    def _window_abs_geometry(self, window) -> tuple[int, int, int, int] | None:
         try:
             geometry = window.get_geometry()
             parent = window.query_tree().parent
@@ -877,7 +875,7 @@ class _DialogWatchThread(threading.Thread):
         self.controller = create_dialog_controller(process_id)
         self.stop_event = stop_event
         self.poll_interval = poll_interval
-        self.error: Optional[BaseException] = None
+        self.error: BaseException | None = None
 
     def run(self) -> None:
         while not self.stop_event.is_set():
@@ -936,7 +934,7 @@ def _write_text_file(path: str, content: str) -> None:
         file.write(content)
 
 
-def _prepare_script_path(project_dir: str, script_path: str, keep_script: bool) -> Tuple[str, bool]:
+def _prepare_script_path(project_dir: str, script_path: str, keep_script: bool) -> tuple[str, bool]:
     if script_path:
         return os.path.abspath(script_path), False
     if keep_script:
@@ -952,7 +950,7 @@ def _prepare_script_path(project_dir: str, script_path: str, keep_script: bool) 
     return handle.name, True
 
 
-def _normalize_expect_paths(project_dir: str, expect_paths: Sequence[str]) -> List[str]:
+def _normalize_expect_paths(project_dir: str, expect_paths: Sequence[str]) -> list[str]:
     resolved = []
     for path in expect_paths:
         if os.path.isabs(path):
@@ -969,7 +967,7 @@ def generate_cubemx_project(
     java_cmd: str = "",
     launch_mode: str = "auto",
     generate_code_dir: str = "",
-    expect_paths: Optional[Sequence[str]] = None,
+    expect_paths: Sequence[str] | None = None,
     log_dir: str = "",
     script_path: str = "",
     keep_script: bool = False,
@@ -1003,8 +1001,8 @@ def generate_cubemx_project(
     )
     LOGGER.info("Running CubeMX command: %s", _shell_join(command))
 
-    stdout_lines: List[str] = []
-    stderr_lines: List[str] = []
+    stdout_lines: list[str] = []
+    stderr_lines: list[str] = []
 
     stdout_handle = None
     stderr_handle = None
@@ -1013,7 +1011,7 @@ def generate_cubemx_project(
         stderr_handle = open(os.path.join(log_dir, "cubemx_stderr.log"), "w", encoding="utf-8", newline="\n")
         _write_text_file(os.path.join(log_dir, "cubemx_command.txt"), _shell_join(command) + "\n")
 
-    def consume_stream(stream, sink: List[str], handle) -> None:
+    def consume_stream(stream, sink: list[str], handle) -> None:
         try:
             for line in iter(stream.readline, ""):
                 sink.append(line)
@@ -1064,8 +1062,8 @@ def generate_cubemx_project(
     stdout_thread.start()
     stderr_thread.start()
 
-    timeout_error: Optional[TimeoutError] = None
-    dialog_error: Optional[BaseException] = None
+    timeout_error: TimeoutError | None = None
+    dialog_error: BaseException | None = None
     deadline = time.time() + timeout
     try:
         while True:

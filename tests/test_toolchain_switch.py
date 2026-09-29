@@ -12,7 +12,6 @@ from pathlib import Path
 from libxr import generator_stm32_cmake as stm32_cmake
 from libxr import stm32_toolchain_switch as toolchain_switch
 
-
 # Profile section of a CubeMX-generated cmake/starm-clang.cmake.
 CUBEMX_STARM = textwrap.dedent("""\
     set(CMAKE_SYSTEM_NAME               Generic)

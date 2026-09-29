@@ -1,12 +1,11 @@
 #!/usr/bin/env python
 
+import argparse
 import logging
 import os
-import subprocess
 import shlex
+import subprocess
 import sys
-
-import argparse
 
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 

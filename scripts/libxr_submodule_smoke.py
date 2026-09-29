@@ -9,10 +9,7 @@ import os
 import subprocess
 import sys
 import tempfile
-
 from pathlib import Path
-from typing import Optional, Tuple
-
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_DIR = REPO_ROOT / "src"
@@ -21,7 +18,7 @@ sys.path.insert(0, str(SRC_DIR))
 from libxr.config_cubemx_project import add_libxr  # noqa: E402
 
 
-def git(*args: str, cwd: Optional[Path] = None) -> str:
+def git(*args: str, cwd: Path | None = None) -> str:
     result = subprocess.run(
         ["git", *args],
         cwd=cwd,
@@ -39,7 +36,7 @@ def commit_file(repo: Path, name: str, text: str) -> str:
     return git("rev-parse", "HEAD", cwd=repo)
 
 
-def create_libxr_remote(root: Path) -> Tuple[Path, str, str, str, str]:
+def create_libxr_remote(root: Path) -> tuple[Path, str, str, str, str]:
     source = root / "libxr-source"
     source.mkdir()
     git("init", "-b", "master", cwd=source)
@@ -63,7 +60,7 @@ def create_project(
     remote: Path,
     recorded_commit: str,
     checkout_commit: str,
-) -> Tuple[Path, Path]:
+) -> tuple[Path, Path]:
     project = root / name
     project.mkdir()
     git("init", "-b", "master", cwd=project)
@@ -198,9 +195,8 @@ def run_policy_checks(root: Path) -> None:
 def main() -> int:
     with allow_file_protocol(), tempfile.TemporaryDirectory(
         prefix="libxr_submodule_smoke_"
-    ) as tmp:
-        with contextlib.redirect_stdout(io.StringIO()):
-            run_policy_checks(Path(tmp))
+    ) as tmp, contextlib.redirect_stdout(io.StringIO()):
+        run_policy_checks(Path(tmp))
     print("LibXR submodule policy smoke checks passed.")
     return 0
 

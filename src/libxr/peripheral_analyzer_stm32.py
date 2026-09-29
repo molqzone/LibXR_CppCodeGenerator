@@ -2,23 +2,14 @@
 """STM32CubeMX IOC Configuration Parser - Optimized Version"""
 
 import argparse
-import sys
+import logging
 import os
 import re
-import logging
-from typing import (
-    Dict,
-    List,
-    Union,
-    Optional,
-    Pattern,
-    DefaultDict,
-    Any,
-    TextIO,
-    Match,
-    Tuple
-)
+import sys
 from collections import defaultdict
+from re import Pattern
+from typing import Any, TextIO
+
 import yaml
 
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
@@ -27,7 +18,7 @@ logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 # --------------------------
 # Utility Functions
 # --------------------------
-def sanitize_numeric(value: str) -> Union[int, float, str]:
+def sanitize_numeric(value: str) -> int | float | str:
     """Convert string to appropriate numeric type if possible."""
     try:
         return int(value) if value.isdigit() else float(value)
@@ -42,30 +33,30 @@ class ConfigurationManager:
     """Centralized storage and processing of parsed configuration data."""
 
     def __init__(self) -> None:
-        self.pin_registry: DefaultDict[str, Dict[str, Any]] = defaultdict(dict)
+        self.pin_registry: defaultdict[str, dict[str, Any]] = defaultdict(dict)
         # Compatibility alias for older callers; pin_registry is the canonical store.
-        self.gpio_pins: DefaultDict[str, Dict[str, Any]] = self.pin_registry
-        self.peripherals: DefaultDict[str, DefaultDict[str, Dict]] = defaultdict(
+        self.gpio_pins: defaultdict[str, dict[str, Any]] = self.pin_registry
+        self.peripherals: defaultdict[str, defaultdict[str, dict]] = defaultdict(
             lambda: defaultdict(dict)
         )
-        self.dma_types: Dict[str, str] = {}
-        self.dma_requests: Dict[str, str] = {}
-        self.dma_configs: DefaultDict[str, List[Dict]] = defaultdict(list)
-        self.freertos_config: Dict[str, Any] = {
+        self.dma_types: dict[str, str] = {}
+        self.dma_requests: dict[str, str] = {}
+        self.dma_configs: defaultdict[str, list[dict]] = defaultdict(list)
+        self.freertos_config: dict[str, Any] = {
             "Tasks": {},
             "Heap": None,
             "Features": {},
         }
-        self.threadx_config: Dict[str, Any] = {
+        self.threadx_config: dict[str, Any] = {
             "AllocationMethod": None,
             "MemPoolSize": None,
             "CorePresent": None,
             "Tasks": {},
         }
-        self.timebase: Dict[str, Optional[str]] = {"Source": "SysTick", "IRQ": None}
-        self.mcu_config: Dict[str, Optional[str]] = {"Family": None, "Type": None}
+        self.timebase: dict[str, str | None] = {"Source": "SysTick", "IRQ": None}
+        self.mcu_config: dict[str, str | None] = {"Family": None, "Type": None}
 
-    def clean_structure(self) -> Dict[str, Any]:
+    def clean_structure(self) -> dict[str, Any]:
         """Apply data cleansing rules and return final structure."""
         cleaned_data = {
             "GPIO": self._clean_gpio(),
@@ -90,7 +81,7 @@ class ConfigurationManager:
 
         return cleaned_data
 
-    def _clean_gpio(self) -> Dict[str, Dict]:
+    def _clean_gpio(self) -> dict[str, dict]:
         return {
             pin: {
                 k: v
@@ -101,12 +92,12 @@ class ConfigurationManager:
             if self._is_valid_gpio(config)
         }
 
-    def _is_valid_gpio(self, config: Dict) -> bool:
+    def _is_valid_gpio(self, config: dict) -> bool:
         return config.get("Signal") in {"GPIO_Output", "GPIO_Input"} or config.get(
             "Signal", ""
         ).startswith("GPXTI")
 
-    def _clean_peripherals(self) -> Dict[str, Dict]:
+    def _clean_peripherals(self) -> dict[str, dict]:
         return {
             p_type: {
                 p: self._clean_peripheral_config(cfg) for p, cfg in p_group.items()
@@ -114,13 +105,13 @@ class ConfigurationManager:
             for p_type, p_group in self.peripherals.items()
         }
 
-    def _clean_peripheral_config(self, config: Dict) -> Dict:
+    def _clean_peripheral_config(self, config: dict) -> dict:
         return {k: v for k, v in config.items() if v not in (None, "", [], {})}
 
-    def _clean_dma_configs(self) -> Dict[str, List]:
+    def _clean_dma_configs(self) -> dict[str, list]:
         return {k: v for k, v in self.dma_configs.items() if v}
 
-    def _clean_freertos(self) -> Dict:
+    def _clean_freertos(self) -> dict:
         return {
             "RTOS": self.freertos_config.get("RTOS", "FreeRTOS"),
             "Enabled": self.freertos_config.get("Enabled", False),
@@ -136,7 +127,7 @@ class ConfigurationManager:
             ],
         }
 
-    def _clean_threadx(self) -> Dict:
+    def _clean_threadx(self) -> dict:
         return {
             "AllocationMethod": self.threadx_config.get("AllocationMethod"),
             "MemPoolSize": self.threadx_config.get("MemPoolSize"),
@@ -161,7 +152,7 @@ class PeripheralParser:
     def __init__(
             self,
             config: ConfigurationManager,
-            raw_map: Dict[str, str],
+            raw_map: dict[str, str],
             gpio_pattern: Pattern = _PIN_PROPERTY_PATTERN,
     ) -> None:
         self.config = config
@@ -169,7 +160,7 @@ class PeripheralParser:
         self.gpio_pattern = gpio_pattern
 
     @staticmethod
-    def _split_ioc_key(key: str) -> List[str]:
+    def _split_ioc_key(key: str) -> list[str]:
         """Split an IOC property key while preserving each CubeMX token verbatim."""
         return str(key).split(".")
 
@@ -179,7 +170,7 @@ class PeripheralParser:
         return PeripheralParser._split_ioc_key(key)[0]
 
     @staticmethod
-    def _ioc_key_prop(key: str, default: Optional[str] = None) -> Optional[str]:
+    def _ioc_key_prop(key: str, default: str | None = None) -> str | None:
         """Return the second token of an IOC property key, if it exists."""
         parts = PeripheralParser._split_ioc_key(key)
         return parts[1] if len(parts) > 1 else default
@@ -201,7 +192,7 @@ class PeripheralParser:
         return str(key).startswith(stem)
 
     @staticmethod
-    def _dma_request_id(key: str, prefix: str) -> Optional[str]:
+    def _dma_request_id(key: str, prefix: str) -> str | None:
         """Return the DMA request id from ``Dma.RequestN`` / ``Bdma.RequestN`` keys."""
         match = re.fullmatch(rf"{re.escape(prefix)}\.Request(\d+)", str(key))
         return match.group(1) if match else None
@@ -231,7 +222,7 @@ class PeripheralParser:
         return signal[2:] if signal.startswith("S_") else signal
 
     @staticmethod
-    def _normalize_tim_channel_token(channel: str) -> Optional[str]:
+    def _normalize_tim_channel_token(channel: str) -> str | None:
         """Normalize CubeMX timer channel tokens to CHx / CHxN."""
         channel = str(channel).strip().upper()
         match = re.fullmatch(r"TIM_CHANNEL_(\d+)(N?)", channel)
@@ -262,7 +253,7 @@ class PeripheralParser:
         return signal.split("_")[-1].upper() if "_" in signal else signal.upper()
 
     @staticmethod
-    def _parse_dma_request_endpoint(peripheral_full: str) -> Tuple[str, str]:
+    def _parse_dma_request_endpoint(peripheral_full: str) -> tuple[str, str]:
         """Split a DMA request target like ``USART1_TX`` into peripheral and direction."""
         endpoint = str(peripheral_full).strip()
         match = re.match(r"^(.*)_([A-Z]+)$", endpoint.upper())
@@ -395,7 +386,7 @@ class TIMParser(PeripheralParser):
             "DutyCycle": sanitize_numeric(value) if value.isdigit() else None,
         }
 
-    def _get_associated_pin_label(self, timer_name: str, channel_id: str) -> Tuple[str, bool]:
+    def _get_associated_pin_label(self, timer_name: str, channel_id: str) -> tuple[str, bool]:
         """
         Retrieve GPIO label and whether it's a complementary (N) output.
         Return: (label, is_complementary)
@@ -439,7 +430,7 @@ class ADCParser(PeripheralParser):
                 self._parse_vp_adc_signal(key, value)
         self._deduplicate_channels()
 
-    def _map_internal_channel(self, value: str) -> Optional[str]:
+    def _map_internal_channel(self, value: str) -> str | None:
         """
         Map VP_* virtual-pin internal ADC signals to HAL channel macros WITHOUT binding to MCU family.
         Preference order:
@@ -507,9 +498,7 @@ class ADCParser(PeripheralParser):
             self._process_conversion_entry(adc_name, value)
         elif setting == "ContinuousConvMode":
             self.config.peripherals["ADC"][adc_name]["ContinuousMode"] = (value == "ENABLE")
-        elif setting == "DMARegular":
-            self.config.peripherals["ADC"][adc_name]["DMA"] = _to_enable_str(value)
-        elif setting == "DMAContinuousRequests":
+        elif setting == "DMARegular" or setting == "DMAContinuousRequests":
             self.config.peripherals["ADC"][adc_name]["DMA"] = _to_enable_str(value)
         elif setting == "EOCSelection":
             self.config.peripherals["ADC"][adc_name]["EOCSelection"] = value
@@ -1251,14 +1240,14 @@ class FreeRTOSParser(PeripheralParser):
 # --------------------------
 # Core Parsing Workflow
 # --------------------------
-def parse_ioc_file(ioc_path: str) -> Optional[Dict[str, Any]]:
+def parse_ioc_file(ioc_path: str) -> dict[str, Any] | None:
     """Orchestrate the parsing of an .ioc file through registered parsers."""
     config = ConfigurationManager()
 
     try:
-        with open(ioc_path, "r", encoding="utf-8") as f:
+        with open(ioc_path, encoding="utf-8") as f:
             raw_map = _extract_key_value_pairs(f)
-    except (UnicodeDecodeError, IOError) as e:
+    except (OSError, UnicodeDecodeError) as e:
         logging.error(f"File processing failed: {str(e)}")
         return None
 
@@ -1307,7 +1296,7 @@ def parse_ioc_file(ioc_path: str) -> Optional[Dict[str, Any]]:
         return None
 
 
-def _extract_key_value_pairs(file_handler: TextIO) -> Dict[str, str]:
+def _extract_key_value_pairs(file_handler: TextIO) -> dict[str, str]:
     """Robust key-value extraction with line validation."""
     raw_map = {}
     for line_num, line in enumerate(file_handler, 1):
@@ -1338,7 +1327,7 @@ def _link_dma_requests(config: ConfigurationManager) -> None:
 # --------------------------
 # Output Generation
 # --------------------------
-def save_to_yaml(data: Dict[str, Any], output_path: str = "parsed_ioc.yaml") -> bool:
+def save_to_yaml(data: dict[str, Any], output_path: str = "parsed_ioc.yaml") -> bool:
     """Serialize configuration data to YAML with error handling."""
     try:
         with open(output_path, "w", encoding="utf-8") as f:
@@ -1352,12 +1341,12 @@ def save_to_yaml(data: Dict[str, Any], output_path: str = "parsed_ioc.yaml") -> 
             )
         logging.info(f"Configuration exported to: {output_path}")
         return True
-    except (IOError, yaml.YAMLError) as e:
+    except (OSError, yaml.YAMLError) as e:
         logging.error(f"YAML export failed: {str(e)}")
         return False
 
 
-def print_summary(data: Dict[str, Any]) -> None:
+def print_summary(data: dict[str, Any]) -> None:
     """Generate human-readable configuration summary."""
     print("\n===== [Configuration Summary] =====")
 
@@ -1394,7 +1383,7 @@ def print_summary(data: Dict[str, Any]) -> None:
                 f"  {k}: Enabled={v.get('Enabled', False)}, Prescaler={v.get('Prescaler')}, Window={v.get('Window')}, Counter={v.get('Counter')}")
 
 
-def _format_peripheral_config(p_type: str, config: Dict) -> str:
+def _format_peripheral_config(p_type: str, config: dict) -> str:
     """Generate single-line peripheral configuration summary."""
     if p_type == "TIM":
         return f"Mode={config.get('Mode')} | Period={config.get('Period')}"

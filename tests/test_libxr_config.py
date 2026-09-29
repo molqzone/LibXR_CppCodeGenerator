@@ -13,7 +13,6 @@ import yaml
 from libxr import generator_code_stm32 as generator
 from libxr import libxr_config_file as config_file
 
-
 PROJECT = {
     'Mcu': {'Type': 'STM32F103C8T6', 'Family': 'STM32F1'},
     'GPIO': {'PC13': {'Label': 'LED'}},

@@ -1,11 +1,10 @@
 #!/usr/bin/env python
 import argparse
-import os
 import logging
-import shutil
+import os
 import re
+import shutil
 from pathlib import Path
-from typing import Union
 
 from xr_syntax.cpp import CppDocument
 
@@ -208,7 +207,7 @@ set(XR_STARM_TOOLCHAIN_DEFAULT ${_xr_starm_default} CACHE INTERNAL "Default STAR
 set_property(CACHE STARM_TOOLCHAIN_CONFIG PROPERTY STRINGS STARM_HYBRID STARM_NEWLIB STARM_PICOLIBC)'''
 
 
-def normalize_starm_clang_toolchain(file_path: Union[str, Path]) -> None:
+def normalize_starm_clang_toolchain(file_path: str | Path) -> None:
     """Make CubeMX's ST Arm Clang runtime profile selectable per build directory.
 
     xr_stm32_toolchain_switch selects the default profile by rewriting
@@ -274,7 +273,7 @@ def normalize_starm_clang_toolchain(file_path: Union[str, Path]) -> None:
         logging.info("Normalized STARM_TOOLCHAIN_CONFIG in %s", path)
 
 
-def clean_cmake_build_dirs(input_directory: Union[str, Path]) -> None:
+def clean_cmake_build_dirs(input_directory: str | Path) -> None:
     input_directory = Path(input_directory)
     removed = False
     for d in input_directory.iterdir():

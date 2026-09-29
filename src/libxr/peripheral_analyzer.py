@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 
+import argparse
 import logging
 import os
-import sys
 import subprocess
-import argparse
+import sys
 
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 
