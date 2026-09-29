@@ -10,8 +10,7 @@ from xr_syntax.cpp import CppDocument
 
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 
-LIBXR_CMAKE_TEMPLATE = (
-'''set(CMAKE_CXX_STANDARD 20)
+LIBXR_CMAKE_TEMPLATE = """set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # LibXR
@@ -72,8 +71,7 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
         target_compile_options(USB_Device_Library PRIVATE -O2)
     endif()
 endif()
-'''
-)
+"""
 
 XROBOT_MODULES_DIR_LINE = "set(XROBOT_MODULES_DIR ${CMAKE_CURRENT_SOURCE_DIR}/Modules)\n"
 
@@ -94,66 +92,63 @@ def project_uses_xrobot(input_directory: str) -> bool:
     for include in document.include_views():
         start = include.node.span.start
         if include.header == "xrobot_main.hpp" and not any(
-                span.start <= start < span.end for span in regions):
+            span.start <= start < span.end for span in regions
+        ):
             return True
     return False
 
 
 def normalize_libxr_cmake(content: str, system: str) -> str:
     content = re.sub(
-        r'^\s*set\s*\(\s*CMAKE_CXX_STANDARD\s+\d+\s*\)\s*\n?',
-        '',
-        content,
-        flags=re.MULTILINE
+        r"^\s*set\s*\(\s*CMAKE_CXX_STANDARD\s+\d+\s*\)\s*\n?", "", content, flags=re.MULTILINE
     )
     content = re.sub(
-        r'^\s*set\s*\(\s*CMAKE_CXX_STANDARD_REQUIRED\s+\S+\s*\)\s*\n?',
-        '',
+        r"^\s*set\s*\(\s*CMAKE_CXX_STANDARD_REQUIRED\s+\S+\s*\)\s*\n?",
+        "",
         content,
-        flags=re.MULTILINE
+        flags=re.MULTILINE,
     )
-    content = "set(CMAKE_CXX_STANDARD 20)\nset(CMAKE_CXX_STANDARD_REQUIRED ON)\n\n" + content.lstrip('\n')
+    content = (
+        "set(CMAKE_CXX_STANDARD 20)\nset(CMAKE_CXX_STANDARD_REQUIRED ON)\n\n" + content.lstrip("\n")
+    )
 
-    system_pattern = re.compile(
-        r'(^\s*set\s*\(\s*LIBXR_SYSTEM\s+)(\S+)(\s*\)\s*)',
-        re.MULTILINE
-    )
+    system_pattern = re.compile(r"(^\s*set\s*\(\s*LIBXR_SYSTEM\s+)(\S+)(\s*\)\s*)", re.MULTILINE)
     if system_pattern.search(content):
-        content = system_pattern.sub(rf'\1{system}\3', content, count=1)
+        content = system_pattern.sub(rf"\1{system}\3", content, count=1)
     else:
         content = re.sub(
-            r'(^\s*set\s*\(\s*LIBXR_DRIVER\s+\S+\s*\)\s*$)',
+            r"(^\s*set\s*\(\s*LIBXR_DRIVER\s+\S+\s*\)\s*$)",
             f"set(LIBXR_SYSTEM {system})\n\\1",
             content,
             count=1,
-            flags=re.MULTILINE
+            flags=re.MULTILINE,
         )
 
     content = re.sub(
-        r'target_compile_features\s*\(\s*xr\s+PUBLIC\s+cxx_std_\d+\s*\)',
-        'target_compile_features(xr PUBLIC cxx_std_20)',
+        r"target_compile_features\s*\(\s*xr\s+PUBLIC\s+cxx_std_\d+\s*\)",
+        "target_compile_features(xr PUBLIC cxx_std_20)",
         content,
-        count=1
+        count=1,
     )
     if "target_compile_features(xr PUBLIC cxx_std_20)" not in content:
         content = re.sub(
-            r'(target_link_libraries\s*\(\s*xr\b[\s\S]*?\)\s*)',
-            r'\1\ntarget_compile_features(xr PUBLIC cxx_std_20)\n',
+            r"(target_link_libraries\s*\(\s*xr\b[\s\S]*?\)\s*)",
+            r"\1\ntarget_compile_features(xr PUBLIC cxx_std_20)\n",
             content,
-            count=1
+            count=1,
         )
 
     if "set_target_properties(${CMAKE_PROJECT_NAME} PROPERTIES" not in content:
         content = re.sub(
-            r'(^\s*target_include_directories\(\$\{CMAKE_PROJECT_NAME\}\s+PRIVATE\s*$)',
+            r"(^\s*target_include_directories\(\$\{CMAKE_PROJECT_NAME\}\s+PRIVATE\s*$)",
             "set_target_properties(${CMAKE_PROJECT_NAME} PROPERTIES\n"
             "    CXX_STANDARD 20\n"
             "    CXX_STANDARD_REQUIRED ON\n"
             ")\n\n"
-            r'\1',
+            r"\1",
             content,
             count=1,
-            flags=re.MULTILINE
+            flags=re.MULTILINE,
         )
 
     return content
@@ -171,28 +166,35 @@ def update_or_create_libxr_cmake(file_path: str, system: str, use_xrobot: bool) 
         else:
             logging.info("LibXR.CMake already up to date, no changes needed.")
         # The existing file is user-owned here; report a mismatch only.
-        declares_modules = re.search(r'^\s*set\s*\(\s*XROBOT_MODULES_DIR\b', new_content,
-                                     flags=re.MULTILINE) is not None
+        declares_modules = (
+            re.search(r"^\s*set\s*\(\s*XROBOT_MODULES_DIR\b", new_content, flags=re.MULTILINE)
+            is not None
+        )
         if declares_modules and not use_xrobot:
-            logging.warning("LibXR.CMake sets XROBOT_MODULES_DIR, but User/app_main.cpp was not "
-                            "generated with --xrobot; remove that line for a LibXR-only project.")
+            logging.warning(
+                "LibXR.CMake sets XROBOT_MODULES_DIR, but User/app_main.cpp was not "
+                "generated with --xrobot; remove that line for a LibXR-only project."
+            )
         elif use_xrobot and not declares_modules:
-            logging.warning("User/app_main.cpp uses XRobot, but LibXR.CMake does not set "
-                            "XROBOT_MODULES_DIR; add: " + XROBOT_MODULES_DIR_LINE.strip())
+            logging.warning(
+                "User/app_main.cpp uses XRobot, but LibXR.CMake does not set "
+                "XROBOT_MODULES_DIR; add: " + XROBOT_MODULES_DIR_LINE.strip()
+            )
     else:
         # XRobot projects build their Modules through LibXR; plain LibXR
         # projects must not name a Modules directory.
         cmake_path.write_text(
             LIBXR_CMAKE_TEMPLATE.replace("_LIBXR_SYSTEM_", system).replace(
-                "_XROBOT_MODULES_DIR_", XROBOT_MODULES_DIR_LINE if use_xrobot else ""),
-            encoding="utf-8"
+                "_XROBOT_MODULES_DIR_", XROBOT_MODULES_DIR_LINE if use_xrobot else ""
+            ),
+            encoding="utf-8",
         )
         logging.info(f"Generated LibXR.CMake at: {cmake_path}")
 
 
 # Inserted after CubeMX's set(STARM_TOOLCHAIN_CONFIG "<default>") line, which
 # stays the only place that names the default profile.
-STARM_PROFILE_SELECTION = '''
+STARM_PROFILE_SELECTION = """
 # LibXR: -DSTARM_TOOLCHAIN_CONFIG=<profile> selects the profile of a build
 # directory; a default changed by xr_stm32_toolchain_switch also reaches
 # existing build directories.
@@ -204,7 +206,7 @@ if(NOT DEFINED CACHE{STARM_TOOLCHAIN_CONFIG} OR
   set(STARM_TOOLCHAIN_CONFIG ${_xr_starm_default} CACHE STRING "ST Arm Clang runtime profile" FORCE)
 endif()
 set(XR_STARM_TOOLCHAIN_DEFAULT ${_xr_starm_default} CACHE INTERNAL "Default STARM_TOOLCHAIN_CONFIG of this file")
-set_property(CACHE STARM_TOOLCHAIN_CONFIG PROPERTY STRINGS STARM_HYBRID STARM_NEWLIB STARM_PICOLIBC)'''
+set_property(CACHE STARM_TOOLCHAIN_CONFIG PROPERTY STRINGS STARM_HYBRID STARM_NEWLIB STARM_PICOLIBC)"""
 
 
 def normalize_starm_clang_toolchain(file_path: str | Path) -> None:
@@ -229,8 +231,8 @@ def normalize_starm_clang_toolchain(file_path: str | Path) -> None:
         r'^(\s*set\s*\(\s*STARM_TOOLCHAIN_CONFIG\s+")([^"]+)'
         r'"(?:\s+CACHE\s+STRING\s+"[^"]*")?\s*\)[ \t]*$'
         # Property list written by earlier versions after a CACHE default.
-        r'(?:\nset_property\s*\(\s*CACHE\s+STARM_TOOLCHAIN_CONFIG\s+PROPERTY\s+STRINGS'
-        r'\s+STARM_HYBRID\s+STARM_NEWLIB\s+STARM_PICOLIBC\s*\))?',
+        r"(?:\nset_property\s*\(\s*CACHE\s+STARM_TOOLCHAIN_CONFIG\s+PROPERTY\s+STRINGS"
+        r"\s+STARM_HYBRID\s+STARM_NEWLIB\s+STARM_PICOLIBC\s*\))?",
         re.MULTILINE,
     )
     match = line_pattern.search(content)
@@ -241,20 +243,18 @@ def normalize_starm_clang_toolchain(file_path: str | Path) -> None:
     replacement = f'{match.group(1)}{match.group(2)}")'
     if STARM_PROFILE_SELECTION not in content:
         replacement += STARM_PROFILE_SELECTION
-    new_content = content[:match.start()] + replacement + content[match.end():]
+    new_content = content[: match.start()] + replacement + content[match.end() :]
 
     # CubeMX emits an if/elseif block that computes multilib flags. Initialize the
     # variable explicitly and reject misspelled runtime profiles.
     if 'set(TOOLCHAIN_MULTILIBS "")' not in new_content:
         marker = 'if(STARM_TOOLCHAIN_CONFIG STREQUAL "STARM_HYBRID")'
         if marker in new_content:
-            new_content = new_content.replace(
-                marker, 'set(TOOLCHAIN_MULTILIBS "")\n\n' + marker, 1
-            )
+            new_content = new_content.replace(marker, 'set(TOOLCHAIN_MULTILIBS "")\n\n' + marker, 1)
 
     first_if = new_content.find('if(STARM_TOOLCHAIN_CONFIG STREQUAL "STARM_HYBRID")')
     if first_if >= 0:
-        first_endif = new_content.find('endif()', first_if)
+        first_endif = new_content.find("endif()", first_if)
         if first_endif >= 0:
             block = new_content[first_if:first_endif]
             guard = (
@@ -262,7 +262,7 @@ def normalize_starm_clang_toolchain(file_path: str | Path) -> None:
                 '  message(FATAL_ERROR "Unknown STARM_TOOLCHAIN_CONFIG: '
                 '${STARM_TOOLCHAIN_CONFIG}")\n'
             )
-            if 'Unknown STARM_TOOLCHAIN_CONFIG' not in block:
+            if "Unknown STARM_TOOLCHAIN_CONFIG" not in block:
                 new_content = new_content[:first_endif] + guard + new_content[first_endif:]
 
     if new_content != content:
@@ -316,7 +316,9 @@ def main():
 
     file_path = os.path.join(cmake_dir, "LibXR.CMake")
 
-    freertos_enable = os.path.exists(os.path.join(input_directory, "Core", "Inc", "FreeRTOSConfig.h"))
+    freertos_enable = os.path.exists(
+        os.path.join(input_directory, "Core", "Inc", "FreeRTOSConfig.h")
+    )
     threadx_enable = os.path.exists(os.path.join(input_directory, "Core", "Inc", "app_threadx.h"))
 
     if freertos_enable:
@@ -337,7 +339,7 @@ def main():
 
         if include_cmake_cmd not in cmake_content:
             with open(main_cmake_path, "a", encoding="utf-8", newline="\n") as f:
-                f.write('\n# Add LibXR\n' + include_cmake_cmd)
+                f.write("\n# Add LibXR\n" + include_cmake_cmd)
             logging.info("LibXR.CMake included in CMakeLists.txt.")
         else:
             logging.info("LibXR.CMake already included in CMakeLists.txt.")

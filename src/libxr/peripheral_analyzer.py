@@ -8,6 +8,7 @@ import sys
 
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 
+
 def main():
     from libxr.package_info import LibXRPackageInfo
 
@@ -15,9 +16,7 @@ def main():
 
     parser = argparse.ArgumentParser(description="Run xr_parse_ioc on a specified directory.")
     parser.add_argument(
-        "-d", "--directory",
-        required=True,
-        help="Input directory containing .ioc files"
+        "-d", "--directory", required=True, help="Input directory containing .ioc files"
     )
     args, extra_args = parser.parse_known_args()
 
@@ -36,9 +35,11 @@ def main():
     # Construct the command to run the parser
     cmd = [
         sys.executable,
-        "-m", "libxr.peripheral_analyzer_stm32",
-        "-d", target_dir,
-        *extra_args  # Forward other arguments
+        "-m",
+        "libxr.peripheral_analyzer_stm32",
+        "-d",
+        target_dir,
+        *extra_args,  # Forward other arguments
     ]
 
     logging.info(f"Detected {len(ioc_files)} .ioc file(s) in '{target_dir}':")
@@ -51,6 +52,7 @@ def main():
     except subprocess.CalledProcessError as e:
         logging.error(f"xr_parse_ioc exited with code {e.returncode}")
         sys.exit(e.returncode)
+
 
 if __name__ == "__main__":
     main()

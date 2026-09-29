@@ -104,8 +104,11 @@ def _update_value(container, key, value) -> None:
     current = container[key]
     if isinstance(value, dict) and isinstance(current, CommentedMap):
         update(current, value)
-    elif (isinstance(value, (list, tuple)) and isinstance(current, CommentedSeq)
-          and len(value) == len(current)):
+    elif (
+        isinstance(value, (list, tuple))
+        and isinstance(current, CommentedSeq)
+        and len(value) == len(current)
+    ):
         for index, item in enumerate(value):
             _update_value(current, index, item)
     elif not _same(current, value):
@@ -116,13 +119,19 @@ def _update_value(container, key, value) -> None:
 
 def _same(current, value) -> bool:
     if isinstance(current, dict) or isinstance(value, dict):
-        return (isinstance(current, dict) and isinstance(value, dict)
-                and list(current) == list(value)
-                and all(_same(current[key], value[key]) for key in value))
+        return (
+            isinstance(current, dict)
+            and isinstance(value, dict)
+            and list(current) == list(value)
+            and all(_same(current[key], value[key]) for key in value)
+        )
     if isinstance(current, (list, tuple)) or isinstance(value, (list, tuple)):
-        return (isinstance(current, (list, tuple)) and isinstance(value, (list, tuple))
-                and len(current) == len(value)
-                and all(_same(a, b) for a, b in zip(current, value, strict=True)))
+        return (
+            isinstance(current, (list, tuple))
+            and isinstance(value, (list, tuple))
+            and len(current) == len(value)
+            and all(_same(a, b) for a, b in zip(current, value, strict=True))
+        )
     if isinstance(current, bool) != isinstance(value, bool):
         return False
     if isinstance(current, str) != isinstance(value, str):
@@ -204,6 +213,8 @@ def _delete(container, key) -> None:
     if index > 0:
         _append_following(container, keys[index - 1], following)
     elif len(keys) > 1:
-        lines = [line.lstrip()[1:].strip() if line.lstrip().startswith("#") else ""
-                 for line in following.splitlines()]
+        lines = [
+            line.lstrip()[1:].strip() if line.lstrip().startswith("#") else ""
+            for line in following.splitlines()
+        ]
         container.yaml_set_comment_before_after_key(keys[1], before="\n".join(lines))

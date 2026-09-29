@@ -1,4 +1,5 @@
 """The same CubeMX project must generate byte-identical files on every run."""
+
 import os
 import subprocess
 import sys
@@ -76,15 +77,24 @@ GENERATE = textwrap.dedent("""\
 
 
 def generate_with_hash_seed(root: Path, seed: str) -> dict:
-    project = root / seed / 'project'
-    (project / 'User').mkdir(parents=True)
-    (project / 'demo.ioc').write_text(IOC, encoding='utf-8')
-    (project / 'User' / 'libxr_config.yaml').write_text(LIBXR_CONFIG, encoding='utf-8')
+    project = root / seed / "project"
+    (project / "User").mkdir(parents=True)
+    (project / "demo.ioc").write_text(IOC, encoding="utf-8")
+    (project / "User" / "libxr_config.yaml").write_text(LIBXR_CONFIG, encoding="utf-8")
     environment = dict(os.environ, PYTHONHASHSEED=seed)
-    subprocess.run([sys.executable, '-c', GENERATE], cwd=root / seed, env=environment,
-                   check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    return {path.relative_to(project).as_posix(): path.read_bytes()
-            for path in sorted(project.rglob('*')) if path.is_file() and path.suffix != '.ioc'}
+    subprocess.run(
+        [sys.executable, "-c", GENERATE],
+        cwd=root / seed,
+        env=environment,
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    return {
+        path.relative_to(project).as_posix(): path.read_bytes()
+        for path in sorted(project.rglob("*"))
+        if path.is_file() and path.suffix != ".ioc"
+    }
 
 
 class HashSeedIndependence(unittest.TestCase):
@@ -92,19 +102,26 @@ class HashSeedIndependence(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             # Several seeds so that set iteration order differs between runs.
-            seeds = ['0', '1', '2', '3', '4', '5']
+            seeds = ["0", "1", "2", "3", "4", "5"]
             outputs = [generate_with_hash_seed(root, seed) for seed in seeds]
         reference = outputs[0]
-        self.assertEqual(sorted(reference), ['User/app_main.cpp', 'User/app_main.h',
-                                             'User/flash_map.hpp', 'User/libxr_config.yaml',
-                                             'cubemx.yaml'])
-        self.assertIn(b'STM32USBDeviceOtgFS usb_fs', reference['User/app_main.cpp'])
-        self.assertIn(b'STM32USBDeviceOtgHS usb_hs', reference['User/app_main.cpp'])
+        self.assertEqual(
+            sorted(reference),
+            [
+                "User/app_main.cpp",
+                "User/app_main.h",
+                "User/flash_map.hpp",
+                "User/libxr_config.yaml",
+                "cubemx.yaml",
+            ],
+        )
+        self.assertIn(b"STM32USBDeviceOtgFS usb_fs", reference["User/app_main.cpp"])
+        self.assertIn(b"STM32USBDeviceOtgHS usb_hs", reference["User/app_main.cpp"])
         for seed, output in zip(seeds[1:], outputs[1:], strict=True):
             for name in reference:
                 with self.subTest(seed=seed, file=name):
                     self.assertEqual(output[name], reference[name])
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()

@@ -112,9 +112,7 @@ def write_fake_cubemx(tmpdir: Path) -> Path:
 
 
 def write_ioc(project_dir: Path) -> None:
-    (project_dir / "demo.ioc").write_text(
-        "ProjectManager.ProjectName=demo\n", encoding="utf-8"
-    )
+    (project_dir / "demo.ioc").write_text("ProjectManager.ProjectName=demo\n", encoding="utf-8")
 
 
 def assert_contains(haystack: str, needle: str) -> None:
@@ -131,31 +129,21 @@ def run_command_builder_smoke(tmpdir: Path, fake_cubemx: Path) -> None:
 
     direct = build_cubemx_command(exe_path, script_path, launch_mode="auto")
     if direct != [exe_path, "-q", script_path]:
-        raise AssertionError(
-            f"auto mode should directly launch executables: {direct!r}"
-        )
+        raise AssertionError(f"auto mode should directly launch executables: {direct!r}")
 
-    java = build_cubemx_command(
-        jar_path, script_path, launch_mode="auto", java_cmd=sys.executable
-    )
+    java = build_cubemx_command(jar_path, script_path, launch_mode="auto", java_cmd=sys.executable)
     jar_index = java.index("-jar")
     if java[jar_index + 1 : jar_index + 4] != [jar_path, "-q", script_path]:
-        raise AssertionError(
-            f"auto mode should launch jars through java -jar: {java!r}"
-        )
+        raise AssertionError(f"auto mode should launch jars through java -jar: {java!r}")
 
     try:
-        build_cubemx_command(
-            exe_path, script_path, launch_mode="java", java_cmd=sys.executable
-        )
+        build_cubemx_command(exe_path, script_path, launch_mode="java", java_cmd=sys.executable)
     except ValueError as error:
         assert_contains(str(error), ".jar")
     else:
         raise AssertionError("java launch mode accepted a non-jar CubeMX path")
 
-    py_cmd = build_cubemx_command(
-        str(fake_cubemx), script_path, launch_mode="direct", silent=True
-    )
+    py_cmd = build_cubemx_command(str(fake_cubemx), script_path, launch_mode="direct", silent=True)
     if py_cmd != [sys.executable, str(fake_cubemx), "-q", script_path, "-s"]:
         raise AssertionError(f"direct launch command changed unexpectedly: {py_cmd!r}")
 
@@ -185,10 +173,7 @@ def run_success_smoke(tmpdir: Path, fake_cubemx: Path) -> None:
 
     command_log = (log_dir / "cubemx_command.txt").read_text(encoding="utf-8")
     assert_contains(command_log, str(fake_cubemx))
-    if (
-        not (project_dir / "Core" / "Inc").is_dir()
-        or not (project_dir / "Drivers").is_dir()
-    ):
+    if not (project_dir / "Core" / "Inc").is_dir() or not (project_dir / "Drivers").is_dir():
         raise AssertionError("fake CubeMX did not create expected output paths")
 
 
@@ -269,9 +254,7 @@ def run_timeout_smoke(tmpdir: Path, fake_cubemx: Path) -> None:
         if child_stopped_writing(heartbeat_file):
             return
         time.sleep(0.1)
-    raise AssertionError(
-        "fake CubeMX child process kept running after timeout termination"
-    )
+    raise AssertionError("fake CubeMX child process kept running after timeout termination")
 
 
 def main() -> int:

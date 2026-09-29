@@ -83,11 +83,7 @@ class ConfigurationManager:
 
     def _clean_gpio(self) -> dict[str, dict]:
         return {
-            pin: {
-                k: v
-                for k, v in config.items()
-                if k in {"Signal", "Label", "Pull", "GPXTI"}
-            }
+            pin: {k: v for k, v in config.items() if k in {"Signal", "Label", "Pull", "GPXTI"}}
             for pin, config in self.pin_registry.items()
             if self._is_valid_gpio(config)
         }
@@ -99,9 +95,7 @@ class ConfigurationManager:
 
     def _clean_peripherals(self) -> dict[str, dict]:
         return {
-            p_type: {
-                p: self._clean_peripheral_config(cfg) for p, cfg in p_group.items()
-            }
+            p_type: {p: self._clean_peripheral_config(cfg) for p, cfg in p_group.items()}
             for p_type, p_group in self.peripherals.items()
         }
 
@@ -142,18 +136,16 @@ class ConfigurationManager:
 class PeripheralParser:
     """Abstract base class for peripheral-specific parsers."""
 
-    _PIN_PROPERTY_PATTERN = re.compile(
-        r"^((?:P[A-K]\d+)[^.]*)\.(Signal|GPIO_Label|GPIO_PuPd)$"
-    )
+    _PIN_PROPERTY_PATTERN = re.compile(r"^((?:P[A-K]\d+)[^.]*)\.(Signal|GPIO_Label|GPIO_PuPd)$")
     _PERIPHERAL_ROOT_PATTERN = re.compile(
         r"^((?:USART|LPUART|UART|I2C|SPI|TIM|LPTIM|HRTIM|ADC|DAC|FDCAN|CAN|USB)\d*)"
     )
 
     def __init__(
-            self,
-            config: ConfigurationManager,
-            raw_map: dict[str, str],
-            gpio_pattern: Pattern = _PIN_PROPERTY_PATTERN,
+        self,
+        config: ConfigurationManager,
+        raw_map: dict[str, str],
+        gpio_pattern: Pattern = _PIN_PROPERTY_PATTERN,
     ) -> None:
         self.config = config
         self.raw_map = raw_map
@@ -211,9 +203,7 @@ class PeripheralParser:
     @staticmethod
     def _normalize_ioc_key_pin(key: str) -> str:
         """Extract and normalize the pin token from an IOC property key."""
-        return PeripheralParser._normalize_gpio_pin_token(
-            PeripheralParser._ioc_key_root(key)
-        )
+        return PeripheralParser._normalize_gpio_pin_token(PeripheralParser._ioc_key_root(key))
 
     @staticmethod
     def _normalize_signal_token(signal: str) -> str:
@@ -341,13 +331,9 @@ class TIMParser(PeripheralParser):
                         "Complementary": is_n,
                     }
             elif "Period" in parts[1]:
-                self.config.peripherals[p_type][tim_name]["Period"] = sanitize_numeric(
-                    value
-                )
+                self.config.peripherals[p_type][tim_name]["Period"] = sanitize_numeric(value)
             elif "Prescaler" in parts[1]:
-                self.config.peripherals[p_type][tim_name]["Prescaler"] = (
-                    sanitize_numeric(value)
-                )
+                self.config.peripherals[p_type][tim_name]["Prescaler"] = sanitize_numeric(value)
             elif "Mode" in parts[1]:
                 self.config.peripherals[p_type][tim_name]["Mode"] = value
 
@@ -395,7 +381,7 @@ class TIMParser(PeripheralParser):
         if not normalized_channel:
             return timer_name, False
         signal_candidates = {f"{timer_name}_{normalized_channel}"}
-        if normalized_channel == 'CH1':
+        if normalized_channel == "CH1":
             signal_candidates.add(f"{timer_name}_CH1_ETR")
 
         config = {}
@@ -445,7 +431,7 @@ class ADCParser(PeripheralParser):
         v_upper = value.upper()
 
         # Try to derive the ADC instance from the VP_* value (e.g., "ADC1_TempSensor"),
-        # otherwise fall back to the first known ADC instance.        
+        # otherwise fall back to the first known ADC instance.
         m_adc = re.match(r"(ADC\d+)_", v_upper)
         adc_name = (m_adc.group(1) if m_adc else self._get_adc_instance_name()).upper()
 
@@ -497,7 +483,7 @@ class ADCParser(PeripheralParser):
         if "ChannelRegularConversion" in setting:
             self._process_conversion_entry(adc_name, value)
         elif setting == "ContinuousConvMode":
-            self.config.peripherals["ADC"][adc_name]["ContinuousMode"] = (value == "ENABLE")
+            self.config.peripherals["ADC"][adc_name]["ContinuousMode"] = value == "ENABLE"
         elif setting == "DMARegular" or setting == "DMAContinuousRequests":
             self.config.peripherals["ADC"][adc_name]["DMA"] = _to_enable_str(value)
         elif setting == "EOCSelection":
@@ -574,16 +560,17 @@ class ADCParser(PeripheralParser):
         """
         for adc_cfg in self.config.peripherals["ADC"].values():
             # Basic dedupe
-            chs  = list(dict.fromkeys(adc_cfg.get("Channels", [])))
+            chs = list(dict.fromkeys(adc_cfg.get("Channels", [])))
             regs = list(dict.fromkeys(adc_cfg.get("RegularConversions", [])))
 
             cp_list = adc_cfg.get("CommonPathInternal", []) or []
             # Detect any suffixed TempSensor macro from any source
-            has_suffixed = any(re.match(r"ADC_CHANNEL_TEMPSENSOR_ADC\d+$", x)
-                            for x in (chs + regs + cp_list))
+            has_suffixed = any(
+                re.match(r"ADC_CHANNEL_TEMPSENSOR_ADC\d+$", x) for x in (chs + regs + cp_list)
+            )
 
             if has_suffixed:
-                chs  = [x for x in chs  if x != "ADC_CHANNEL_TEMPSENSOR"]
+                chs = [x for x in chs if x != "ADC_CHANNEL_TEMPSENSOR"]
                 regs = [x for x in regs if x != "ADC_CHANNEL_TEMPSENSOR"]
 
             adc_cfg["Channels"] = chs
@@ -672,9 +659,7 @@ class SPIParser(PeripheralParser):
 
             prop = parts[1]
             if "BaudRate" in prop:
-                self.config.peripherals[p_type][spi_name]["BaudRate"] = (
-                    sanitize_numeric(value)
-                )
+                self.config.peripherals[p_type][spi_name]["BaudRate"] = sanitize_numeric(value)
             elif "Direction" in prop:
                 self.config.peripherals[p_type][spi_name]["Direction"] = value
             elif "CLKPolarity" in prop:
@@ -720,9 +705,7 @@ class USARTParser(PeripheralParser):
 
                 prop = parts[1]
                 if "BaudRate" in prop:
-                    self.config.peripherals[p_type][uart_name]["BaudRate"] = (
-                        sanitize_numeric(value)
-                    )
+                    self.config.peripherals[p_type][uart_name]["BaudRate"] = sanitize_numeric(value)
                 elif "WordLength" in prop:
                     self.config.peripherals[p_type][uart_name]["WordLength"] = value
                 elif "Parity" in prop:
@@ -738,8 +721,8 @@ class USARTParser(PeripheralParser):
             if "_TX" in signal or "_RX" in signal:
                 uart_root = self._signal_root(signal)
                 if (
-                        uart_root.startswith(("USART", "UART", "LPUART"))
-                        and uart_root not in found_instances
+                    uart_root.startswith(("USART", "UART", "LPUART"))
+                    and uart_root not in found_instances
                 ):
                     # Found a new UART based only on pin signals
                     logging.debug(f"Inferred USART instance from pin: {uart_root}")
@@ -807,17 +790,13 @@ class I2CParser(PeripheralParser):
 
             prop = parts[-1]
             if "ClockSpeed" in prop:
-                self.config.peripherals[p_type][i2c_name]["ClockSpeed"] = (
-                    sanitize_numeric(value)
-                )
+                self.config.peripherals[p_type][i2c_name]["ClockSpeed"] = sanitize_numeric(value)
             elif "DutyCycle" in prop:
                 self.config.peripherals[p_type][i2c_name]["DutyCycle"] = value
             elif "AddressingMode" in prop:
                 self.config.peripherals[p_type][i2c_name]["AddressingMode"] = value
             elif "DualAddressMode" in prop:
-                self.config.peripherals[p_type][i2c_name]["DualAddressMode"] = (
-                        value == "ENABLE"
-                )
+                self.config.peripherals[p_type][i2c_name]["DualAddressMode"] = value == "ENABLE"
             elif "Timing" in prop:
                 self.config.peripherals[p_type][i2c_name]["Timing"] = str(value)
 
@@ -960,15 +939,19 @@ class USBParser(PeripheralParser):
                 if not self._has_ioc_prefix(key, usb_name):
                     continue
 
-                rest_key = key[len(usb_name) + 1:]  # Remove the "USB_OTG_FS." prefix
+                rest_key = key[len(usb_name) + 1 :]  # Remove the "USB_OTG_FS." prefix
                 # 2.1 Handle profile-specific parameters
-                if '-' in rest_key:
-                    param, profile = rest_key.split('-', 1)
-                    logging.debug(f"[USBParser] Profile param: {usb_name}.{param} (profile={profile}), value={value}")
+                if "-" in rest_key:
+                    param, profile = rest_key.split("-", 1)
+                    logging.debug(
+                        f"[USBParser] Profile param: {usb_name}.{param} (profile={profile}), value={value}"
+                    )
                     self.config.peripherals["USB"][usb_name].setdefault("profiles", {})
                     self.config.peripherals["USB"][usb_name]["profiles"].setdefault(profile, {})
                     if param == "IPParameters":
-                        self.config.peripherals["USB"][usb_name]["profiles"][profile][param] = value.split(',')
+                        self.config.peripherals["USB"][usb_name]["profiles"][profile][param] = (
+                            value.split(",")
+                        )
                         logging.info(
                             f"[USBParser] IPParameters for profile={profile}: "
                             f"{self.config.peripherals['USB'][usb_name]['profiles'][profile][param]}"
@@ -979,7 +962,7 @@ class USBParser(PeripheralParser):
                     # 2.2 Handle global parameters
                     logging.debug(f"[USBParser] Global param: {usb_name}.{rest_key} = {value}")
                     if rest_key == "IPParameters":
-                        self.config.peripherals["USB"][usb_name][rest_key] = value.split(',')
+                        self.config.peripherals["USB"][usb_name][rest_key] = value.split(",")
                         logging.info(
                             f"[USBParser] IPParameters: "
                             f"{self.config.peripherals['USB'][usb_name][rest_key]}"
@@ -1156,7 +1139,11 @@ class WatchdogParser(PeripheralParser):
     def parse(self, p_type: str) -> None:
         for key, value in self.raw_map.items():
             # IWDG
-            if self._ioc_root_startswith(key, "VP_IWDG") and ".Mode" in key and value == "IWDG_Activate":
+            if (
+                self._ioc_root_startswith(key, "VP_IWDG")
+                and ".Mode" in key
+                and value == "IWDG_Activate"
+            ):
                 # 这里的名字通常为 VP_IWDG_VS_IWDG，也可只按 IWDG 归档
                 match = re.match(r"VP_(IWDG\d*)_VS_IWDG\.Mode", key)
                 if match:
@@ -1171,13 +1158,15 @@ class WatchdogParser(PeripheralParser):
                 prop = self._ioc_key_prop(key)
 
                 if prop == "Prescaler":
-                    self.config.peripherals["IWDG"][iwdg_name]["Prescaler"] = sanitize_numeric(value)
+                    self.config.peripherals["IWDG"][iwdg_name]["Prescaler"] = sanitize_numeric(
+                        value
+                    )
                 elif prop == "Reload":
                     self.config.peripherals["IWDG"][iwdg_name]["Reload"] = sanitize_numeric(value)
                 elif prop == "Window":
                     self.config.peripherals["IWDG"][iwdg_name]["Window"] = sanitize_numeric(value)
                 elif prop == "Enable":
-                    self.config.peripherals["IWDG"][iwdg_name]["Enabled"] = (value == "ENABLE")
+                    self.config.peripherals["IWDG"][iwdg_name]["Enabled"] = value == "ENABLE"
 
             # WWDG
             elif self._ioc_key_root(key).startswith("WWDG"):
@@ -1186,13 +1175,15 @@ class WatchdogParser(PeripheralParser):
                 prop = self._ioc_key_prop(key)
 
                 if prop == "Prescaler":
-                    self.config.peripherals["WWDG"][wwdg_name]["Prescaler"] = sanitize_numeric(value)
+                    self.config.peripherals["WWDG"][wwdg_name]["Prescaler"] = sanitize_numeric(
+                        value
+                    )
                 elif prop == "Window":
                     self.config.peripherals["WWDG"][wwdg_name]["Window"] = sanitize_numeric(value)
                 elif prop == "Counter":
                     self.config.peripherals["WWDG"][wwdg_name]["Counter"] = sanitize_numeric(value)
                 elif prop == "Enable":
-                    self.config.peripherals["WWDG"][wwdg_name]["Enabled"] = (value == "ENABLE")
+                    self.config.peripherals["WWDG"][wwdg_name]["Enabled"] = value == "ENABLE"
 
     def _ensure_wdg_instance(self, wdg_type: str, wdg_name: str) -> None:
         if wdg_name not in self.config.peripherals[wdg_type]:
@@ -1357,12 +1348,8 @@ def print_summary(data: dict[str, Any]) -> None:
     # GPIO Summary
     gpio = data.get("GPIO", {})
     print(f"\nGPIO ({len(gpio)} pins):")
-    print(
-        f"  Outputs: {sum(1 for c in gpio.values() if c.get('Signal') == 'GPIO_Output')}"
-    )
-    print(
-        f"  Inputs: {sum(1 for c in gpio.values() if c.get('Signal') == 'GPIO_Input')}"
-    )
+    print(f"  Outputs: {sum(1 for c in gpio.values() if c.get('Signal') == 'GPIO_Output')}")
+    print(f"  Inputs: {sum(1 for c in gpio.values() if c.get('Signal') == 'GPIO_Input')}")
     print(f"  External Interrupts: {sum(1 for c in gpio.values() if c.get('GPXTI'))}")
 
     # Peripheral Summary
@@ -1377,10 +1364,13 @@ def print_summary(data: dict[str, Any]) -> None:
     if iwdgs or wwdgs:
         print("\nWatchdogs:")
         for k, v in iwdgs.items():
-            print(f"  {k}: Enabled={v.get('Enabled', False)}, Prescaler={v.get('Prescaler')}, Reload={v.get('Reload')}")
+            print(
+                f"  {k}: Enabled={v.get('Enabled', False)}, Prescaler={v.get('Prescaler')}, Reload={v.get('Reload')}"
+            )
         for k, v in wwdgs.items():
             print(
-                f"  {k}: Enabled={v.get('Enabled', False)}, Prescaler={v.get('Prescaler')}, Window={v.get('Window')}, Counter={v.get('Counter')}")
+                f"  {k}: Enabled={v.get('Enabled', False)}, Prescaler={v.get('Prescaler')}, Window={v.get('Window')}, Counter={v.get('Counter')}"
+            )
 
 
 def _format_peripheral_config(p_type: str, config: dict) -> str:

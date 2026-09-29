@@ -238,7 +238,9 @@ def _iter_cubemx_candidates() -> Iterable[str]:
         candidates = [
             "STM32CubeMX.exe",
             os.path.join(local_appdata, "Programs", "STM32CubeMX", "STM32CubeMX.exe"),
-            os.path.join(program_files, "STMicroelectronics", "STM32Cube", "STM32CubeMX", "STM32CubeMX.exe"),
+            os.path.join(
+                program_files, "STMicroelectronics", "STM32Cube", "STM32CubeMX", "STM32CubeMX.exe"
+            ),
         ]
     else:
         home = os.path.expanduser("~")
@@ -327,6 +329,7 @@ def build_cubemx_script(ioc_path: str, generate_code_dir: str = "") -> str:
 def _shell_join(args: Sequence[str]) -> str:
     try:
         import shlex
+
         return " ".join(shlex.quote(arg) for arg in args)
     except Exception:
         return " ".join(args)
@@ -343,9 +346,7 @@ def build_cubemx_command(
     if launch_mode not in {"auto", "direct", "java"}:
         raise ValueError(f"Unsupported launch mode: {launch_mode}")
 
-    use_java = launch_mode == "java" or (
-        launch_mode == "auto" and _is_java_archive(cubemx_cmd)
-    )
+    use_java = launch_mode == "java" or (launch_mode == "auto" and _is_java_archive(cubemx_cmd))
 
     if use_java and not _is_java_archive(cubemx_cmd):
         raise ValueError(
@@ -461,6 +462,7 @@ class _WindowsDialogController(_BaseDialogController):
 
     def _related_process_ids(self) -> set:
         ids = {self.process_id}
+
         class ProcessEntry(ctypes.Structure):
             _fields_ = [
                 ("dwSize", self.wintypes.DWORD),
@@ -525,7 +527,9 @@ class _WindowsDialogController(_BaseDialogController):
         self.user32.GetClassNameW(hwnd, buffer, len(buffer))
         return buffer.value
 
-    def _flatten_window_text(self, title: str, class_name: str, child_items: Sequence[tuple[int, str, str]]) -> str:
+    def _flatten_window_text(
+        self, title: str, class_name: str, child_items: Sequence[tuple[int, str, str]]
+    ) -> str:
         parts = [title, class_name]
         for _, child_class, text in child_items:
             parts.extend((child_class, text))
@@ -537,9 +541,13 @@ class _WindowsDialogController(_BaseDialogController):
         return _is_explicit_dialog_text(flat_text)
 
     def _can_use_keyboard_fallback(self, hwnd: int, flat_text: str, class_name: str) -> bool:
-        return _can_use_generic_dialog_fallback(self._generic_confirm_count, hwnd, flat_text, class_name)
+        return _can_use_generic_dialog_fallback(
+            self._generic_confirm_count, hwnd, flat_text, class_name
+        )
 
-    def _is_progress_window(self, flat_text: str, child_items: Sequence[tuple[int, str, str]]) -> bool:
+    def _is_progress_window(
+        self, flat_text: str, child_items: Sequence[tuple[int, str, str]]
+    ) -> bool:
         if any(keyword in flat_text for keyword in PROGRESS_KEYWORDS):
             return True
         for _, _, text in child_items:
@@ -552,12 +560,16 @@ class _WindowsDialogController(_BaseDialogController):
         last = self._last_action.get(hwnd, 0.0)
         return (time.time() - last) < 2.0
 
-    def _accept_window(self, hwnd: int, class_name: str, child_items: Sequence[tuple[int, str, str]]) -> bool:
+    def _accept_window(
+        self, hwnd: int, class_name: str, child_items: Sequence[tuple[int, str, str]]
+    ) -> bool:
         flat_text = self._flatten_window_text(self._window_text(hwnd), class_name, child_items)
         if _is_account_login_text(flat_text):
             raise DialogBlockedError(_st_login_blocked_message())
         if self._is_progress_window(flat_text, child_items):
-            LOGGER.info("Skipping CubeMX progress window to avoid interrupting downloads/extraction")
+            LOGGER.info(
+                "Skipping CubeMX progress window to avoid interrupting downloads/extraction"
+            )
             return False
 
         for child_hwnd, child_class, text in child_items:
@@ -583,7 +595,9 @@ class _WindowsDialogController(_BaseDialogController):
             LOGGER.info("Auto-confirmed CubeMX Java dialog with keyboard fallback")
             return True
 
-        LOGGER.info("Relevant CubeMX window detected but no safe positive button was found; leaving it untouched")
+        LOGGER.info(
+            "Relevant CubeMX window detected but no safe positive button was found; leaving it untouched"
+        )
         return False
 
     def _tap_key(self, virtual_key: int) -> None:
@@ -635,7 +649,9 @@ class _LinuxX11DialogController(_BaseDialogController):
             if not self._looks_relevant(flat_text, class_name):
                 continue
             if self._is_progress_window(flat_text):
-                LOGGER.info("Skipping CubeMX progress window to avoid interrupting downloads/extraction")
+                LOGGER.info(
+                    "Skipping CubeMX progress window to avoid interrupting downloads/extraction"
+                )
                 continue
             if self._acted_recently(window.id):
                 continue
@@ -732,7 +748,9 @@ class _LinuxX11DialogController(_BaseDialogController):
         return _is_explicit_dialog_text(flat_text)
 
     def _can_use_keyboard_fallback(self, window_id: int, flat_text: str, class_name: str) -> bool:
-        return _can_use_generic_dialog_fallback(self._generic_confirm_count, window_id, flat_text, class_name)
+        return _can_use_generic_dialog_fallback(
+            self._generic_confirm_count, window_id, flat_text, class_name
+        )
 
     def _is_progress_window(self, flat_text: str) -> bool:
         return _is_progress_text(flat_text)
@@ -807,7 +825,9 @@ class _LinuxX11DialogController(_BaseDialogController):
             LOGGER.debug(f"CubeMX X11 default-button click failed: {error}")
             return False
 
-    def _tap(self, key_name: str, alt: bool = False, shift: bool = False, control: bool = False) -> None:
+    def _tap(
+        self, key_name: str, alt: bool = False, shift: bool = False, control: bool = False
+    ) -> None:
         keycode = self.display.keysym_to_keycode(self.XK.string_to_keysym(key_name))
         if not keycode:
             return
@@ -832,11 +852,21 @@ class _LinuxX11DialogController(_BaseDialogController):
         time.sleep(0.05)
 
     def _confirm_window(self, window) -> None:
-        for key_name, alt in (("Return", False), ("space", False), ("Tab", False), ("Return", False), ("o", True), ("y", True), ("i", True), ("a", True)):
+        for key_name, alt in (
+            ("Return", False),
+            ("space", False),
+            ("Tab", False),
+            ("Return", False),
+            ("o", True),
+            ("y", True),
+            ("i", True),
+            ("a", True),
+        ):
             self._tap(key_name, alt=alt)
         clicked = self._click_default_dialog_button(window)
         suffix = " and default-button click" if clicked else ""
         LOGGER.info(f"Auto-confirmed CubeMX dialog with X11 key sequence{suffix}")
+
 
 def _st_login_blocked_message() -> str:
     return (
@@ -851,7 +881,9 @@ def create_dialog_controller(
     if os.name == "nt":
         return _WindowsDialogController(process_id)
     if not os.environ.get("DISPLAY"):
-        LOGGER.warning("CubeMX auto-confirm is enabled but DISPLAY is not set; dialog automation is disabled.")
+        LOGGER.warning(
+            "CubeMX auto-confirm is enabled but DISPLAY is not set; dialog automation is disabled."
+        )
         return _NullDialogController()
     try:
         return _LinuxX11DialogController(process_id)
@@ -980,7 +1012,9 @@ def generate_cubemx_project(
         raise FileNotFoundError(f"No .ioc file found in {_friendly_path_name(project_dir)}")
 
     resolved_cubemx_cmd = resolve_cubemx_command(cubemx_cmd)
-    actual_script_path, should_cleanup_script = _prepare_script_path(project_dir, script_path, keep_script)
+    actual_script_path, should_cleanup_script = _prepare_script_path(
+        project_dir, script_path, keep_script
+    )
     script_text = build_cubemx_script(ioc_path, generate_code_dir)
     _write_text_file(actual_script_path, script_text)
 
@@ -1005,12 +1039,18 @@ def generate_cubemx_project(
         stderr_handle = None
         if log_dir:
             stdout_handle = logs.enter_context(
-                open(os.path.join(log_dir, "cubemx_stdout.log"), "w", encoding="utf-8", newline="\n")
+                open(
+                    os.path.join(log_dir, "cubemx_stdout.log"), "w", encoding="utf-8", newline="\n"
+                )
             )
             stderr_handle = logs.enter_context(
-                open(os.path.join(log_dir, "cubemx_stderr.log"), "w", encoding="utf-8", newline="\n")
+                open(
+                    os.path.join(log_dir, "cubemx_stderr.log"), "w", encoding="utf-8", newline="\n"
+                )
             )
-            _write_text_file(os.path.join(log_dir, "cubemx_command.txt"), _shell_join(command) + "\n")
+            _write_text_file(
+                os.path.join(log_dir, "cubemx_command.txt"), _shell_join(command) + "\n"
+            )
 
         def consume_stream(stream, sink: list[str], handle) -> None:
             try:
@@ -1052,8 +1092,12 @@ def generate_cubemx_project(
             watch_thread = _DialogWatchThread(process.pid, stop_event)
             watch_thread.start()
 
-        stdout_thread = threading.Thread(target=consume_stream, args=(process.stdout, stdout_lines, stdout_handle), daemon=True)
-        stderr_thread = threading.Thread(target=consume_stream, args=(process.stderr, stderr_lines, stderr_handle), daemon=True)
+        stdout_thread = threading.Thread(
+            target=consume_stream, args=(process.stdout, stdout_lines, stdout_handle), daemon=True
+        )
+        stderr_thread = threading.Thread(
+            target=consume_stream, args=(process.stderr, stderr_lines, stderr_handle), daemon=True
+        )
         stdout_thread.start()
         stderr_thread.start()
 
@@ -1115,7 +1159,11 @@ def generate_cubemx_project(
         )
 
     effective_expect_paths = DEFAULT_EXPECT_PATHS if expect_paths is None else expect_paths
-    missing_paths = [path for path in _normalize_expect_paths(project_dir, effective_expect_paths) if not os.path.exists(path)]
+    missing_paths = [
+        path
+        for path in _normalize_expect_paths(project_dir, effective_expect_paths)
+        if not os.path.exists(path)
+    ]
     if missing_paths:
         raise RuntimeError(
             "STM32CubeMX finished but expected paths are still missing: " + ", ".join(missing_paths)
@@ -1129,8 +1177,14 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 
     parser = argparse.ArgumentParser(description="Generate STM32CubeMX projects in script mode")
-    parser.add_argument("-d", "--directory", required=True, help="Directory containing the CubeMX .ioc file")
-    parser.add_argument("--ioc", default="", help="Explicit .ioc file path (defaults to the first .ioc in --directory)")
+    parser.add_argument(
+        "-d", "--directory", required=True, help="Directory containing the CubeMX .ioc file"
+    )
+    parser.add_argument(
+        "--ioc",
+        default="",
+        help="Explicit .ioc file path (defaults to the first .ioc in --directory)",
+    )
     parser.add_argument("--cubemx-cmd", default="", help="STM32CubeMX executable path")
     parser.add_argument("--java-cmd", default="", help="Java executable path for -jar launch mode")
     parser.add_argument(
@@ -1139,19 +1193,40 @@ def main() -> None:
         default="auto",
         help="CubeMX launch mode (default: auto; .jar uses java -jar, executables launch directly)",
     )
-    parser.add_argument("--generate-code-dir", default="", help="Use 'generate code <dir>' instead of 'project generate'")
+    parser.add_argument(
+        "--generate-code-dir",
+        default="",
+        help="Use 'generate code <dir>' instead of 'project generate'",
+    )
     parser.add_argument(
         "--expect-path",
         action="append",
         default=None,
         help="Path that must exist after generation (default: Core/Inc and Drivers)",
     )
-    parser.add_argument("--log-dir", default="", help="Optional directory for command/script/stdout/stderr logs")
-    parser.add_argument("--script-path", default="", help="Optional path for the generated CubeMX script file")
-    parser.add_argument("--keep-script", action="store_true", help="Keep the generated CubeMX script in the project directory")
+    parser.add_argument(
+        "--log-dir", default="", help="Optional directory for command/script/stdout/stderr logs"
+    )
+    parser.add_argument(
+        "--script-path", default="", help="Optional path for the generated CubeMX script file"
+    )
+    parser.add_argument(
+        "--keep-script",
+        action="store_true",
+        help="Keep the generated CubeMX script in the project directory",
+    )
     parser.add_argument("--silent", action="store_true", help="Pass -s to STM32CubeMX")
-    parser.add_argument("--auto-confirm", action="store_true", help="Attempt to auto-confirm migration/license/download dialogs")
-    parser.add_argument("--timeout", type=int, default=1200, help="CubeMX process timeout in seconds (default: 1200)")
+    parser.add_argument(
+        "--auto-confirm",
+        action="store_true",
+        help="Attempt to auto-confirm migration/license/download dialogs",
+    )
+    parser.add_argument(
+        "--timeout",
+        type=int,
+        default=1200,
+        help="CubeMX process timeout in seconds (default: 1200)",
+    )
 
     args = parser.parse_args()
 

@@ -15,14 +15,15 @@ GCC_TOOLCHAIN = "cmake/gcc-arm-none-eabi.cmake"
 
 # Mapping between command-line options and STARM configs
 STD_MAP = {
-    'g': 'STARM_HYBRID',
-    'gnu': 'STARM_HYBRID',
-    'hybrid': 'STARM_HYBRID',
-    'n': 'STARM_NEWLIB',
-    'newlib': 'STARM_NEWLIB',
-    'p': 'STARM_PICOLIBC',
-    'picolibc': 'STARM_PICOLIBC'
+    "g": "STARM_HYBRID",
+    "gnu": "STARM_HYBRID",
+    "hybrid": "STARM_HYBRID",
+    "n": "STARM_NEWLIB",
+    "newlib": "STARM_NEWLIB",
+    "p": "STARM_PICOLIBC",
+    "picolibc": "STARM_PICOLIBC",
 }
+
 
 def patch_cmakepresets(compiler):
     """
@@ -56,8 +57,9 @@ def patch_cmakepresets(compiler):
         logging.info(f"Toolchain in default preset already set to {new_toolchain}")
     with open(CMAKE_PRESETS_PATH, "w", encoding="utf-8") as f:
         json.dump(presets, f, indent=4)
-        f.write('\n')
+        f.write("\n")
     logging.info("CMakePresets.json updated.")
+
 
 def patch_clang_stdlib(starm_config):
     """
@@ -69,21 +71,19 @@ def patch_clang_stdlib(starm_config):
         sys.exit(1)
     with open(cmake_file, encoding="utf-8") as f:
         lines = f.readlines()
-    pat = re.compile(
-        r'(set\s*\(\s*STARM_TOOLCHAIN_CONFIG\s+")([^"]+)(".*\))'
-    )
+    pat = re.compile(r'(set\s*\(\s*STARM_TOOLCHAIN_CONFIG\s+")([^"]+)(".*\))')
     found = False
     for i, line in enumerate(lines):
         m = pat.search(line)
         if m:
             if m.group(2) == starm_config:
-                logging.info(f"STARM_TOOLCHAIN_CONFIG already set to \"{starm_config}\".")
+                logging.info(f'STARM_TOOLCHAIN_CONFIG already set to "{starm_config}".')
                 found = True
                 break
             else:
-                lines[i] = pat.sub(rf'\1{starm_config}\3', line)
+                lines[i] = pat.sub(rf"\1{starm_config}\3", line)
                 found = True
-                logging.info(f"Set STARM_TOOLCHAIN_CONFIG to \"{starm_config}\" in {cmake_file}")
+                logging.info(f'Set STARM_TOOLCHAIN_CONFIG to "{starm_config}" in {cmake_file}')
                 break
     if not found:
         logging.error(f"Could not find 'set(STARM_TOOLCHAIN_CONFIG ...)' in {cmake_file}")
@@ -91,6 +91,7 @@ def patch_clang_stdlib(starm_config):
     with open(cmake_file, "w", encoding="utf-8", newline="\n") as f:
         f.writelines(lines)
     logging.info(f"{cmake_file} updated.")
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -102,16 +103,35 @@ def main():
             "  python switch_toolchain.py clang --newlib\n"
             "  python switch_toolchain.py clang --picolibc"
         ),
-        formatter_class=argparse.RawTextHelpFormatter
+        formatter_class=argparse.RawTextHelpFormatter,
     )
-    parser.add_argument('compiler', choices=['gcc', 'clang'], help='Compiler (gcc or clang)')
+    parser.add_argument("compiler", choices=["gcc", "clang"], help="Compiler (gcc or clang)")
     group = parser.add_mutually_exclusive_group()
-    group.add_argument('-g', '--gnu', '--hybrid', dest='std', action='store_const', const='hybrid',
-                       help='Use GNU(Hybrid) standard library')
-    group.add_argument('-n', '--newlib', dest='std', action='store_const', const='newlib',
-                       help='Use newlib standard library')
-    group.add_argument('-p', '--picolibc', dest='std', action='store_const', const='picolibc',
-                       help='Use picolibc standard library')
+    group.add_argument(
+        "-g",
+        "--gnu",
+        "--hybrid",
+        dest="std",
+        action="store_const",
+        const="hybrid",
+        help="Use GNU(Hybrid) standard library",
+    )
+    group.add_argument(
+        "-n",
+        "--newlib",
+        dest="std",
+        action="store_const",
+        const="newlib",
+        help="Use newlib standard library",
+    )
+    group.add_argument(
+        "-p",
+        "--picolibc",
+        dest="std",
+        action="store_const",
+        const="picolibc",
+        help="Use picolibc standard library",
+    )
     args = parser.parse_args()
     compiler = args.compiler
     if compiler == "gcc":
@@ -122,13 +142,16 @@ def main():
         patch_cmakepresets("gcc")
     elif compiler == "clang":
         if not args.std:
-            logging.error("Standard library option required for clang: -g/--gnu/--hybrid, -n/--newlib, -p/--picolibc")
+            logging.error(
+                "Standard library option required for clang: -g/--gnu/--hybrid, -n/--newlib, -p/--picolibc"
+            )
             parser.print_usage()
             sys.exit(1)
         starm_config = STD_MAP[args.std]
         patch_cmakepresets("clang")
         patch_clang_stdlib(starm_config)
     logging.info("Done.")
+
 
 if __name__ == "__main__":
     main()

@@ -4,12 +4,14 @@ import logging
 
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 
+
 class LibXRPackageInfo:
     """
     libxr pip package self-check utility:
     - Prints local version
     - Checks for new remote version and suggests upgrading
     """
+
     PKGNAME = "libxr"
 
     @classmethod
@@ -48,11 +50,16 @@ class LibXRPackageInfo:
         if local_ver and remote_ver:
             try:
                 from packaging.version import parse as vparse
+
                 if vparse(local_ver) < vparse(remote_ver):
-                    logging.warning(f"A new version of {cls.PKGNAME} is available: {remote_ver} (your version: {local_ver})")
+                    logging.warning(
+                        f"A new version of {cls.PKGNAME} is available: {remote_ver} (your version: {local_ver})"
+                    )
                     logging.warning(f"Tip: Upgrade with: pip install -U {cls.PKGNAME}\n")
             except Exception:
                 # fallback: only show if different
                 if local_ver != remote_ver:
-                    logging.warning(f"A new version of {cls.PKGNAME} is available: {remote_ver} (your version: {local_ver})")
+                    logging.warning(
+                        f"A new version of {cls.PKGNAME} is available: {remote_ver} (your version: {local_ver})"
+                    )
                     logging.warning(f"Tip: Upgrade with: pip install -U {cls.PKGNAME}\n")

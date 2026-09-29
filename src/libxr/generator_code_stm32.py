@@ -39,9 +39,9 @@ libxr_settings = {
         "read_buff_size": 32,
         "max_line_size": 32,
         "max_arg_number": 5,
-        "max_history_number": 5
+        "max_history_number": 5,
     },
-    "SYSTEM": "None"
+    "SYSTEM": "None",
 }
 # Round-trip document of the loaded libxr_config.yaml (comments, user keys).
 libxr_config_document = None
@@ -64,16 +64,14 @@ def initialize_registry(use_xrobot: bool) -> None:
 def parse_arguments():
     parser = argparse.ArgumentParser(
         description="Generate STM32 Peripheral Initialization Code",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("-i", "--input", required=True,
-                        help="Input YAML configuration file path")
-    parser.add_argument("-o", "--output", required=True,
-                        help="Output C++ file path")
-    parser.add_argument("--xrobot", action="store_true",
-                        help="Enable XRobot framework integration")
-    parser.add_argument("--libxr-config", default="",
-                        help="Optional path or URL to libxr_config.yaml")
+    parser.add_argument("-i", "--input", required=True, help="Input YAML configuration file path")
+    parser.add_argument("-o", "--output", required=True, help="Output C++ file path")
+    parser.add_argument("--xrobot", action="store_true", help="Enable XRobot framework integration")
+    parser.add_argument(
+        "--libxr-config", default="", help="Optional path or URL to libxr_config.yaml"
+    )
     return parser.parse_args()
 
 
@@ -87,7 +85,8 @@ def _register_device(name: str, dev_type: str, origin: str = ""):
         raise ValueError(
             f"Generated name '{name}' ({origin}) collides with the existing "
             f"'{name}' ({registered_origins.get(name, registered_devices[name])}); "
-            "every generated object needs its own name")
+            "every generated object needs its own name"
+        )
     registered_devices[name] = dev_type
     registered_origins[name] = origin
 
@@ -112,11 +111,7 @@ def _generate_fdcan_can_alias(instance: str) -> str:
 # --------------------------
 def generate_peripheral_instances(project_data: dict, use_xrobot: bool = False) -> str:
     """Generate initialization code for all peripherals with topological sorting."""
-    code_sections = {
-        "adc": [],
-        "pwm": [],
-        "main": []
-    }
+    code_sections = {"adc": [], "pwm": [], "main": []}
 
     for p_type, instances in project_data.get("Peripherals", {}).items():
         for instance_name, config in instances.items():
@@ -127,11 +122,13 @@ def generate_peripheral_instances(project_data: dict, use_xrobot: bool = False) 
                 code_sections[section].append(code)
 
     # Assemble code in correct order: ADC config -> PWM -> Main peripherals
-    return "\n".join([
-        "\n".join(code_sections["adc"]),
-        "\n".join(code_sections["pwm"]),
-        "\n".join(code_sections["main"])
-    ])
+    return "\n".join(
+        [
+            "\n".join(code_sections["adc"]),
+            "\n".join(code_sections["pwm"]),
+            "\n".join(code_sections["main"]),
+        ]
+    )
 
 
 # --------------------------
@@ -150,21 +147,21 @@ def load_configuration(file_path: str, use_xrobot: bool) -> dict:
                     raise ValueError(f"Missing required section: {section}")
 
             # Detect RTOS
-            if 'FreeRTOS' in config:
-                libxr_settings['SYSTEM'] = 'FreeRTOS'
+            if "FreeRTOS" in config:
+                libxr_settings["SYSTEM"] = "FreeRTOS"
                 logging.info("Detected FreeRTOS configuration")
-            elif 'ThreadX' in config:
-                libxr_settings['SYSTEM'] = 'ThreadX'
+            elif "ThreadX" in config:
+                libxr_settings["SYSTEM"] = "ThreadX"
             else:
-                libxr_settings['SYSTEM'] = 'None'
+                libxr_settings["SYSTEM"] = "None"
 
             # Software timer config
-            if 'software_timer' in config:
-                libxr_settings['software_timer'].update(config['software_timer'])
+            if "software_timer" in config:
+                libxr_settings["software_timer"].update(config["software_timer"])
 
             # Terminal source
-            if 'terminal_source' in config:
-                libxr_settings['terminal_source'] = config['terminal_source']
+            if "terminal_source" in config:
+                libxr_settings["terminal_source"] = config["terminal_source"]
 
             if "Peripherals" in config:
                 empty_keys = [k for k, v in config["Peripherals"].items() if not v or v == {}]
@@ -237,7 +234,8 @@ def _report_dropped_device_aliases(aliases) -> None:
     logging.warning(
         "Removed the legacy device_aliases table from libxr_config.yaml; generated "
         "objects are registered only under their own names. Update configurations "
-        "that used these aliases (alias -> device):")
+        "that used these aliases (alias -> device):"
+    )
     for pair in pairs or [repr(aliases)]:
         logging.warning(f"  {pair}")
 
@@ -252,7 +250,8 @@ def save_libxr_config(config_path: str) -> None:
     if "device_aliases" in libxr_settings:
         _report_dropped_device_aliases(libxr_settings["device_aliases"])
     cleaned_config = {
-        k: v for k, v in libxr_settings.items()
+        k: v
+        for k, v in libxr_settings.items()
         if not (isinstance(v, dict) and len(v) == 0) and k != "device_aliases"
     }
     document = libxr_config_document
@@ -271,7 +270,8 @@ def _deep_merge(base: dict, update: dict) -> dict:
                 _deep_merge(node, value)
             else:
                 raise LibXRConfigError(
-                    f"Config type conflict for key '{key}': expected {type(node).__name__}, got a mapping")
+                    f"Config type conflict for key '{key}': expected {type(node).__name__}, got a mapping"
+                )
         else:
             base[key] = value
     return base
@@ -281,10 +281,105 @@ def _deep_merge(base: dict, update: dict) -> dict:
 # GPIO Configuration
 # --------------------------
 def _sanitize_cpp_identifier(name: str) -> str:
-    return re.sub(r'\W|^(?=\d)', '_', name)
+    return re.sub(r"\W|^(?=\d)", "_", name)
 
 
-CPP_KEYWORDS = frozenset(["alignas", "alignof", "and", "and_eq", "asm", "auto", "bitand", "bitor", "bool", "break", "case", "catch", "char", "char8_t", "char16_t", "char32_t", "class", "compl", "concept", "const", "consteval", "constexpr", "constinit", "const_cast", "continue", "co_await", "co_return", "co_yield", "decltype", "default", "delete", "do", "double", "dynamic_cast", "else", "enum", "explicit", "export", "extern", "false", "float", "for", "friend", "goto", "if", "inline", "int", "long", "mutable", "namespace", "new", "noexcept", "not", "not_eq", "nullptr", "operator", "or", "or_eq", "private", "protected", "public", "register", "reinterpret_cast", "requires", "return", "short", "signed", "sizeof", "static", "static_assert", "static_cast", "struct", "switch", "template", "this", "thread_local", "throw", "true", "try", "typedef", "typeid", "typename", "union", "unsigned", "using", "virtual", "void", "volatile", "wchar_t", "while", "xor", "xor_eq"])
+CPP_KEYWORDS = frozenset(
+    [
+        "alignas",
+        "alignof",
+        "and",
+        "and_eq",
+        "asm",
+        "auto",
+        "bitand",
+        "bitor",
+        "bool",
+        "break",
+        "case",
+        "catch",
+        "char",
+        "char8_t",
+        "char16_t",
+        "char32_t",
+        "class",
+        "compl",
+        "concept",
+        "const",
+        "consteval",
+        "constexpr",
+        "constinit",
+        "const_cast",
+        "continue",
+        "co_await",
+        "co_return",
+        "co_yield",
+        "decltype",
+        "default",
+        "delete",
+        "do",
+        "double",
+        "dynamic_cast",
+        "else",
+        "enum",
+        "explicit",
+        "export",
+        "extern",
+        "false",
+        "float",
+        "for",
+        "friend",
+        "goto",
+        "if",
+        "inline",
+        "int",
+        "long",
+        "mutable",
+        "namespace",
+        "new",
+        "noexcept",
+        "not",
+        "not_eq",
+        "nullptr",
+        "operator",
+        "or",
+        "or_eq",
+        "private",
+        "protected",
+        "public",
+        "register",
+        "reinterpret_cast",
+        "requires",
+        "return",
+        "short",
+        "signed",
+        "sizeof",
+        "static",
+        "static_assert",
+        "static_cast",
+        "struct",
+        "switch",
+        "template",
+        "this",
+        "thread_local",
+        "throw",
+        "true",
+        "try",
+        "typedef",
+        "typeid",
+        "typename",
+        "union",
+        "unsigned",
+        "using",
+        "virtual",
+        "void",
+        "volatile",
+        "wchar_t",
+        "while",
+        "xor",
+        "xor_eq",
+    ]
+)
 
 # Object-like CMSIS/HAL macros a GPIO object name would be expanded into.
 _CMSIS_INSTANCE_MACRO = re.compile(
@@ -294,7 +389,8 @@ _CMSIS_INSTANCE_MACRO = re.compile(
     r"WWDG|RTC|TAMP|CRC|RNG|HASH|CRYP|AES|SAES|PKA|ETH|LTDC|DCMI|DCMIPP|PSSI|"
     r"USB_OTG_FS|USB_OTG_HS|USB|UCPD|TSC|LCD|CEC|SPDIFRX|SWPMI|MDIOS|RCC|PWR|"
     r"FLASH|EXTI|SYSCFG|DBGMCU|SCB|NVIC|SysTick|MPU|FPU|ITM|DWT|CoreDebug|TPI|"
-    r"ICACHE|DCACHE|GTZC|VREFBUF|CORDIC|FMAC|JPEG|RAMCFG|OTFDEC|IPCC|HSEM)\d*")
+    r"ICACHE|DCACHE|GTZC|VREFBUF|CORDIC|FMAC|JPEG|RAMCFG|OTFDEC|IPCC|HSEM)\d*"
+)
 _HAL_MACROS = frozenset({"NULL", "UNUSED", "UID_BASE"})
 
 
@@ -332,14 +428,12 @@ def check_gpio_names(project_data: dict, generated_code: str, use_xrobot: bool) 
             problems.append(f"{where} is a reserved C++ identifier")
         elif name in label_macros:
             problems.append(f"{where} is the CubeMX macro of GPIO label '{label_macros[name]}'")
-        elif (name in _HAL_MACROS or name.endswith("_IRQn")
-              or _CMSIS_INSTANCE_MACRO.fullmatch(name)):
+        elif name in _HAL_MACROS or name.endswith("_IRQn") or _CMSIS_INSTANCE_MACRO.fullmatch(name):
             problems.append(f"{where} is a CMSIS/HAL macro or IRQ name")
         elif counts.get(name, 0) > expected_uses:
             problems.append(f"{where} collides with a name the generated code uses")
     if problems:
-        raise ValueError(
-            "rename these GPIO labels in CubeMX:\n  " + "\n  ".join(problems))
+        raise ValueError("rename these GPIO labels in CubeMX:\n  " + "\n  ".join(problems))
 
 
 def generate_gpio_alias(port: str, gpio_data: dict, project_data: dict) -> str:
@@ -353,15 +447,20 @@ def generate_gpio_alias(port: str, gpio_data: dict, project_data: dict) -> str:
         port_define = f"{label}_GPIO_Port"
         pin_define = f"{label}_Pin"
 
-    irq_define = _get_exti_irq(pin_num, base_port, gpio_data.get("GPXTI", False),
-                               project_data.get("Mcu", {}).get("Family", "STM32F4"),
-                               project_data.get("Mcu", {}).get("Type") or "")
+    irq_define = _get_exti_irq(
+        pin_num,
+        base_port,
+        gpio_data.get("GPXTI", False),
+        project_data.get("Mcu", {}).get("Family", "STM32F4"),
+        project_data.get("Mcu", {}).get("Type") or "",
+    )
     irq_str = f", {irq_define}" if irq_define else ""
 
     var_name = _gpio_object_name(port, gpio_data)
 
-    _register_device(var_name, "GPIO",
-                     f"GPIO label {label} on {base_port}" if label else f"GPIO {base_port}")
+    _register_device(
+        var_name, "GPIO", f"GPIO label {label} on {base_port}" if label else f"GPIO {base_port}"
+    )
 
     return f"{var_name}({port_define}, {pin_define}{irq_str})"
 
@@ -371,10 +470,14 @@ def generate_gpio_alias(port: str, gpio_data: dict, project_data: dict) -> str:
 _EXTI_SHARED_LINE_FAMILIES = frozenset({"STM32F0", "STM32G0", "STM32L0", "STM32C0", "STM32U0"})
 # These have one vector per line, EXTI0_IRQn..EXTI15_IRQn (as do the STM32H7R/S
 # parts of the STM32H7 family); the others share EXTI9_5 and EXTI15_10.
-_EXTI_PER_LINE_FAMILIES = frozenset({"STM32H5", "STM32U3", "STM32U5", "STM32L5", "STM32WBA", "STM32N6"})
+_EXTI_PER_LINE_FAMILIES = frozenset(
+    {"STM32H5", "STM32U3", "STM32U5", "STM32L5", "STM32WBA", "STM32N6"}
+)
 
 
-def _get_exti_irq(pin_num: int, port: str, is_exti: bool, mcu_family: str, mcu_type: str = "") -> str:
+def _get_exti_irq(
+    pin_num: int, port: str, is_exti: bool, mcu_family: str, mcu_type: str = ""
+) -> str:
     if not is_exti:
         return ""
 
@@ -407,7 +510,7 @@ DMA_DEFAULT_SIZES = {
     "SPI": {"tx": 32, "rx": 32},
     "USART": {"tx": 128, "rx": 128},
     "I2C": {"buffer": 32},
-    "ADC": {"buffer": 32}
+    "ADC": {"buffer": 32},
 }
 
 
@@ -441,22 +544,24 @@ def generate_dma_resources(project_data: dict) -> str:
     def buffer_declaration(data_type: str, name: str, count, section: str) -> str:
         # Align the storage type, not only its object: sizeof then includes tail
         # padding. Keep the array extent so RawData and split buffers are unchanged.
-        return "\n".join([
-            "#if defined(__DCACHE_PRESENT) && (__DCACHE_PRESENT == 1U)",
-            "static struct alignas(XR_DCACHE_LINE_SIZE)",
-            "{",
-            f"  {data_type} data[{count}];",
-            f"}} {name}_storage{section};",
-            f"static constexpr auto& {name} = {name}_storage.data;",
-            "#else",
-            f"alignas(4) static {data_type} {name}[{count}]{section};",
-            "#endif",
-        ])
+        return "\n".join(
+            [
+                "#if defined(__DCACHE_PRESENT) && (__DCACHE_PRESENT == 1U)",
+                "static struct alignas(XR_DCACHE_LINE_SIZE)",
+                "{",
+                f"  {data_type} data[{count}];",
+                f"}} {name}_storage{section};",
+                f"static constexpr auto& {name} = {name}_storage.data;",
+                "#else",
+                f"alignas(4) static {data_type} {name}[{count}]{section};",
+                "#endif",
+            ]
+        )
 
     # Iterate all peripherals
     for p_type_raw, instances in project_data.get("Peripherals", {}).items():
         # Normalize peripheral type (e.g. "spi1" -> "SPI")
-        match = re.match(r'([A-Za-z0-9]+?)(\d*)$', p_type_raw)
+        match = re.match(r"([A-Za-z0-9]+?)(\d*)$", p_type_raw)
         p_type_base = match.group(1).upper() if match else p_type_raw.upper()
 
         # Ensure settings dict exists for this peripheral
@@ -475,12 +580,10 @@ def generate_dma_resources(project_data: dict) -> str:
                 instance_lower = instance.lower()
                 instance_config = libxr_settings[p_type_base].setdefault(instance_lower, {})
                 tx_size = instance_config.setdefault(
-                    "tx_buffer_size",
-                    DMA_DEFAULT_SIZES.get(p_type_base, {}).get("tx", 32)
+                    "tx_buffer_size", DMA_DEFAULT_SIZES.get(p_type_base, {}).get("tx", 32)
                 )
                 rx_size = instance_config.setdefault(
-                    "rx_buffer_size",
-                    DMA_DEFAULT_SIZES.get(p_type_base, {}).get("rx", 32)
+                    "rx_buffer_size", DMA_DEFAULT_SIZES.get(p_type_base, {}).get("rx", 32)
                 )
                 # Get dma_section config or assign default
                 dma_section = instance_config.get("dma_section", None)
@@ -491,9 +594,13 @@ def generate_dma_resources(project_data: dict) -> str:
 
                 buf_code = []
                 if tx_dma:
-                    buf_code.append(buffer_declaration("uint8_t", f"{instance_lower}_tx_buf", tx_size, sec_str))
+                    buf_code.append(
+                        buffer_declaration("uint8_t", f"{instance_lower}_tx_buf", tx_size, sec_str)
+                    )
                 if rx_dma:
-                    buf_code.append(buffer_declaration("uint8_t", f"{instance_lower}_rx_buf", rx_size, sec_str))
+                    buf_code.append(
+                        buffer_declaration("uint8_t", f"{instance_lower}_rx_buf", rx_size, sec_str)
+                    )
                 if buf_code:
                     dma_code.append("\n".join(buf_code))
 
@@ -504,8 +611,7 @@ def generate_dma_resources(project_data: dict) -> str:
                 instance_lower = instance.lower()
                 instance_config = libxr_settings[p_type_base].setdefault(instance_lower, {})
                 buf_size = instance_config.setdefault(
-                    "buffer_size",
-                    DMA_DEFAULT_SIZES[p_type_base]["buffer"]
+                    "buffer_size", DMA_DEFAULT_SIZES[p_type_base]["buffer"]
                 )
                 dma_section = instance_config.get("dma_section", None)
                 if not dma_section:
@@ -521,22 +627,29 @@ def generate_dma_resources(project_data: dict) -> str:
                         if config.get("DMA") == "ENABLE"
                         else config.get("Channels", [])
                     )
-                    ch_cnt = max(1, len(active_channels))               # 至少保留 1 份缓冲
-                    elems_per_channel = max(1, int(buf_size // 2))      # 每通道的 uint16_t 元素数
-                    total_elems = ch_cnt * elems_per_channel            # 总元素数 = 通道数 × 每通道元素数
-                    dma_code.append(buffer_declaration("uint16_t", f"{instance_lower}_buf", total_elems, sec_str))
+                    ch_cnt = max(1, len(active_channels))  # 至少保留 1 份缓冲
+                    elems_per_channel = max(1, int(buf_size // 2))  # 每通道的 uint16_t 元素数
+                    total_elems = ch_cnt * elems_per_channel  # 总元素数 = 通道数 × 每通道元素数
+                    dma_code.append(
+                        buffer_declaration(
+                            "uint16_t", f"{instance_lower}_buf", total_elems, sec_str
+                        )
+                    )
                 else:
-                    dma_code.append(buffer_declaration("uint8_t", f"{instance_lower}_buf", buf_size, sec_str))
+                    dma_code.append(
+                        buffer_declaration("uint8_t", f"{instance_lower}_buf", buf_size, sec_str)
+                    )
 
         elif p_type_base == "USB":
             # Generate buffer variables for each USB EP (controlled by dma_section)
             for instance, cfg in instances.items():
                 # Normalize instance name
                 inst_u = (instance or "USB_FS").upper()
-                inst_u = (inst_u
-                          .replace("USBOTG", "USB_OTG_")
-                          .replace("OTGFS", "OTG_FS")
-                          .replace("OTGHS", "OTG_HS"))
+                inst_u = (
+                    inst_u.replace("USBOTG", "USB_OTG_")
+                    .replace("OTGFS", "OTG_FS")
+                    .replace("OTGHS", "OTG_HS")
+                )
                 if inst_u == "USB":
                     inst_u = "USB_FS"
                 is_otg = inst_u.startswith("USB_OTG_")
@@ -556,18 +669,34 @@ def generate_dma_resources(project_data: dict) -> str:
                     logging.info(f"Skipping disabled USB instance: {instance}")
                     continue
 
-                if 'cdc_count' in usb_cfg or 'cdc_count' in cfg:
-                    raise ValueError("USB cdc_count is not a generator option; define composite USB in BSP user code")
+                if "cdc_count" in usb_cfg or "cdc_count" in cfg:
+                    raise ValueError(
+                        "USB cdc_count is not a generator option; define composite USB in BSP user code"
+                    )
 
                 # EP0 packet size, fallback to defaults if needed
-                ep0 = _as_int(usb_cfg.get("ep0_packet_size", cfg.get("ep0_packet_size", cfg.get("packet_size", 8))), 8)
+                ep0 = _as_int(
+                    usb_cfg.get(
+                        "ep0_packet_size", cfg.get("ep0_packet_size", cfg.get("packet_size", 8))
+                    ),
+                    8,
+                )
                 if ep0 not in (8, 16, 32, 64):
                     ep0 = 8
                 usb_cfg.setdefault("ep0_packet_size", ep0)
 
-                tx_sz = usb_cfg.setdefault("tx_buffer_size", _as_int(cfg.get("tx_buffer_size", 128), 128))
-                rx_sz = usb_cfg.setdefault("rx_buffer_size", _as_int(cfg.get("rx_buffer_size", 128), 128))
-                usb_cfg.setdefault("rx_fifo_size", _as_int(cfg.get("rx_fifo_size", 256 if is_otg else 128), 256 if is_otg else 128))
+                tx_sz = usb_cfg.setdefault(
+                    "tx_buffer_size", _as_int(cfg.get("tx_buffer_size", 128), 128)
+                )
+                rx_sz = usb_cfg.setdefault(
+                    "rx_buffer_size", _as_int(cfg.get("rx_buffer_size", 128), 128)
+                )
+                usb_cfg.setdefault(
+                    "rx_fifo_size",
+                    _as_int(
+                        cfg.get("rx_fifo_size", 256 if is_otg else 128), 256 if is_otg else 128
+                    ),
+                )
                 usb_cfg.setdefault("tx_fifo_size", _as_int(cfg.get("tx_fifo_size", 128), 128))
 
                 # Section name (same as UART)
@@ -577,30 +706,46 @@ def generate_dma_resources(project_data: dict) -> str:
                 sec_str = f' __attribute__((section("{dma_section}")))' if dma_section else ""
 
                 # One line per variable to avoid attribute only on the last one
-                dma_code.append(buffer_declaration("uint8_t", f"{inst_lower}_ep0_in_buf", ep0, sec_str))
-                dma_code.append(buffer_declaration("uint8_t", f"{inst_lower}_ep0_out_buf", ep0, sec_str))
-                dma_code.append(buffer_declaration("uint8_t", f"{inst_lower}_ep1_in_buf", tx_sz, sec_str))
-                dma_code.append(buffer_declaration("uint8_t", f"{inst_lower}_ep1_out_buf", rx_sz, sec_str))
-                dma_code.append(buffer_declaration("uint8_t", f"{inst_lower}_ep2_in_buf", 16, sec_str))
+                dma_code.append(
+                    buffer_declaration("uint8_t", f"{inst_lower}_ep0_in_buf", ep0, sec_str)
+                )
+                dma_code.append(
+                    buffer_declaration("uint8_t", f"{inst_lower}_ep0_out_buf", ep0, sec_str)
+                )
+                dma_code.append(
+                    buffer_declaration("uint8_t", f"{inst_lower}_ep1_in_buf", tx_sz, sec_str)
+                )
+                dma_code.append(
+                    buffer_declaration("uint8_t", f"{inst_lower}_ep1_out_buf", rx_sz, sec_str)
+                )
+                dma_code.append(
+                    buffer_declaration("uint8_t", f"{inst_lower}_ep2_in_buf", 16, sec_str)
+                )
 
     # Final output with section header if any code generated
     if dma_code:
         # Older CMSIS core_cm7.h (e.g. STM32F7 Cube packs) lacks the line-size
         # macro; the Cortex-M7 data cache line is fixed at 32 bytes.
-        output = "\n".join([
-            "/* DMA Resources */",
-            "#if defined(__DCACHE_PRESENT) && (__DCACHE_PRESENT == 1U)",
-            "#if defined(__SCB_DCACHE_LINE_SIZE)",
-            "#define XR_DCACHE_LINE_SIZE __SCB_DCACHE_LINE_SIZE",
-            "#else",
-            "#define XR_DCACHE_LINE_SIZE 32U",
-            "#endif",
-            "#endif",
-        ]) + "\n"
+        output = (
+            "\n".join(
+                [
+                    "/* DMA Resources */",
+                    "#if defined(__DCACHE_PRESENT) && (__DCACHE_PRESENT == 1U)",
+                    "#if defined(__SCB_DCACHE_LINE_SIZE)",
+                    "#define XR_DCACHE_LINE_SIZE __SCB_DCACHE_LINE_SIZE",
+                    "#else",
+                    "#define XR_DCACHE_LINE_SIZE 32U",
+                    "#endif",
+                    "#endif",
+                ]
+            )
+            + "\n"
+        )
         output += "\n".join(dma_code)
     else:
         output = "/* No DMA Resources generated. */"
     return output
+
 
 # --------------------------
 # Peripheral Generation
@@ -628,10 +773,13 @@ class PeripheralFactory:
     @staticmethod
     def _generate_adc(instance: str, config: dict) -> tuple:
         """Generate ADC initialization with configurable queue size."""
-        conversions = config.get("RegularConversions", []) if config.get("DMA") == "ENABLE" else config.get("Channels",
-                                                                                                            [])
-        adc_config = libxr_settings['ADC'].setdefault(instance.lower(), {})
-        vref = adc_config.setdefault('vref', 3.3)
+        conversions = (
+            config.get("RegularConversions", [])
+            if config.get("DMA") == "ENABLE"
+            else config.get("Channels", [])
+        )
+        adc_config = libxr_settings["ADC"].setdefault(instance.lower(), {})
+        vref = adc_config.setdefault("vref", 3.3)
 
         channels_code = f"  static STM32ADC {instance.lower()}(&h{instance.lower()}, {instance.lower()}_buf, {{{', '.join(conversions)}}}, {vref});\n"
 
@@ -654,13 +802,13 @@ class PeripheralFactory:
         channels = config.get("Channels", {})
         if not channels:
             return "", ""
-        dac_config = libxr_settings['DAC'].setdefault(instance.lower(), {})
-        init_voltage = dac_config.setdefault('init_voltage', 0.0)
-        vref = dac_config.setdefault('vref', 3.3)
+        dac_config = libxr_settings["DAC"].setdefault(instance.lower(), {})
+        init_voltage = dac_config.setdefault("init_voltage", 0.0)
+        vref = dac_config.setdefault("vref", 3.3)
         codes = []
         for out_name, channel_id in channels.items():
             if channel_id.startswith("DAC_OUT"):
-                m = re.search(r'DAC_OUT(\d+)', channel_id)
+                m = re.search(r"DAC_OUT(\d+)", channel_id)
                 channel_id = "DAC_CHANNEL_" + m.group(1)
             var_name = f"{instance.lower()}_{out_name.lower()}"
             if var_name.startswith("dac_dac_"):
@@ -678,31 +826,35 @@ class PeripheralFactory:
         tx_buf = f"{instance.lower()}_tx_buf" if tx_dma else "{nullptr, 0}"
         rx_buf = f"{instance.lower()}_rx_buf" if rx_dma else "{nullptr, 0}"
 
-        uart_config = libxr_settings['USART'].setdefault(instance.lower(), {})
+        uart_config = libxr_settings["USART"].setdefault(instance.lower(), {})
         tx_queue = uart_config.setdefault("tx_queue_size", 5)
 
-        code = f"  static STM32UART {instance.lower()}(&h{instance.lower().replace('usart', 'uart')},\n" \
-               f"              {rx_buf}, {tx_buf}, {tx_queue});\n"
+        code = (
+            f"  static STM32UART {instance.lower()}(&h{instance.lower().replace('usart', 'uart')},\n"
+            f"              {rx_buf}, {tx_buf}, {tx_queue});\n"
+        )
         _register_device(f"{instance.lower()}", "UART")
         return "main", code
 
     @staticmethod
     def _generate_i2c(instance: str, config: dict) -> tuple:
         """Generate I2C initialization code with dynamic buffer configuration."""
-        i2c_config = libxr_settings['I2C'].setdefault(instance.lower(), {})
-        dma_min_size = i2c_config.setdefault('dma_enable_min_size', 3)
+        i2c_config = libxr_settings["I2C"].setdefault(instance.lower(), {})
+        dma_min_size = i2c_config.setdefault("dma_enable_min_size", 3)
         _register_device(f"{instance.lower()}", "I2C")
-        return ("main",
-                f"  static STM32I2C {instance.lower()}(&h{instance.lower()}, {instance.lower()}_buf, {dma_min_size});\n")
+        return (
+            "main",
+            f"  static STM32I2C {instance.lower()}(&h{instance.lower()}, {instance.lower()}_buf, {dma_min_size});\n",
+        )
 
     @staticmethod
     def _generate_tim(instance: str, config: dict) -> tuple:
-        channels = config.get('Channels', {})
+        channels = config.get("Channels", {})
         if not channels:
             return "", ""
         code = ""
         for ch_name, ch_cfg in channels.items():
-            ch_num = ch_name.replace('CH', '').lower()
+            ch_num = ch_name.replace("CH", "").lower()
             dev_name = f"pwm_{instance.lower()}_ch{ch_num}"
             complementary = ch_cfg.get("Complementary", False)
             if complementary:
@@ -717,48 +869,57 @@ class PeripheralFactory:
     @staticmethod
     def _generate_canfd(instance: str, config: dict) -> tuple:
         """Generate CAN FD initialization with configurable queue size."""
-        instance_cfg = libxr_settings['FDCAN'].setdefault(instance, {})
-        queue_size = instance_cfg.setdefault('queue_size', 5)
+        instance_cfg = libxr_settings["FDCAN"].setdefault(instance, {})
+        queue_size = instance_cfg.setdefault("queue_size", 5)
 
         _register_device(f"{instance.lower()}", "FDCAN")
-        return ("main",
-                f'  static STM32CANFD {instance.lower()}(&h{instance.lower()}, {queue_size});\n')
+        return (
+            "main",
+            f"  static STM32CANFD {instance.lower()}(&h{instance.lower()}, {queue_size});\n",
+        )
 
     @staticmethod
     def _generate_can(instance: str, config: dict) -> tuple:
         """Generate classic CAN initialization with queue configuration."""
-        instance_cfg = libxr_settings['CAN'].setdefault(instance, {})
-        queue_size = instance_cfg.setdefault('queue_size', 5)
+        instance_cfg = libxr_settings["CAN"].setdefault(instance, {})
+        queue_size = instance_cfg.setdefault("queue_size", 5)
 
         _register_device(f"{instance.lower()}", "CAN", f"classic CAN peripheral {instance}")
-        return ("main",
-                f'  static STM32CAN {instance.lower()}(&h{instance.lower()}, {queue_size});\n')
+        return (
+            "main",
+            f"  static STM32CAN {instance.lower()}(&h{instance.lower()}, {queue_size});\n",
+        )
 
     @staticmethod
     def _generate_spi(instance: str, config: dict) -> tuple:
         """Generate SPI initialization with DMA buffer configuration."""
-        tx_enabled = config.get('DMA_TX', 'DISABLE') == 'ENABLE'
-        rx_enabled = config.get('DMA_RX', 'DISABLE') == 'ENABLE'
+        tx_enabled = config.get("DMA_TX", "DISABLE") == "ENABLE"
+        rx_enabled = config.get("DMA_RX", "DISABLE") == "ENABLE"
 
-        spi_config = libxr_settings['SPI'].setdefault(instance.lower(), {})
-        dma_min_size = spi_config.setdefault('dma_enable_min_size', 3)
+        spi_config = libxr_settings["SPI"].setdefault(instance.lower(), {})
+        dma_min_size = spi_config.setdefault("dma_enable_min_size", 3)
 
         tx_buf = f"{instance.lower()}_tx_buf" if tx_enabled else "{nullptr, 0}"
         rx_buf = f"{instance.lower()}_rx_buf" if rx_enabled else "{nullptr, 0}"
 
         _register_device(f"{instance.lower()}", "SPI")
 
-        return ("main",
-                f'  static STM32SPI {instance.lower()}(&h{instance.lower()}, {rx_buf}, {tx_buf}, {dma_min_size});\n')
+        return (
+            "main",
+            f"  static STM32SPI {instance.lower()}(&h{instance.lower()}, {rx_buf}, {tx_buf}, {dma_min_size});\n",
+        )
 
     @staticmethod
     def _generate_iwdg(instance: str, config: dict) -> tuple:
         if not config.get("Enabled"):
             return "", ""
-        iwdg_config = libxr_settings['IWDG'].setdefault(instance.lower(), {})
-        timeout_ms = iwdg_config.setdefault("timeout_ms", config.get("Configuration", {}).get("timeout_ms", 1000))
-        feed_ms = iwdg_config.setdefault("feed_interval_ms",
-                                         config.get("Configuration", {}).get("feed_interval_ms", 250))
+        iwdg_config = libxr_settings["IWDG"].setdefault(instance.lower(), {})
+        timeout_ms = iwdg_config.setdefault(
+            "timeout_ms", config.get("Configuration", {}).get("timeout_ms", 1000)
+        )
+        feed_ms = iwdg_config.setdefault(
+            "feed_interval_ms", config.get("Configuration", {}).get("feed_interval_ms", 250)
+        )
         code = (
             f"  static STM32Watchdog {instance.lower()}(&h{instance.lower()}, "
             f"{timeout_ms}, {feed_ms});\n"
@@ -777,10 +938,11 @@ class PeripheralFactory:
 
         # Normalize instance name (consistent with extern declarations)
         inst_u = (instance or "USB_FS").upper()
-        inst_u = (inst_u
-                .replace("USBOTG", "USB_OTG_")
-                .replace("OTGFS", "OTG_FS")
-                .replace("OTGHS", "OTG_HS"))
+        inst_u = (
+            inst_u.replace("USBOTG", "USB_OTG_")
+            .replace("OTGFS", "OTG_FS")
+            .replace("OTGHS", "OTG_HS")
+        )
         if inst_u == "USB":
             inst_u = "USB_FS"
         if inst_u not in {"USB_FS", "USB_HS", "USB_OTG_FS", "USB_OTG_HS"}:
@@ -788,8 +950,8 @@ class PeripheralFactory:
 
         is_otg = inst_u.startswith("USB_OTG_")
         speed = "HS" if inst_u.endswith("_HS") else "FS"
-        inst_lower = inst_u.lower()      # Example: usb_fs / usb_otg_fs
-        obj = f"usb_{speed.lower()}"     # Example: usb_fs / usb_hs
+        inst_lower = inst_u.lower()  # Example: usb_fs / usb_otg_fs
+        obj = f"usb_{speed.lower()}"  # Example: usb_fs / usb_hs
 
         # Update settings (consistent with other modules)
         usb_root = libxr_settings.setdefault("USB", {})
@@ -808,57 +970,77 @@ class PeripheralFactory:
             return "", ""
 
         # Packet size and FIFO setup
-        ep0 = _as_int(cfg_in.get("ep0_packet_size", cfg_in.get("packet_size", inst_cfg.get("ep0_packet_size", 8))), 8)
+        ep0 = _as_int(
+            cfg_in.get(
+                "ep0_packet_size", cfg_in.get("packet_size", inst_cfg.get("ep0_packet_size", 8))
+            ),
+            8,
+        )
         if ep0 not in (8, 16, 32, 64):
             ep0 = 8
         inst_cfg.setdefault("ep0_packet_size", ep0)
 
         # DMA buffer sizes
-        inst_cfg.setdefault("tx_buffer_size", _as_int(cfg_in.get("tx_buffer_size", inst_cfg.get("tx_buffer_size", 128)), 128))
-        inst_cfg.setdefault("rx_buffer_size", _as_int(cfg_in.get("rx_buffer_size", inst_cfg.get("rx_buffer_size", 128)), 128))
+        inst_cfg.setdefault(
+            "tx_buffer_size",
+            _as_int(cfg_in.get("tx_buffer_size", inst_cfg.get("tx_buffer_size", 128)), 128),
+        )
+        inst_cfg.setdefault(
+            "rx_buffer_size",
+            _as_int(cfg_in.get("rx_buffer_size", inst_cfg.get("rx_buffer_size", 128)), 128),
+        )
 
         # USB HW FIFO sizes
-        inst_cfg.setdefault("tx_fifo_size", _as_int(cfg_in.get("tx_fifo_size", inst_cfg.get("tx_fifo_size", 128)), 128))
-        inst_cfg.setdefault("rx_fifo_size", _as_int(cfg_in.get("rx_fifo_size", inst_cfg.get("rx_fifo_size", 256 if is_otg else 128)), 256 if is_otg else 128))
+        inst_cfg.setdefault(
+            "tx_fifo_size",
+            _as_int(cfg_in.get("tx_fifo_size", inst_cfg.get("tx_fifo_size", 128)), 128),
+        )
+        inst_cfg.setdefault(
+            "rx_fifo_size",
+            _as_int(
+                cfg_in.get("rx_fifo_size", inst_cfg.get("rx_fifo_size", 256 if is_otg else 128)),
+                256 if is_otg else 128,
+            ),
+        )
         # CDC FIFO
-        inst_cfg.setdefault("cdc_tx_fifo_size", _as_int(cfg_in.get("cdc_tx_fifo_size", inst_cfg.get("cdc_tx_fifo_size", 128)), 128))
-        inst_cfg.setdefault("cdc_rx_fifo_size", _as_int(cfg_in.get("cdc_rx_fifo_size", inst_cfg.get("cdc_rx_fifo_size", 128)), 128))
-        inst_cfg.setdefault("cdc_queue_size", _as_int(cfg_in.get("cdc_queue_size", inst_cfg.get("cdc_queue_size", 3)), 3))
-        if 'cdc_count' in cfg_in or 'cdc_count' in inst_cfg:
-            raise ValueError("USB cdc_count is not a generator option; define composite USB in BSP user code")
+        inst_cfg.setdefault(
+            "cdc_tx_fifo_size",
+            _as_int(cfg_in.get("cdc_tx_fifo_size", inst_cfg.get("cdc_tx_fifo_size", 128)), 128),
+        )
+        inst_cfg.setdefault(
+            "cdc_rx_fifo_size",
+            _as_int(cfg_in.get("cdc_rx_fifo_size", inst_cfg.get("cdc_rx_fifo_size", 128)), 128),
+        )
+        inst_cfg.setdefault(
+            "cdc_queue_size",
+            _as_int(cfg_in.get("cdc_queue_size", inst_cfg.get("cdc_queue_size", 3)), 3),
+        )
+        if "cdc_count" in cfg_in or "cdc_count" in inst_cfg:
+            raise ValueError(
+                "USB cdc_count is not a generator option; define composite USB in BSP user code"
+            )
         # DMA section name
-        inst_cfg.setdefault("dma_section", cfg_in.get("dma_section", inst_cfg.get("dma_section", "")))
+        inst_cfg.setdefault(
+            "dma_section", cfg_in.get("dma_section", inst_cfg.get("dma_section", ""))
+        )
 
         # https://github.com/openmoko/openmoko-usb-oui/commit/27f3846d77e0d0d10271b809b831f70040c6197a
         # Descriptor information — 默认 1d50:6199 / 0x0100 / "XRUSB-DEMO-"
+        inst_cfg.setdefault("vid", _as_int(cfg_in.get("vid", inst_cfg.get("vid", 0x1D50)), 0x1D50))
+        inst_cfg.setdefault("pid", _as_int(cfg_in.get("pid", inst_cfg.get("pid", 0x6199)), 0x6199))
+        inst_cfg.setdefault("bcd", _as_int(cfg_in.get("bcd", inst_cfg.get("bcd", 0x0100)), 0x0100))
         inst_cfg.setdefault(
-            "vid",
-            _as_int(cfg_in.get("vid", inst_cfg.get("vid", 0x1d50)), 0x1d50)
-        )
-        inst_cfg.setdefault(
-            "pid",
-            _as_int(cfg_in.get("pid", inst_cfg.get("pid", 0x6199)), 0x6199)
-        )
-        inst_cfg.setdefault(
-            "bcd",
-            _as_int(cfg_in.get("bcd", inst_cfg.get("bcd", 0x0100)), 0x0100)
-        )
-        inst_cfg.setdefault(
-            "manufacturer",
-            cfg_in.get("manufacturer", inst_cfg.get("manufacturer", "XRobot"))
+            "manufacturer", cfg_in.get("manufacturer", inst_cfg.get("manufacturer", "XRobot"))
         )
         inst_cfg.setdefault(
             "product",
-            cfg_in.get("product", inst_cfg.get("product", f"STM32 XRUSB {instance} CDC Demo"))
+            cfg_in.get("product", inst_cfg.get("product", f"STM32 XRUSB {instance} CDC Demo")),
         )
-        inst_cfg.setdefault(
-            "serial",
-            cfg_in.get("serial", inst_cfg.get("serial", "XRUSB-DEMO-"))
-        )
+        inst_cfg.setdefault("serial", cfg_in.get("serial", inst_cfg.get("serial", "XRUSB-DEMO-")))
 
         # Get the final value from settings for code generation
         ep0_sz = int(inst_cfg["ep0_packet_size"])
-        rx_buf_sz = int(inst_cfg["rx_buffer_size"])   # USB DMA
+        rx_buf_sz = int(inst_cfg["rx_buffer_size"])  # USB DMA
         tx_fifo_size = int(inst_cfg["tx_fifo_size"])  # EP1 HW FIFO
         rx_fifo_size = int(inst_cfg["rx_fifo_size"])  # EP1 HW FIFO
         cdc_tx_fifo_size = int(inst_cfg["cdc_tx_fifo_size"])
@@ -876,9 +1058,13 @@ class PeripheralFactory:
         lang_var = f"{inst_lower}_lang_pack".upper()
         cdc_var = f"{inst_lower}_cdc"
         pcd_handle = f"hpcd_USB_OTG_{speed}" if is_otg else f"hpcd_USB_{speed}"
-        instance_type = "STM32USBDeviceOtgFS" if (is_otg and speed == "FS") else \
-            "STM32USBDeviceOtgHS" if (is_otg and speed == "HS") else \
-            "STM32USBDeviceDevFs"
+        instance_type = (
+            "STM32USBDeviceOtgFS"
+            if (is_otg and speed == "FS")
+            else "STM32USBDeviceOtgHS"
+            if (is_otg and speed == "HS")
+            else "STM32USBDeviceDevFs"
+        )
 
         # Generate device construction code (buffer variables are defined elsewhere)
         code = []
@@ -886,7 +1072,7 @@ class PeripheralFactory:
             f"  static constexpr auto {lang_var} = "
             "LibXR::USB::DescriptorStrings::MakeLanguagePack("
             "LibXR::USB::DescriptorStrings::Language::EN_US, "
-            f"\"{manufacturer}\", \"{product}\", \"{serial}\");"
+            f'"{manufacturer}", "{product}", "{serial}");'
         )
         # CDC construction with explicit endpoint numbers.
         # CDC1: EP1 IN/OUT data, EP2 IN notification.
@@ -895,7 +1081,8 @@ class PeripheralFactory:
             "LibXR::USB::Endpoint::EPNumber::EP1, "
             "LibXR::USB::Endpoint::EPNumber::EP1, "
             "LibXR::USB::Endpoint::EPNumber::EP2, "
-            f"{cdc_rx_fifo_size}, {cdc_tx_fifo_size}, {cdc_queue_size});")
+            f"{cdc_rx_fifo_size}, {cdc_tx_fifo_size}, {cdc_queue_size});"
+        )
         code.append("")
 
         if is_otg:
@@ -920,8 +1107,12 @@ class PeripheralFactory:
             code.append(f"  static {instance_type} {obj}(")
             code.append(f"      &{pcd_handle},")
             code.append("      {")
-            code.append(f"          {{{inst_lower}_ep0_in_buf, {inst_lower}_ep0_out_buf, {ep0_sz}, {ep0_sz}}},")
-            code.append(f"          {{{inst_lower}_ep1_in_buf, {inst_lower}_ep1_out_buf, {tx_fifo_size}, {rx_buf_sz}}},")
+            code.append(
+                f"          {{{inst_lower}_ep0_in_buf, {inst_lower}_ep0_out_buf, {ep0_sz}, {ep0_sz}}},"
+            )
+            code.append(
+                f"          {{{inst_lower}_ep1_in_buf, {inst_lower}_ep1_out_buf, {tx_fifo_size}, {rx_buf_sz}}},"
+            )
             code.append(f"          {{{inst_lower}_ep2_in_buf, 16, true}}")
             code.append("      },")
             code.append(f"      USB::DeviceDescriptor::PacketSize0::{size_enum},")
@@ -959,13 +1150,13 @@ def _generate_header_includes(use_xrobot: bool = False) -> str:
         '#include "stm32_uart.hpp"',
         '#include "stm32_usb_dev.hpp"',
         '#include "stm32_watchdog.hpp"',
-        '#include "flash_map.hpp"'
+        '#include "flash_map.hpp"',
     ]
 
     if use_xrobot:
         headers.append('#include "xrobot_main.hpp"')
 
-    return '\n'.join(headers) + '\n\nusing namespace LibXR;\n'
+    return "\n".join(headers) + "\n\nusing namespace LibXR;\n"
 
 
 def _generate_extern_declarations(project_data: dict) -> str:
@@ -973,36 +1164,41 @@ def _generate_extern_declarations(project_data: dict) -> str:
     externs = set()
 
     # Timebase source declaration
-    timebase_cfg = project_data.get('Timebase', {})
-    if timebase_cfg.get('Source', 'SysTick') != 'SysTick':
-        src = timebase_cfg['Source']
-        if src.startswith('TIM'):
-            externs.add(f'extern TIM_HandleTypeDef h{src.lower()};')
-        elif src.startswith('LPTIM'):
-            externs.add(f'extern LPTIM_HandleTypeDef h{src.lower()};')
-        elif src.startswith('HRTIM'):
-            externs.add(f'extern HRTIM_HandleTypeDef h{src.lower()};')
+    timebase_cfg = project_data.get("Timebase", {})
+    if timebase_cfg.get("Source", "SysTick") != "SysTick":
+        src = timebase_cfg["Source"]
+        if src.startswith("TIM"):
+            externs.add(f"extern TIM_HandleTypeDef h{src.lower()};")
+        elif src.startswith("LPTIM"):
+            externs.add(f"extern LPTIM_HandleTypeDef h{src.lower()};")
+        elif src.startswith("HRTIM"):
+            externs.add(f"extern HRTIM_HandleTypeDef h{src.lower()};")
 
     # Peripheral declarations
-    peripherals = project_data.get('Peripherals', {})
+    peripherals = project_data.get("Peripherals", {})
     for p_type, instances in peripherals.items():
         for instance in instances:
-            if p_type == 'USB':
+            if p_type == "USB":
                 # New USB stack uses PCD handle (e.g., hpcd_USB_FS / hpcd_USB_HS)
-                if instance == 'USB':
+                if instance == "USB":
                     instance = "USB_FS"
                 externs.add(f"extern PCD_HandleTypeDef hpcd_{instance};")
-            elif p_type == 'DAC':
-                externs.add(f'extern DAC_HandleTypeDef h{instance.lower()};')
+            elif p_type == "DAC":
+                externs.add(f"extern DAC_HandleTypeDef h{instance.lower()};")
             else:
-                handle_type = 'UART_HandleTypeDef' if p_type in ['USART', 'UART',
-                                                                 'LPUART'] else f'{p_type}_HandleTypeDef'
-                if p_type in ['USART', 'UART', 'LPUART']:
-                    externs.add(f'extern {handle_type} h{instance.lower().replace("usart", "uart")};')
+                handle_type = (
+                    "UART_HandleTypeDef"
+                    if p_type in ["USART", "UART", "LPUART"]
+                    else f"{p_type}_HandleTypeDef"
+                )
+                if p_type in ["USART", "UART", "LPUART"]:
+                    externs.add(
+                        f"extern {handle_type} h{instance.lower().replace('usart', 'uart')};"
+                    )
                 else:
-                    externs.add(f'extern {handle_type} h{instance.lower()};')
+                    externs.add(f"extern {handle_type} h{instance.lower()};")
 
-    return '/* External HAL Declarations */\n' + '\n'.join(sorted(externs)) + '\n'
+    return "/* External HAL Declarations */\n" + "\n".join(sorted(externs)) + "\n"
 
 
 def preserve_user_blocks(existing_code: str, section: int) -> str:
@@ -1041,8 +1237,11 @@ def validate_user_regions(existing_code: str, region_names) -> None:
     expected = list(region_names)
     problems = []
     elements = sorted(
-        (element for element in document.root.descendants(include_trivia=True)
-         if element.kind == "comment" or element.kind.startswith("preproc_")),
+        (
+            element
+            for element in document.root.descendants(include_trivia=True)
+            if element.kind == "comment" or element.kind.startswith("preproc_")
+        ),
         key=lambda element: element.span.start,
     )
     depth = 0
@@ -1068,16 +1267,15 @@ def validate_user_regions(existing_code: str, region_names) -> None:
             continue
         name = ((begin or end).group(1) or "").strip()
         if depth:
-            problems.append(
-                f"line {line}: {text} is inside a preprocessor conditional")
+            problems.append(f"line {line}: {text} is inside a preprocessor conditional")
         if name not in expected:
             problems.append(
                 f"line {line}: {text} names a region the generator does not emit "
-                f"(expected {', '.join(expected)})")
+                f"(expected {', '.join(expected)})"
+            )
         if begin is not None:
             if open_region is not None:
-                problems.append(
-                    f"line {line}: {text} opens before User Code End {open_region}")
+                problems.append(f"line {line}: {text} opens before User Code End {open_region}")
             if name in seen:
                 problems.append(f"line {line}: {text} is duplicated")
             seen.append(name)
@@ -1095,7 +1293,8 @@ def validate_user_regions(existing_code: str, region_names) -> None:
     if problems:
         raise ValueError(
             "existing User Code markers cannot be preserved safely; nothing was "
-            "written. Fix the markers and regenerate:\n  " + "\n  ".join(problems))
+            "written. Fix the markers and regenerate:\n  " + "\n  ".join(problems)
+        )
 
 
 def _preserve_generated_regions(existing_code: str, generated_code: str) -> str:
@@ -1106,14 +1305,16 @@ def _preserve_generated_regions(existing_code: str, generated_code: str) -> str:
     """
     previous = CppDocument.parse(existing_code)
     current = CppDocument.parse(generated_code)
-    validate_user_regions(
-        existing_code, [region.name for region in current.user_regions()])
+    validate_user_regions(existing_code, [region.name for region in current.user_regions()])
     used = set()
     for old_region in previous.user_regions():
         regions = list(current.user_regions())
         match = next(
-            ((index, region) for index, region in enumerate(regions)
-             if index not in used and region.name == old_region.name),
+            (
+                (index, region)
+                for index, region in enumerate(regions)
+                if index not in used and region.name == old_region.name
+            ),
             None,
         )
         if match is None:
@@ -1126,25 +1327,25 @@ def _preserve_generated_regions(existing_code: str, generated_code: str) -> str:
 
 def _generate_core_system(project_data: dict) -> str:
     """Generate core system initialization with timebase configuration."""
-    timebase_cfg = project_data.get('Timebase', {'Source': 'SysTick'})
-    source = timebase_cfg.get('Source', 'SysTick')
+    timebase_cfg = project_data.get("Timebase", {"Source": "SysTick"})
+    source = timebase_cfg.get("Source", "SysTick")
 
-    timebase_init = '  static STM32Timebase timebase;'  # Default to SysTick
+    timebase_init = "  static STM32Timebase timebase;"  # Default to SysTick
 
-    if source != 'SysTick':
-        handler = f'h{source.lower()}'
-        timebase_init = f'  static STM32TimerTimebase timebase(&{handler});'
+    if source != "SysTick":
+        handler = f"h{source.lower()}"
+        timebase_init = f"  static STM32TimerTimebase timebase(&{handler});"
 
-    system_type = libxr_settings['SYSTEM']
-    timer_cfg = libxr_settings['software_timer']
+    system_type = libxr_settings["SYSTEM"]
+    timer_cfg = libxr_settings["software_timer"]
 
     init_args = ""
-    if system_type == 'None':  # Bare-metal
+    if system_type == "None":  # Bare-metal
         init_args = ""
-    elif system_type == 'FreeRTOS' or system_type == 'ThreadX':
+    elif system_type == "FreeRTOS" or system_type == "ThreadX":
         init_args = f"{timer_cfg['priority']}, {timer_cfg['stack_depth']}"
     else:
-        logging.error(f'Unsupported system type: {system_type}')
+        logging.error(f"Unsupported system type: {system_type}")
         sys.exit(1)
 
     return f"""{timebase_init}
@@ -1154,10 +1355,10 @@ def _generate_core_system(project_data: dict) -> str:
 
 def generate_gpio_config(project_data: dict) -> str:
     """Generate GPIO initialization code with EXTI support."""
-    code = '\n  /* GPIO Configuration */\n'
-    for port, config in project_data.get('GPIO', {}).items():
+    code = "\n  /* GPIO Configuration */\n"
+    for port, config in project_data.get("GPIO", {}).items():
         alias = generate_gpio_alias(port, config, project_data)
-        code += f'  static STM32GPIO {alias};\n'
+        code += f"  static STM32GPIO {alias};\n"
     return code
 
 
@@ -1205,7 +1406,9 @@ def configure_terminal(project_data: dict) -> str:
         dev = terminal_source.lower()
         # Device must be registered and of type UART, otherwise log a warning and skip
         if registered_devices.get(dev) != "UART":
-            logging.warning(f"terminal_source '{terminal_source}' is not registered as UART, terminal will not be initialized!")
+            logging.warning(
+                f"terminal_source '{terminal_source}' is not registered as UART, terminal will not be initialized!"
+            )
             return code
         dev = terminal_source.upper()
         code += (
@@ -1219,7 +1422,7 @@ def configure_terminal(project_data: dict) -> str:
             term_config.setdefault("read_buff_size", 32),
             term_config.setdefault("max_line_size", 32),
             term_config.setdefault("max_arg_number", 5),
-            term_config.setdefault("max_history_number", 5)
+            term_config.setdefault("max_history_number", 5),
         ]
 
         run_as_thread = term_config.setdefault("run_as_thread", False)
@@ -1230,7 +1433,7 @@ def configure_terminal(project_data: dict) -> str:
 
         code += f"""
   static RamFS ramfs("XRobot");
-  static Terminal<{', '.join(map(str, params))}> terminal(ramfs);
+  static Terminal<{", ".join(map(str, params))}> terminal(ramfs);
 """
         if run_as_thread:
             code += f"""\
@@ -1289,45 +1492,44 @@ def reject_user_xrobot_main(existing_code: str) -> None:
                     f"line {invocation.line}: User Code {region.name} still calls "
                     f"{invocation.text}. The generator now emits XROBOT_MAIN() after "
                     "the User Code regions of app_main; delete this call from the "
-                    "User Code region and regenerate. Nothing was written.")
+                    "User Code region and regenerate. Nothing was written."
+                )
 
 
 def generate_full_code(project_data: dict, use_xrobot: bool, existing_code: str) -> str:
     if use_xrobot:
         reject_user_xrobot_main(existing_code)
-    user_code_def_3 = '' if use_xrobot else "  while(true) {\n    Thread::Sleep(UINT32_MAX);\n  }\n"
+    user_code_def_3 = "" if use_xrobot else "  while(true) {\n    Thread::Sleep(UINT32_MAX);\n  }\n"
     components = [
         _generate_header_includes(use_xrobot),
-        '/* User Code Begin 1 */',
-        '/* User Code End 1 */',
-        '// NOLINTBEGIN',
-        '// clang-format off',
+        "/* User Code Begin 1 */",
+        "/* User Code End 1 */",
+        "// NOLINTBEGIN",
+        "// clang-format off",
         _generate_extern_declarations(project_data),
-
         generate_dma_resources(project_data),
-
         '\nextern "C" void app_main(void) {',
-        '  // clang-format on',
-        '  // NOLINTEND',
-        '  /* User Code Begin 2 */',
-        '  /* User Code End 2 */',
-        '  // clang-format off',
-        '  // NOLINTBEGIN',
+        "  // clang-format on",
+        "  // NOLINTEND",
+        "  /* User Code Begin 2 */",
+        "  /* User Code End 2 */",
+        "  // clang-format off",
+        "  // NOLINTBEGIN",
         _generate_core_system(project_data),
         generate_gpio_config(project_data),
         generate_peripheral_instances(project_data, use_xrobot),
         configure_terminal(project_data),
         configure_watchdog(project_data),
-        generate_xrobot_registrations() if use_xrobot else '',
-        '  // clang-format on',
-        '  // NOLINTEND',
-        '  /* User Code Begin 3 */',
-        user_code_def_3.rstrip('\n'),
-        '  /* User Code End 3 */',
-        '  XROBOT_MAIN();' if use_xrobot else '',
-        '}'
+        generate_xrobot_registrations() if use_xrobot else "",
+        "  // clang-format on",
+        "  // NOLINTEND",
+        "  /* User Code Begin 3 */",
+        user_code_def_3.rstrip("\n"),
+        "  /* User Code End 3 */",
+        "  XROBOT_MAIN();" if use_xrobot else "",
+        "}",
     ]
-    generated = '\n'.join(filter(None, components))
+    generated = "\n".join(filter(None, components))
     check_gpio_names(project_data, generated, use_xrobot)
     return _preserve_generated_regions(existing_code, generated)
 
@@ -1365,7 +1567,7 @@ def generate_flash_map_cpp(flash_info: dict) -> str:
     :return: C++ code as a string
     """
     lines = [
-        "#include \"stm32_flash.hpp\"",
+        '#include "stm32_flash.hpp"',
         "",
         "constexpr LibXR::FlashSector FLASH_SECTORS[] = {",
     ]
@@ -1376,7 +1578,9 @@ def generate_flash_map_cpp(flash_info: dict) -> str:
         lines.append(f"  {{0x{address:08X}, 0x{(size_kb * 1024):08X}}},")
 
     lines.append("};\n")
-    lines.append("constexpr size_t FLASH_SECTOR_NUMBER = sizeof(FLASH_SECTORS) / sizeof(LibXR::FlashSector);")
+    lines.append(
+        "constexpr size_t FLASH_SECTOR_NUMBER = sizeof(FLASH_SECTORS) / sizeof(LibXR::FlashSector);"
+    )
     return "\n".join(lines)
 
 
@@ -1391,6 +1595,7 @@ def inject_flash_layout(project_data: dict, output_dir: str) -> None:
     """
     try:
         from libxr.stm32_flash_generator import flash_info_to_dict, layout_flash
+
         mcu_model = project_data.get("Mcu", {}).get("Type", "").strip()
         if not mcu_model:
             logging.warning("Cannot find MCU name, skipping FlashLayout generation")

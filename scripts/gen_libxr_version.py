@@ -4,16 +4,15 @@ import subprocess
 
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 
-def get_remote_commit(url, ref='refs/heads/main'):
+
+def get_remote_commit(url, ref="refs/heads/main"):
     result = subprocess.run(
-        ['git', 'ls-remote', url, ref],
-        capture_output=True,
-        text=True,
-        check=True
+        ["git", "ls-remote", url, ref], capture_output=True, text=True, check=True
     )
     if result.stdout:
         return result.stdout.split()[0]
     raise RuntimeError("Remote ref not found")
+
 
 if __name__ == "__main__":
     url = "https://github.com/xrobot-org/libxr.git"

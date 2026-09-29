@@ -66,8 +66,15 @@ def create_project(
     git("init", "-b", "master", cwd=project)
     git("config", "user.name", "Smoke Test", cwd=project)
     git("config", "user.email", "smoke@example.com", cwd=project)
-    git("-c", "protocol.file.allow=always", "submodule", "add", str(remote),
-        "Middlewares/Third_Party/LibXR", cwd=project)
+    git(
+        "-c",
+        "protocol.file.allow=always",
+        "submodule",
+        "add",
+        str(remote),
+        "Middlewares/Third_Party/LibXR",
+        cwd=project,
+    )
     checkout = project / "Middlewares" / "Third_Party" / "LibXR"
     git("checkout", recorded_commit, cwd=checkout)
     git("add", ".gitmodules", "Middlewares/Third_Party/LibXR", cwd=project)
@@ -96,48 +103,40 @@ def assert_head(checkout: Path, expected: str, scenario: str) -> None:
 
 
 def run_policy_checks(root: Path) -> None:
-    remote, old_commit, default_commit, newer_commit, divergent_commit = (
-        create_libxr_remote(root)
-    )
+    remote, old_commit, default_commit, newer_commit, divergent_commit = create_libxr_remote(root)
 
     project, checkout = create_project(
-        root, "stale-checkout", remote,
-        recorded_commit=default_commit, checkout_commit=old_commit
+        root, "stale-checkout", remote, recorded_commit=default_commit, checkout_commit=old_commit
     )
     add_libxr(project, default_libxr_commit=default_commit)
     assert_head(checkout, old_commit, "stale checkout with current gitlink")
 
     project, checkout = create_project(
-        root, "old-gitlink", remote,
-        recorded_commit=old_commit, checkout_commit=old_commit
+        root, "old-gitlink", remote, recorded_commit=old_commit, checkout_commit=old_commit
     )
     add_libxr(project, default_libxr_commit=default_commit)
     assert_head(checkout, old_commit, "old checkout with old gitlink")
 
     project, checkout = create_project(
-        root, "current", remote,
-        recorded_commit=default_commit, checkout_commit=default_commit
+        root, "current", remote, recorded_commit=default_commit, checkout_commit=default_commit
     )
     add_libxr(project, default_libxr_commit=default_commit)
     assert_head(checkout, default_commit, "current checkout")
 
     project, checkout = create_project(
-        root, "newer", remote,
-        recorded_commit=default_commit, checkout_commit=newer_commit
+        root, "newer", remote, recorded_commit=default_commit, checkout_commit=newer_commit
     )
     add_libxr(project, default_libxr_commit=default_commit)
     assert_head(checkout, newer_commit, "newer checkout")
 
     project, checkout = create_project(
-        root, "divergent", remote,
-        recorded_commit=default_commit, checkout_commit=divergent_commit
+        root, "divergent", remote, recorded_commit=default_commit, checkout_commit=divergent_commit
     )
     add_libxr(project, default_libxr_commit=default_commit)
     assert_head(checkout, divergent_commit, "divergent checkout")
 
     project, checkout = create_project(
-        root, "dirty", remote,
-        recorded_commit=old_commit, checkout_commit=old_commit
+        root, "dirty", remote, recorded_commit=old_commit, checkout_commit=old_commit
     )
     (checkout / "version.txt").write_text("local changes", encoding="utf-8")
     add_libxr(project, default_libxr_commit=default_commit)
@@ -146,17 +145,13 @@ def run_policy_checks(root: Path) -> None:
         raise AssertionError("dirty old checkout: local changes were lost")
 
     project, checkout = create_project(
-        root, "explicit", remote,
-        recorded_commit=old_commit, checkout_commit=newer_commit
+        root, "explicit", remote, recorded_commit=old_commit, checkout_commit=newer_commit
     )
-    add_libxr(
-        project, libxr_commit=old_commit, default_libxr_commit=default_commit
-    )
+    add_libxr(project, libxr_commit=old_commit, default_libxr_commit=default_commit)
     assert_head(checkout, old_commit, "explicit commit")
 
     project, checkout = create_project(
-        root, "empty-directory", remote,
-        recorded_commit=old_commit, checkout_commit=old_commit
+        root, "empty-directory", remote, recorded_commit=old_commit, checkout_commit=old_commit
     )
     git("submodule", "deinit", "-f", "--", "Middlewares/Third_Party/LibXR", cwd=project)
     if not checkout.is_dir() or any(checkout.iterdir()):
@@ -165,8 +160,7 @@ def run_policy_checks(root: Path) -> None:
     assert_head(checkout, old_commit, "empty checkout directory initialized to its gitlink")
 
     project, checkout = create_project(
-        root, "not-a-checkout", remote,
-        recorded_commit=old_commit, checkout_commit=old_commit
+        root, "not-a-checkout", remote, recorded_commit=old_commit, checkout_commit=old_commit
     )
     git("submodule", "deinit", "-f", "--", "Middlewares/Third_Party/LibXR", cwd=project)
     (checkout / "user_sources.cpp").write_text("keep", encoding="utf-8")
@@ -174,9 +168,7 @@ def run_policy_checks(root: Path) -> None:
         add_libxr(project, default_libxr_commit=default_commit)
     except SystemExit as error:
         if error.code != 1:
-            raise AssertionError(
-                f"not a checkout: unexpected exit code {error.code}"
-            ) from error
+            raise AssertionError(f"not a checkout: unexpected exit code {error.code}") from error
     else:
         raise AssertionError("not a checkout: a non-Git LibXR directory was accepted")
     if sorted(path.name for path in checkout.iterdir()) != ["user_sources.cpp"]:
@@ -195,9 +187,11 @@ def run_policy_checks(root: Path) -> None:
 
 
 def main() -> int:
-    with allow_file_protocol(), tempfile.TemporaryDirectory(
-        prefix="libxr_submodule_smoke_"
-    ) as tmp, contextlib.redirect_stdout(io.StringIO()):
+    with (
+        allow_file_protocol(),
+        tempfile.TemporaryDirectory(prefix="libxr_submodule_smoke_") as tmp,
+        contextlib.redirect_stdout(io.StringIO()),
+    ):
         run_policy_checks(Path(tmp))
     print("LibXR submodule policy smoke checks passed.")
     return 0

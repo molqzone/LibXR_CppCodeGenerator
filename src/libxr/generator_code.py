@@ -8,6 +8,7 @@ import sys
 
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 
+
 def is_stm32_project(path: str) -> bool:
     """Check if the given path contains any .ioc file."""
     try:
@@ -21,10 +22,9 @@ def main():
     from libxr.package_info import LibXRPackageInfo
 
     LibXRPackageInfo.check_and_print()
-    
+
     parser = argparse.ArgumentParser(description="Wrapper for STM32 code generation.")
-    parser.add_argument("-i", "--input", required=True,
-                        help="Input YAML configuration file path")
+    parser.add_argument("-i", "--input", required=True, help="Input YAML configuration file path")
 
     # We don't parse all args because we want to forward unknown ones later
     known_args, unknown_args = parser.parse_known_args()
@@ -37,7 +37,9 @@ def main():
         sys.exit(1)
 
     if not is_stm32_project(input_dir):
-        logging.info("Skipped: This is not an STM32 project (no .ioc file found in input file directory).")
+        logging.info(
+            "Skipped: This is not an STM32 project (no .ioc file found in input file directory)."
+        )
         sys.exit(0)
 
     # Forward all original arguments (not just known) to the generator

@@ -189,9 +189,7 @@ def _build_contiguous_sector_entries(
 def _build_uniform_sector_sizes(flash_kb: int, size_bytes: int) -> list[int]:
     total_bytes = flash_kb * 1024
     if total_bytes % size_bytes != 0:
-        raise ValueError(
-            f"Flash size {flash_kb}KB is not divisible by erase size {size_bytes}B"
-        )
+        raise ValueError(f"Flash size {flash_kb}KB is not divisible by erase size {size_bytes}B")
     return [size_bytes] * (total_bytes // size_bytes)
 
 
@@ -206,9 +204,7 @@ def _build_sequence_sector_sizes(flash_kb: int, pattern_kb: tuple[int, ...]) -> 
         remaining_kb -= size_kb
 
     if remaining_kb != 0:
-        raise ValueError(
-            f"Flash size {flash_kb}KB is not fully covered by sequence {pattern_kb}"
-        )
+        raise ValueError(f"Flash size {flash_kb}KB is not fully covered by sequence {pattern_kb}")
     return sector_sizes
 
 
@@ -219,9 +215,7 @@ def _build_banked_sector_entries(
     bank_address_stride_kb: int,
 ) -> list[tuple[int, int]]:
     if sum(pattern_kb) != bank_kb:
-        raise ValueError(
-            f"Bank pattern {pattern_kb} does not sum to bank size {bank_kb}KB"
-        )
+        raise ValueError(f"Bank pattern {pattern_kb} does not sum to bank size {bank_kb}KB")
 
     remaining_kb = flash_kb
     bank_index = 0
@@ -241,9 +235,7 @@ def _build_banked_sector_entries(
             bank_used_kb += size_kb
 
         if bank_used_kb != bank_remaining_kb:
-            raise ValueError(
-                f"Bank pattern {pattern_kb} does not cover {bank_remaining_kb}KB"
-            )
+            raise ValueError(f"Bank pattern {pattern_kb} does not cover {bank_remaining_kb}KB")
 
         remaining_kb -= bank_remaining_kb
         bank_index += 1
