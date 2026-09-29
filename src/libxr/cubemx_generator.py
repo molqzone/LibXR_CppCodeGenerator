@@ -199,7 +199,7 @@ def _consume_generic_dialog_fallback(confirm_counts: dict[int, int], window_id: 
     count = confirm_counts.get(window_id, 0)
     if count >= GENERIC_DIALOG_CONFIRM_LIMIT:
         if count == GENERIC_DIALOG_CONFIRM_LIMIT:
-            LOGGER.info("Leaving generic CubeMX dialog untouched after %d keyboard attempts", count)
+            LOGGER.info(f"Leaving generic CubeMX dialog untouched after {count} keyboard attempts")
             confirm_counts[window_id] = count + 1
         return False
     confirm_counts[window_id] = count + 1
@@ -569,13 +569,13 @@ class _WindowsDialogController(_BaseDialogController):
             checked = self.user32.SendMessageW(child_hwnd, self.BM_GETCHECK, 0, 0)
             if checked != self.BST_CHECKED:
                 self.user32.SendMessageW(child_hwnd, self.BM_CLICK, 0, 0)
-                LOGGER.info("Auto-confirmed agreement checkbox: %s", text)
+                LOGGER.info(f"Auto-confirmed agreement checkbox: {text}")
 
         for child_hwnd, _, text in child_items:
             lowered = text.lower()
             if any(label in lowered for label in POSITIVE_BUTTON_LABELS):
                 self.user32.SendMessageW(child_hwnd, self.BM_CLICK, 0, 0)
-                LOGGER.info("Auto-confirmed CubeMX dialog button: %s", text)
+                LOGGER.info(f"Auto-confirmed CubeMX dialog button: {text}")
                 return True
 
         if self._can_use_keyboard_fallback(hwnd, flat_text, class_name):
@@ -801,10 +801,10 @@ class _LinuxX11DialogController(_BaseDialogController):
             self.xtest.fake_input(self.display, self.X.ButtonPress, 1)
             self.xtest.fake_input(self.display, self.X.ButtonRelease, 1)
             self.display.sync()
-            LOGGER.info("Auto-clicked CubeMX dialog default button at %d,%d", click_x, click_y)
+            LOGGER.info(f"Auto-clicked CubeMX dialog default button at {click_x},{click_y}")
             return True
         except Exception as error:
-            LOGGER.debug("CubeMX X11 default-button click failed: %s", error)
+            LOGGER.debug(f"CubeMX X11 default-button click failed: {error}")
             return False
 
     def _tap(self, key_name: str, alt: bool = False, shift: bool = False, control: bool = False) -> None:
@@ -835,7 +835,8 @@ class _LinuxX11DialogController(_BaseDialogController):
         for key_name, alt in (("Return", False), ("space", False), ("Tab", False), ("Return", False), ("o", True), ("y", True), ("i", True), ("a", True)):
             self._tap(key_name, alt=alt)
         clicked = self._click_default_dialog_button(window)
-        LOGGER.info("Auto-confirmed CubeMX dialog with X11 key sequence%s", " and default-button click" if clicked else "")
+        suffix = " and default-button click" if clicked else ""
+        LOGGER.info(f"Auto-confirmed CubeMX dialog with X11 key sequence{suffix}")
 
 def _st_login_blocked_message() -> str:
     return (
@@ -860,7 +861,7 @@ def create_dialog_controller(
         )
         return _NullDialogController()
     except Exception as error:
-        LOGGER.warning("CubeMX auto-confirm could not start on Linux: %s", error)
+        LOGGER.warning(f"CubeMX auto-confirm could not start on Linux: {error}")
         return _NullDialogController()
 
 
@@ -886,7 +887,7 @@ class _DialogWatchThread(threading.Thread):
                 self.stop_event.set()
                 break
             except Exception as error:
-                LOGGER.warning("CubeMX dialog watcher error: %s", error)
+                LOGGER.warning(f"CubeMX dialog watcher error: {error}")
             self.stop_event.wait(self.poll_interval)
 
 
@@ -994,7 +995,7 @@ def generate_cubemx_project(
         java_cmd=java_cmd,
         silent=silent,
     )
-    LOGGER.info("Running CubeMX command: %s", _shell_join(command))
+    LOGGER.info(f"Running CubeMX command: {_shell_join(command)}")
 
     stdout_lines: list[str] = []
     stderr_lines: list[str] = []
@@ -1171,7 +1172,7 @@ def main() -> None:
             timeout=args.timeout,
         )
     except Exception as error:
-        LOGGER.error("%s", error)
+        LOGGER.error(error)
         sys.exit(1)
 
 

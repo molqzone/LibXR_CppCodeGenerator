@@ -235,7 +235,7 @@ def normalize_starm_clang_toolchain(file_path: str | Path) -> None:
     )
     match = line_pattern.search(content)
     if match is None:
-        logging.warning("STARM_TOOLCHAIN_CONFIG not found in %s", path)
+        logging.warning(f"STARM_TOOLCHAIN_CONFIG not found in {path}")
         return
 
     replacement = f'{match.group(1)}{match.group(2)}")'
@@ -270,7 +270,7 @@ def normalize_starm_clang_toolchain(file_path: str | Path) -> None:
         # the package's Python 3.8 support while still emitting deterministic LF.
         with path.open("w", encoding="utf-8", newline="\n") as stream:
             stream.write(new_content)
-        logging.info("Normalized STARM_TOOLCHAIN_CONFIG in %s", path)
+        logging.info(f"Normalized STARM_TOOLCHAIN_CONFIG in {path}")
 
 
 def clean_cmake_build_dirs(input_directory: str | Path) -> None:
