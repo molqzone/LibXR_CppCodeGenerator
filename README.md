@@ -178,13 +178,14 @@ Parses `.ioc`, generates YAML and C++ code, patches interrupt handlers, and init
   显式指定 LibXR 仓库 commit 版本；提供该参数时工具会切到这个 commit。
   Explicitly select the LibXR repository commit; when provided, the tool checks out this commit.
 
-  不提供 `--commit` 时，如果 LibXR checkout 干净且比包内默认 commit 旧，工具会将其升级到默认 commit；
-  即使工程 gitlink 已记录默认 commit、实际 checkout 仍停在旧版本，也会自动修正。checkout 已是默认版本、
-  比默认版本新、与默认版本分叉或包含本地修改时均保持不变。如需精确切换版本，请显式使用 `--commit`。
-  When `--commit` is omitted, a clean LibXR checkout older than the package default commit is upgraded to that
-  default, even if the project gitlink already records the default while the checkout itself is stale. A
-  checkout that is already current, newer than the package default, has diverged from it, or contains local
-  changes is preserved. Use `--commit` to request an exact revision explicitly.
+  不提供 `--commit` 时，已有的 LibXR checkout 保持不动：工程的 gitlink 固定 LibXR 版本。checkout 比本工具的
+  默认 commit 旧或与之不同时只打印警告和切换命令；只有本次新添加的子模块才检出默认 commit，未初始化的
+  已登记子模块检出 gitlink 记录的 commit。需要切换版本时显式使用 `--commit`，然后提交 gitlink。
+  When `--commit` is omitted, an existing LibXR checkout is never moved: the project's gitlink pins LibXR. A
+  checkout older than or different from this tool's default commit only produces a warning with the command to
+  switch. Only a submodule added by this run is checked out at the default commit; a registered but
+  uninitialized submodule is checked out at its recorded gitlink. Use `--commit` to switch, then commit the
+  gitlink.
 
   已存在的 `Middlewares/Third_Party/LibXR` 目录不会被删除、移动或重新克隆；若它不是有效的
   Git checkout（且非空），命令报错并保持目录不变。

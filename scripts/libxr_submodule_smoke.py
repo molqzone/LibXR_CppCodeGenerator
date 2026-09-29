@@ -108,14 +108,14 @@ def run_policy_checks(root: Path) -> None:
         recorded_commit=default_commit, checkout_commit=old_commit
     )
     add_libxr(project, default_libxr_commit=default_commit)
-    assert_head(checkout, default_commit, "stale checkout with current gitlink")
+    assert_head(checkout, old_commit, "stale checkout with current gitlink")
 
     project, checkout = create_project(
         root, "old-gitlink", remote,
         recorded_commit=old_commit, checkout_commit=old_commit
     )
     add_libxr(project, default_libxr_commit=default_commit)
-    assert_head(checkout, default_commit, "old checkout with old gitlink")
+    assert_head(checkout, old_commit, "old checkout with old gitlink")
 
     project, checkout = create_project(
         root, "current", remote,
@@ -165,7 +165,7 @@ def run_policy_checks(root: Path) -> None:
     if not checkout.is_dir() or any(checkout.iterdir()):
         raise AssertionError("empty directory: deinit did not leave an empty checkout path")
     add_libxr(project, default_libxr_commit=default_commit)
-    assert_head(checkout, default_commit, "empty checkout directory")
+    assert_head(checkout, old_commit, "empty checkout directory initialized to its gitlink")
 
     project, checkout = create_project(
         root, "not-a-checkout", remote,

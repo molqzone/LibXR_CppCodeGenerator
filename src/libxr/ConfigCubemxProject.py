@@ -41,16 +41,6 @@ def is_git_worktree_root(path):
         return False
 
 
-def is_git_clean(path):
-    """Check if the Git repo at `path` has no uncommitted changes."""
-    result = subprocess.run(
-        ["git", "-C", path, "status", "--porcelain"],
-        capture_output=True,
-        text=True
-    )
-    return result.returncode == 0 and result.stdout.strip() == ""
-
-
 def _fmt_cmd(cmd):
     if isinstance(cmd, (list, tuple)):
         return " ".join(shlex.quote(str(x)) for x in cmd)
@@ -263,36 +253,35 @@ def add_libxr(project_dir, libxr_commit=None, git_base="https://github.com",
     if os.path.exists(libxr_path):
         logging.info("LibXR submodule path exists.")
         current_commit = get_git_head(libxr_path)
-        dirty = not is_git_clean(libxr_path)
-        fetched = False
         target_commit = ""
 
+        # The project's gitlink pins LibXR. Only an explicit --commit or a
+        # submodule added by this run moves the checkout; otherwise the
+        # checkout stays where it is and a different package default is only
+        # reported.
         if libxr_commit:
             target_commit = libxr_commit
             logging.info(f"Checking out LibXR to requested commit {target_commit}")
         elif added_submodule and not existing_checkout and default_libxr_commit:
             target_commit = default_libxr_commit
             logging.info(f"Initializing new LibXR submodule to default commit {target_commit}")
-        elif dirty:
-            logging.warning("LibXR submodule has local changes; keeping current checkout.")
         elif default_libxr_commit and current_commit != default_libxr_commit:
-            run_command(["git", "-C", libxr_path, "fetch", "origin"], ignore_error=True)
-            fetched = True
-
-            if is_commit_ancestor(libxr_path, current_commit, default_libxr_commit):
-                target_commit = default_libxr_commit
-                logging.info(f"Updating clean LibXR checkout to package default {target_commit}")
-            elif is_commit_ancestor(libxr_path, default_libxr_commit, current_commit):
-                logging.info("LibXR checkout is newer than the package default; keeping it.")
+            if is_commit_ancestor(libxr_path, default_libxr_commit, current_commit):
+                logging.info("LibXR checkout is newer than this generator's default; keeping it.")
             else:
-                logging.info("LibXR checkout has diverged from the package default; keeping it.")
+                relation = ("older than" if is_commit_ancestor(
+                    libxr_path, current_commit, default_libxr_commit) else "different from")
+                logging.warning(
+                    f"LibXR checkout {current_commit[:12]} is {relation} this generator's default "
+                    f"{default_libxr_commit[:12]}; it was left unchanged. To switch, run "
+                    f"xr_cubemx_cfg with --commit {default_libxr_commit} (or check out the commit "
+                    "in Middlewares/Third_Party/LibXR) and commit the gitlink.")
+        else:
+            logging.info("Keeping the existing LibXR checkout.")
 
         if target_commit:
-            if not fetched:
-                run_command(["git", "-C", libxr_path, "fetch", "origin"], ignore_error=True)
+            run_command(["git", "-C", libxr_path, "fetch", "origin"], ignore_error=True)
             run_command(["git", "-C", libxr_path, "checkout", target_commit])
-        elif not dirty:
-            logging.info("No LibXR commit requested; keeping existing submodule checkout.")
 
 
 def create_user_directory(project_dir):
