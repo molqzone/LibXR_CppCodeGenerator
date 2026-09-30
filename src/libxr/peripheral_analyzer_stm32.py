@@ -1,5 +1,14 @@
 #!/usr/bin/env python
-"""STM32CubeMX IOC Configuration Parser - Optimized Version"""
+"""xr_parse_ioc：把 STM32CubeMX 的 .ioc 文件解析成 LibXR 代码生成读取的 YAML 配置。
+xr_parse_ioc: parses an STM32CubeMX .ioc file into the YAML configuration that LibXR code
+generation reads.
+
+每类外设由一个 PeripheralParser 子类从 .ioc 的 key=value 表中读取，结果汇总到
+ConfigurationManager，清理后写成 .config.yaml。
+Each kind of peripheral is read from the key=value map of the .ioc file by a PeripheralParser
+subclass; the results are collected in a ConfigurationManager, cleaned and written as
+.config.yaml.
+"""
 
 import argparse
 import logging
@@ -19,7 +28,10 @@ logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 # Utility Functions
 # --------------------------
 def sanitize_numeric(value: str) -> int | float | str:
-    """Convert string to appropriate numeric type if possible."""
+    """把字符串转成数值：全是数字时为 int，其余能解析的为 float，都不能解析时原样返回。
+    Convert a string to a number: all digits give an int, other parseable text a float, and
+    anything else is returned unchanged.
+    """
     try:
         return int(value) if value.isdigit() else float(value)
     except ValueError:
@@ -30,9 +42,18 @@ def sanitize_numeric(value: str) -> int | float | str:
 # Configuration Containers
 # --------------------------
 class ConfigurationManager:
-    """Centralized storage and processing of parsed configuration data."""
+    """保存各解析器写入的配置：引脚、外设、DMA、FreeRTOS、ThreadX、时基和 MCU 信息。
+    Holds the configuration the parsers write: pins, peripherals, DMA, FreeRTOS, ThreadX, the
+    timebase and the MCU.
+    """
 
     def __init__(self) -> None:
+        """创建空的配置容器；时基默认为 SysTick。
+        Create empty configuration containers; the timebase defaults to SysTick.
+
+        gpio_pins 是 pin_registry 的别名，供旧调用方使用。
+        gpio_pins is an alias of pin_registry kept for older callers.
+        """
         self.pin_registry: defaultdict[str, dict[str, Any]] = defaultdict(dict)
         # Compatibility alias for older callers; pin_registry is the canonical store.
         self.gpio_pins: defaultdict[str, dict[str, Any]] = self.pin_registry
@@ -57,7 +78,14 @@ class ConfigurationManager:
         self.mcu_config: dict[str, str | None] = {"Family": None, "Type": None}
 
     def clean_structure(self) -> dict[str, Any]:
-        """Apply data cleansing rules and return final structure."""
+        """返回写入 YAML 的最终结构：GPIO、Peripherals、DMA、Timebase 和 Mcu。
+        Return the final structure written to YAML: GPIO, Peripherals, DMA, Timebase and Mcu.
+
+        记录到 ThreadX 内存分配方式时加入 ThreadX 段；FreeRTOS 有任务、堆大小或功能开关时
+        加入 FreeRTOS 段。
+        A ThreadX section is added when a ThreadX allocation method was found, and a FreeRTOS
+        section when FreeRTOS has tasks, a heap size or feature flags.
+        """
         cleaned_data = {
             "GPIO": self._clean_gpio(),
             "Peripherals": self._clean_peripherals(),
@@ -82,6 +110,11 @@ class ConfigurationManager:
         return cleaned_data
 
     def _clean_gpio(self) -> dict[str, dict]:
+        """GPIO 段：只含 GPIO 输入、输出和 GPXTI 外部中断引脚，字段限于 Signal、Label、Pull
+        和 GPXTI。
+        The GPIO section: only GPIO input, output and GPXTI external interrupt pins, with the
+        fields Signal, Label, Pull and GPXTI.
+        """
         return {
             pin: {k: v for k, v in config.items() if k in {"Signal", "Label", "Pull", "GPXTI"}}
             for pin, config in self.pin_registry.items()
@@ -89,23 +122,43 @@ class ConfigurationManager:
         }
 
     def _is_valid_gpio(self, config: dict) -> bool:
+        """引脚信号为 GPIO_Output、GPIO_Input 或以 GPXTI 开头时为真。
+        True when the pin signal is GPIO_Output, GPIO_Input or starts with GPXTI.
+        """
         return config.get("Signal") in {"GPIO_Output", "GPIO_Input"} or config.get(
             "Signal", ""
         ).startswith("GPXTI")
 
     def _clean_peripherals(self) -> dict[str, dict]:
+        """Peripherals 段：按外设类型和实例名组织，每个实例去掉空值字段。
+        The Peripherals section, by peripheral type and instance name, with empty fields
+        removed from each instance.
+        """
         return {
             p_type: {p: self._clean_peripheral_config(cfg) for p, cfg in p_group.items()}
             for p_type, p_group in self.peripherals.items()
         }
 
     def _clean_peripheral_config(self, config: dict) -> dict:
+        """去掉值为 None、空字符串、空列表或空字典的字段。
+        Drop the fields whose value is None, an empty string, an empty list or an empty dict.
+        """
         return {k: v for k, v in config.items() if v not in (None, "", [], {})}
 
     def _clean_dma_configs(self) -> dict[str, list]:
+        """DMA 配置中非空的条目。
+        The DMA configurations that are not empty.
+        """
         return {k: v for k, v in self.dma_configs.items() if v}
 
     def _clean_freertos(self) -> dict:
+        """FreeRTOS 段：任务、堆大小和已启用的功能，功能名去掉 INCLUDE_ 前缀。
+        The FreeRTOS section: tasks, heap size and the enabled features, with INCLUDE_ removed
+        from feature names.
+
+        RTOS 默认为 FreeRTOS，Enabled 默认为 False。
+        RTOS defaults to FreeRTOS and Enabled to False.
+        """
         return {
             "RTOS": self.freertos_config.get("RTOS", "FreeRTOS"),
             "Enabled": self.freertos_config.get("Enabled", False),
@@ -122,6 +175,10 @@ class ConfigurationManager:
         }
 
     def _clean_threadx(self) -> dict:
+        """ThreadX 段：内存分配方式、内存池大小、是否包含内核，以及任务。
+        The ThreadX section: allocation method, memory pool size, whether the core is present,
+        and the tasks.
+        """
         return {
             "AllocationMethod": self.threadx_config.get("AllocationMethod"),
             "MemPoolSize": self.threadx_config.get("MemPoolSize"),
@@ -134,7 +191,10 @@ class ConfigurationManager:
 # Base Parser Class
 # --------------------------
 class PeripheralParser:
-    """Abstract base class for peripheral-specific parsers."""
+    """外设解析器基类：提供 .ioc key 的拆分与归一化工具和 GPIO 解析，子类实现 parse。
+    Base class of the peripheral parsers: helpers that split and normalize .ioc keys, GPIO
+    parsing, and a parse method that each subclass implements.
+    """
 
     _PIN_PROPERTY_PATTERN = re.compile(r"^((?:P[A-K]\d+)[^.]*)\.(Signal|GPIO_Label|GPIO_PuPd)$")
     _PERIPHERAL_ROOT_PATTERN = re.compile(
@@ -147,73 +207,112 @@ class PeripheralParser:
         raw_map: dict[str, str],
         gpio_pattern: Pattern = _PIN_PROPERTY_PATTERN,
     ) -> None:
+        """绑定要写入的配置和 .ioc 文件的 key=value 表。
+        Bind the configuration to write to and the key=value map of the .ioc file.
+
+        gpio_pattern 匹配引脚属性 key，默认匹配 PxN 引脚的 Signal、GPIO_Label 和 GPIO_PuPd。
+        gpio_pattern matches pin property keys; by default the Signal, GPIO_Label and GPIO_PuPd
+        of PxN pins.
+        """
         self.config = config
         self.raw_map = raw_map
         self.gpio_pattern = gpio_pattern
 
     @staticmethod
     def _split_ioc_key(key: str) -> list[str]:
-        """Split an IOC property key while preserving each CubeMX token verbatim."""
+        """按点号拆分 .ioc 属性 key，各段保持原样。
+        Split an .ioc property key at dots, keeping each token verbatim.
+        """
         return str(key).split(".")
 
     @staticmethod
     def _ioc_key_root(key: str) -> str:
-        """Return the first token of an IOC property key."""
+        """.ioc 属性 key 的第一段。
+        The first token of an .ioc property key.
+        """
         return PeripheralParser._split_ioc_key(key)[0]
 
     @staticmethod
     def _ioc_key_prop(key: str, default: str | None = None) -> str | None:
-        """Return the second token of an IOC property key, if it exists."""
+        """.ioc 属性 key 的第二段；key 只有一段时为 default。
+        The second token of an .ioc property key; default when the key has a single token.
+        """
         parts = PeripheralParser._split_ioc_key(key)
         return parts[1] if len(parts) > 1 else default
 
     @staticmethod
     def _has_ioc_prefix(key: str, prefix: str) -> bool:
-        """Match an IOC key prefix on a token boundary, not just by text prefix."""
+        """key 等于 prefix 或以 "prefix." 开头时为真，即前缀只在段边界处匹配。
+        True when the key equals prefix or starts with "prefix.", so the prefix matches only on
+        a token boundary.
+        """
         key = str(key)
         return key == prefix or key.startswith(f"{prefix}.")
 
     @staticmethod
     def _ioc_root_startswith(key: str, stem: str) -> bool:
-        """Match CubeMX keys whose first dot-separated token starts with a stem."""
+        """key 的第一段以 stem 开头时为真。
+        True when the first dot-separated token of the key starts with stem.
+        """
         return PeripheralParser._ioc_key_root(key).startswith(stem)
 
     @staticmethod
     def _ioc_key_startswith(key: str, stem: str) -> bool:
-        """Match CubeMX numbered keys such as ``Mcu.IP0`` and ``Mcu.IPNb``."""
+        """整个 key 以 stem 开头时为真，用于 Mcu.IP0、Mcu.IPNb 这类带编号的 key。
+        True when the whole key starts with stem; used for numbered keys such as Mcu.IP0 and
+        Mcu.IPNb.
+        """
         return str(key).startswith(stem)
 
     @staticmethod
     def _dma_request_id(key: str, prefix: str) -> str | None:
-        """Return the DMA request id from ``Dma.RequestN`` / ``Bdma.RequestN`` keys."""
+        """<prefix>.RequestN 形式的 key（如 Dma.Request0、Bdma.Request1）中的请求号 N；
+        其他 key 为 None。
+        The request id N of a <prefix>.RequestN key such as Dma.Request0 or Bdma.Request1;
+        None for any other key.
+        """
         match = re.fullmatch(rf"{re.escape(prefix)}\.Request(\d+)", str(key))
         return match.group(1) if match else None
 
     @staticmethod
     def _dma_request_key(prefix: str, req_id: str) -> str:
-        """Build a collision-free DMA request key for mixed DMA/BDMA projects."""
+        """组成 "<prefix>.Request<req_id>" 形式的请求 key，使 DMA 与 BDMA 的同号请求互不冲突。
+        Build a "<prefix>.Request<req_id>" request key, so DMA and BDMA requests with the same
+        number stay apart.
+        """
         return f"{prefix}.Request{req_id}"
 
     @staticmethod
     def _normalize_gpio_pin_token(pin: str) -> str:
-        """Normalize CubeMX GPIO pin tokens to the physical PxN form."""
+        """把 CubeMX 引脚名归一为物理引脚名 PxN，例如 PC14-OSC32_IN 变为 PC14；不匹配时原样返回。
+        Normalize a CubeMX pin token to the physical PxN name, e.g. PC14-OSC32_IN becomes PC14;
+        a token that does not match is returned unchanged.
+        """
         match = re.match(r"^(P[A-K]\d+)", pin)
         return match.group(1) if match else pin
 
     @staticmethod
     def _normalize_ioc_key_pin(key: str) -> str:
-        """Extract and normalize the pin token from an IOC property key."""
+        """取 .ioc 属性 key 的第一段并归一为 PxN 引脚名。
+        Take the first token of an .ioc property key and normalize it to a PxN pin name.
+        """
         return PeripheralParser._normalize_gpio_pin_token(PeripheralParser._ioc_key_root(key))
 
     @staticmethod
     def _normalize_signal_token(signal: str) -> str:
-        """Normalize CubeMX signal aliases before deriving peripheral names."""
+        """推导外设名之前归一 CubeMX 信号名：去掉首尾空白，转为大写，并去掉 S_ 别名前缀。
+        Normalize a CubeMX signal name before peripheral names are derived from it: strip
+        whitespace, convert to upper case and remove the S_ alias prefix.
+        """
         signal = str(signal).strip().upper()
         return signal[2:] if signal.startswith("S_") else signal
 
     @staticmethod
     def _normalize_tim_channel_token(channel: str) -> str | None:
-        """Normalize CubeMX timer channel tokens to CHx / CHxN."""
+        """把 TIM_CHANNEL_x 或 CHx（均可带 N 后缀）归一为 CHx / CHxN；其他写法为 None。
+        Normalize TIM_CHANNEL_x or CHx, each with an optional N suffix, to CHx / CHxN; None for
+        any other form.
+        """
         channel = str(channel).strip().upper()
         match = re.fullmatch(r"TIM_CHANNEL_(\d+)(N?)", channel)
         if match:
@@ -225,12 +324,12 @@ class PeripheralParser:
 
     @staticmethod
     def _signal_root(signal: str) -> str:
-        """Return the peripheral root from a CubeMX signal token.
+        """CubeMX 信号名中的外设实例名；已知外设按前缀匹配，其余取第一个下划线之前的部分。
+        The peripheral instance in a CubeMX signal name; known peripherals match by prefix, and
+        other names give the text before the first underscore.
 
-        Examples:
-        - ``USART1_TX`` -> ``USART1``
-        - ``I2C2_SCL`` -> ``I2C2``
-        - ``TIM1_CH1N`` -> ``TIM1``
+        例如 USART1_TX 为 USART1，I2C2_SCL 为 I2C2，TIM1_CH1N 为 TIM1。
+        For example USART1_TX gives USART1, I2C2_SCL gives I2C2 and TIM1_CH1N gives TIM1.
         """
         signal = PeripheralParser._normalize_signal_token(signal)
         match = PeripheralParser._PERIPHERAL_ROOT_PATTERN.match(signal)
@@ -238,13 +337,23 @@ class PeripheralParser:
 
     @staticmethod
     def _signal_suffix(signal: str) -> str:
-        """Return the last underscore-separated suffix from a CubeMX signal token."""
+        """CubeMX 信号名最后一个下划线之后的部分（大写）；没有下划线时为整个信号名。
+        The part of a CubeMX signal name after the last underscore, in upper case; the whole
+        name when it has no underscore.
+        """
         signal = PeripheralParser._normalize_signal_token(signal)
         return signal.split("_")[-1].upper() if "_" in signal else signal.upper()
 
     @staticmethod
     def _parse_dma_request_endpoint(peripheral_full: str) -> tuple[str, str]:
-        """Split a DMA request target like ``USART1_TX`` into peripheral and direction."""
+        """把 USART1_TX 这类 DMA 请求目标拆成外设名和小写方向，例如 ("USART1", "tx")。
+        Split a DMA request target such as USART1_TX into the peripheral and a lower-case
+        direction, e.g. ("USART1", "tx").
+
+        最后一个下划线之后全为字母时作为方向，否则整个目标为外设名，方向为 "general"。
+        The letters after the last underscore are the direction; without such a suffix the
+        whole target is the peripheral and the direction is "general".
+        """
         endpoint = str(peripheral_full).strip()
         match = re.match(r"^(.*)_([A-Z]+)$", endpoint.upper())
         if not match:
@@ -253,21 +362,32 @@ class PeripheralParser:
 
     @staticmethod
     def _normalize_dma_direction(value: str) -> str:
-        """Return a complete DMA direction token without losing source/target context."""
+        """完整 DMA 方向的小写形式，只去掉 DMA_ 前缀，例如 DMA_PERIPH_TO_MEMORY 变为
+        periph_to_memory。
+        The complete DMA direction in lower case with only the DMA_ prefix removed, e.g.
+        DMA_PERIPH_TO_MEMORY becomes periph_to_memory.
+        """
         direction = str(value).strip().upper()
         if direction.startswith("DMA_"):
             direction = direction[4:]
         return direction.lower()
 
     def parse_gpio(self) -> None:
-        """Common GPIO parsing logic."""
+        """读取匹配 gpio_pattern 的引脚属性，按归一后的 PxN 引脚名写入 pin_registry。
+        Read the pin properties that match gpio_pattern into pin_registry, keyed by the
+        normalized PxN pin name.
+        """
         for key, value in self.raw_map.items():
             if match := self.gpio_pattern.match(key):
                 pin, prop = match.groups()
                 self._process_gpio_property(self._normalize_gpio_pin_token(pin), prop, value)
 
     def _process_gpio_property(self, pin: str, prop: str, value: str) -> None:
-        """Handle individual GPIO property."""
+        """把一个引脚属性写入 pin_registry：Signal 原样保存，GPIO_Label 的第一个词存为 Label，
+        GPIO_PuPd 存为 Pull；值中含 GPXTI 时同时置 GPXTI 标记。
+        Write one pin property to pin_registry: Signal as is, the first word of GPIO_Label as
+        Label and GPIO_PuPd as Pull; a value containing GPXTI also sets the GPXTI flag.
+        """
         prop_map = {
             "Signal": ("Signal", value),
             "GPIO_Label": ("Label", str(value).split()[0] if str(value).split() else ""),
@@ -279,7 +399,10 @@ class PeripheralParser:
             self.config.pin_registry[pin]["GPXTI"] = True
 
     def parse(self, p_type: str) -> None:
-        """Template method to be implemented by subclasses."""
+        """解析 p_type 类外设的配置，由子类实现；基类调用时抛出 NotImplementedError。
+        Parse the configuration of peripheral type p_type; implemented by subclasses, and the
+        base class raises NotImplementedError.
+        """
         raise NotImplementedError
 
 
@@ -287,9 +410,14 @@ class PeripheralParser:
 # MCU Parser
 # --------------------------
 class McuParser(PeripheralParser):
-    """Handle MCU-related configurations."""
+    """读取 MCU 系列和型号。
+    Reads the MCU family and part number.
+    """
 
     def parse(self, p_type: str) -> None:
+        """从 Mcu.* key 读取系列（Family）和型号（CPN），写入 mcu_config。
+        Read the family (Family) and part number (CPN) from Mcu.* keys into mcu_config.
+        """
         for key, value in self.raw_map.items():
             if not self._ioc_root_startswith(key, "Mcu"):
                 continue
@@ -304,9 +432,17 @@ class McuParser(PeripheralParser):
 # TIM Parser
 # --------------------------
 class TIMParser(PeripheralParser):
-    """Handle TIM (Timer) peripheral configurations."""
+    """读取定时器的模式、周期、预分频和 PWM 通道。
+    Reads timer mode, period, prescaler and PWM channels.
+    """
 
     def parse(self, p_type: str) -> None:
+        """读取 TIMx.* 属性：Channel-PWM 和 Channel 属性记为 PWM 通道，属性名含 Period、
+        Prescaler 或 Mode 时写入对应字段，周期和预分频转为数值。
+        Read TIMx.* properties: Channel-PWM and Channel properties become PWM channels, and a
+        property name containing Period, Prescaler or Mode sets that field, with period and
+        prescaler converted to numbers.
+        """
         for key, value in self.raw_map.items():
             tim_name = self._ioc_key_root(key)
             if not tim_name.startswith("TIM"):
@@ -338,7 +474,10 @@ class TIMParser(PeripheralParser):
                 self.config.peripherals[p_type][tim_name]["Mode"] = value
 
     def _ensure_tim_instance(self, p_type: str, tim_name: str) -> None:
-        """Initialize TIM instance if not exists."""
+        """TIM 实例不存在时创建，模式、周期、预分频为空，通道和脉宽表为空。
+        Create the TIM instance when it does not exist, with empty mode, period and prescaler
+        and empty channel and pulse maps.
+        """
         if not self.config.peripherals[p_type].get(tim_name):
             self.config.peripherals[p_type][tim_name] = {
                 "Mode": None,
@@ -350,9 +489,15 @@ class TIMParser(PeripheralParser):
             }
 
     def _handle_pwm_channel(self, tim_name: str, parts: list, value: str) -> None:
-        """
-        Extract PWM channel configuration.
-        Parse TIMx.Channel-PWM Generation2 CH2N=TIM_CHANNEL_2 lines.
+        """从 TIMx.Channel-PWM Generation2 CH2N=TIM_CHANNEL_2 这类条目记录一个 PWM 通道。
+        Record one PWM channel from an entry such as TIMx.Channel-PWM Generation2
+        CH2N=TIM_CHANNEL_2.
+
+        通道取 key 末尾的 CHx / CHxN，CHxN 标记为互补输出；Label 为该通道所连引脚的标签；
+        值全是数字时存为 DutyCycle。
+        The channel is the trailing CHx / CHxN of the key, and CHxN is marked complementary;
+        Label is the label of the pin wired to the channel; an all-digit value is stored as
+        DutyCycle.
         """
         # Use regex to capture CHx or CHxN
         match = re.search(r"(CH\d+N?)$", parts[1])
@@ -373,9 +518,14 @@ class TIMParser(PeripheralParser):
         }
 
     def _get_associated_pin_label(self, timer_name: str, channel_id: str) -> tuple[str, bool]:
-        """
-        Retrieve GPIO label and whether it's a complementary (N) output.
-        Return: (label, is_complementary)
+        """定时器通道所连引脚的 (标签, 是否互补输出)；引脚信号以 N 结尾时为互补输出。
+        The (label, is_complementary) of the pin wired to a timer channel; the output is
+        complementary when the pin signal ends with N.
+
+        引脚没有标签时用引脚名；CH1 也匹配 TIMx_CH1_ETR 信号。通道名无效或找不到引脚时返回
+        (timer_name, False)。
+        A pin without a label gives its pin name; CH1 also matches the TIMx_CH1_ETR signal. An
+        invalid channel, or no matching pin, gives (timer_name, False).
         """
         normalized_channel = self._normalize_tim_channel_token(channel_id)
         if not normalized_channel:
@@ -403,11 +553,18 @@ class TIMParser(PeripheralParser):
 # ADC Parser
 # --------------------------
 class ADCParser(PeripheralParser):
-    """Parse ADC configurations with strict validation and multi-source support."""
+    """读取 ADC 实例的规则转换通道、内部通道、连续模式、DMA 和 EOC 设置。
+    Reads ADC instances: regular conversion channels, internal channels, continuous mode, DMA
+    and EOC selection.
+    """
 
     _CHANNEL_PATTERN = re.compile(r"^ADC_CHANNEL_[A-Z0-9_]+$")
 
     def parse(self, p_type: str) -> None:
+        """先读取 ADCx.* 属性，再把 VP_*.Signal 虚拟引脚映射为内部通道，最后对通道去重。
+        Read ADCx.* properties, then map VP_*.Signal virtual pins to internal channels, then
+        deduplicate the channels.
+        """
         for key, value in self.raw_map.items():
             if self._ioc_root_startswith(key, "ADC"):
                 self._parse_adc_property(key, value)
@@ -417,16 +574,21 @@ class ADCParser(PeripheralParser):
         self._deduplicate_channels()
 
     def _map_internal_channel(self, value: str) -> str | None:
-        """
-        Map VP_* virtual-pin internal ADC signals to HAL channel macros WITHOUT binding to MCU family.
-        Preference order:
-        1) If CommonPathInternal lists a suffixed TempSensor macro (e.g., ADC_CHANNEL_TEMPSENSOR_ADC1),
-            use that.
-        2) Otherwise, if CommonPathInternal lists ADC_CHANNEL_TEMPSENSOR (no suffix), use that.
-        3) Otherwise, fall back to the generic ADC_CHANNEL_TEMPSENSOR.
+        """把 VP_* 虚拟引脚的 ADC 内部信号映射为 HAL 通道宏；无法识别时为 None。
+        Map the internal ADC signal of a VP_* virtual pin to a HAL channel macro; None when the
+        signal is not recognized.
 
-        For VREF/VBAT we return the standard macros.
-        OPAMPn maps to ADC_CHANNEL_VOPAMPn.
+        VREF 映射为 ADC_CHANNEL_VREFINT，VBAT 映射为 ADC_CHANNEL_VBAT，OPAMPn 映射为
+        ADC_CHANNEL_VOPAMPn。温度传感器优先取该 ADC 的 CommonPathInternal 中带后缀的宏
+        （如 ADC_CHANNEL_TEMPSENSOR_ADC1），否则为 ADC_CHANNEL_TEMPSENSOR；选择不依赖 MCU 系列。
+        VREF maps to ADC_CHANNEL_VREFINT, VBAT to ADC_CHANNEL_VBAT and OPAMPn to
+        ADC_CHANNEL_VOPAMPn. The temperature sensor takes a suffixed macro such as
+        ADC_CHANNEL_TEMPSENSOR_ADC1 from that ADC's CommonPathInternal, and otherwise
+        ADC_CHANNEL_TEMPSENSOR; the choice does not depend on the MCU family.
+
+        ADC 实例取信号开头的 ADCn，没有时取第一个已记录的 ADC 实例。
+        The ADC instance is the ADCn at the start of the signal, or else the first recorded ADC
+        instance.
         """
         v_upper = value.upper()
 
@@ -462,12 +624,22 @@ class ADCParser(PeripheralParser):
         return None
 
     def _parse_adc_property(self, key: str, value: str) -> None:
-        """
-        Parse a single ADC property.
-        - Normalizes DMA flags to "ENABLE"/"DISABLE".
-        - Keeps ContinuousMode as boolean.
-        - Captures CommonPathInternal (e.g. "null|ADC_CHANNEL_TEMPSENSOR_ADC1|null|null")
-        so we can later choose the correct TempSensor macro without binding to MCU family.
+        """读取一个 ADCx.<setting> 属性并写入该 ADC 实例。
+        Read one ADCx.<setting> property into that ADC instance.
+
+        ChannelRegularConversion 的通道加入规则转换列表；ContinuousConvMode 存为布尔值
+        ContinuousMode；DMARegular 和 DMAContinuousRequests 归一为 "ENABLE" / "DISABLE" 存入
+        DMA；EOCSelection 原样保存。
+        Channels of ChannelRegularConversion join the regular conversion list;
+        ContinuousConvMode is stored as the boolean ContinuousMode; DMARegular and
+        DMAContinuousRequests are normalized to "ENABLE" / "DISABLE" in DMA; EOCSelection is
+        stored as is.
+
+        CommonPathInternal（如 "null|ADC_CHANNEL_TEMPSENSOR_ADC1|null|null"）按 | 拆分，去掉
+        null 后以大写列表保存，供之后选择温度传感器宏，选择不依赖 MCU 系列。
+        CommonPathInternal, e.g. "null|ADC_CHANNEL_TEMPSENSOR_ADC1|null|null", is split at |
+        and kept as an upper-case list without null entries, so the temperature sensor macro
+        can be chosen later without depending on the MCU family.
         """
         parts = self._split_ioc_key(key)
         if len(parts) < 2:
@@ -478,6 +650,10 @@ class ADCParser(PeripheralParser):
         self._ensure_adc_instance(adc_name)
 
         def _to_enable_str(v: str) -> str:
+            """值为 ENABLE（忽略大小写和首尾空白）时为 "ENABLE"，否则为 "DISABLE"。
+            "ENABLE" when the value is ENABLE, ignoring case and surrounding whitespace;
+            otherwise "DISABLE".
+            """
             return "ENABLE" if str(v).strip().upper() == "ENABLE" else "DISABLE"
 
         if "ChannelRegularConversion" in setting:
@@ -496,14 +672,21 @@ class ADCParser(PeripheralParser):
             self.config.peripherals["ADC"][adc_name]["CommonPathInternal"] = tokens
 
     def _get_adc_instance_name(self) -> str:
+        """第一个已记录的 ADC 实例名；还没有 ADC 实例时为 "ADC"。
+        The first recorded ADC instance name; "ADC" while there is none.
+        """
         adc_instances = self.config.peripherals.get("ADC", {})
         return list(adc_instances.keys())[0] if adc_instances else "ADC"
 
     def _parse_vp_adc_signal(self, key: str, value: str) -> None:
-        """
-        Handle VP_* virtual pins mapping internal signals to ADC channels.
-        Per requirement: channels discovered here are added to 'Channels' ONLY,
-        and NOT to 'RegularConversions'.
+        """把信号以 ADC 开头的 VP_* 虚拟引脚映射为内部通道宏，加入对应 ADC 实例的 Channels。
+        Map a VP_* virtual pin whose signal starts with ADC to an internal channel macro and add
+        it to Channels of that ADC instance.
+
+        这里得到的通道只加入 Channels，不加入 RegularConversions。ADC 实例取信号开头的
+        ADCn，没有时取第一个已记录的 ADC 实例。
+        Channels found here go to Channels only, not to RegularConversions. The ADC instance is
+        the ADCn at the start of the signal, or else the first recorded ADC instance.
         """
         if not self._normalize_signal_token(value).startswith("ADC"):
             return
@@ -522,7 +705,12 @@ class ADCParser(PeripheralParser):
             self._add_unique_entry(adc_name, "Channels", mapped_channel)
 
     def _process_conversion_entry(self, adc_name: str, raw_value: str) -> None:
-        """Extract and validate ADC channel entries from ChannelRegularConversion."""
+        """拆分逗号分隔的 ChannelRegularConversion 值；符合 ADC_CHANNEL_* 格式的通道同时加入
+        Channels 和 RegularConversions，其余非空项记录 debug 日志后忽略。
+        Split a comma-separated ChannelRegularConversion value; channels of the ADC_CHANNEL_*
+        form join both Channels and RegularConversions, and other non-empty items are logged
+        at debug level and ignored.
+        """
         for entry in raw_value.split(","):
             cleaned_entry = entry.strip()
             # Validate entry format using regex
@@ -534,10 +722,16 @@ class ADCParser(PeripheralParser):
                 logging.debug(f"Ignored invalid ADC entry: {cleaned_entry}")
 
     def _is_valid_channel(self, entry: str) -> bool:
-        """Validate channel name format using regex pattern."""
+        """entry 为 ADC_CHANNEL_ 后接大写字母、数字或下划线时为真。
+        True when entry is ADC_CHANNEL_ followed by upper-case letters, digits or underscores.
+        """
         return bool(self._CHANNEL_PATTERN.match(entry))
 
     def _ensure_adc_instance(self, adc_name: str) -> None:
+        """ADC 实例不存在时创建：连续模式关闭，通道列表为空，DMA 为 "DISABLE"。
+        Create the ADC instance when it does not exist: continuous mode off, empty channel
+        lists and DMA "DISABLE".
+        """
         if adc_name not in self.config.peripherals["ADC"]:
             self.config.peripherals["ADC"][adc_name] = {
                 "ContinuousMode": False,
@@ -547,16 +741,22 @@ class ADCParser(PeripheralParser):
             }
 
     def _add_unique_entry(self, adc_name: str, field: str, value: str) -> None:
-        """Add value to list only if not already present."""
+        """value 不在 ADC 实例的 field 列表中时追加到末尾。
+        Append value to the field list of the ADC instance when it is not already there.
+        """
         target_list = self.config.peripherals["ADC"][adc_name][field]
         if value not in target_list:
             target_list.append(value)
 
     def _deduplicate_channels(self) -> None:
-        """
-        Deduplicate and prefer suffixed TempSensor macros:
-        If both ADC_CHANNEL_TEMPSENSOR_ADCn and ADC_CHANNEL_TEMPSENSOR exist,
-        keep the suffixed variant(s) and drop the generic one.
+        """对每个 ADC 实例的 Channels 和 RegularConversions 保序去重，并优先带后缀的温度传感器宏。
+        Deduplicate Channels and RegularConversions of each ADC instance in order, preferring
+        suffixed temperature sensor macros.
+
+        通道列表或 CommonPathInternal 中出现 ADC_CHANNEL_TEMPSENSOR_ADCn 时，去掉通用的
+        ADC_CHANNEL_TEMPSENSOR。
+        When ADC_CHANNEL_TEMPSENSOR_ADCn appears in a channel list or in CommonPathInternal,
+        the generic ADC_CHANNEL_TEMPSENSOR is removed.
         """
         for adc_cfg in self.config.peripherals["ADC"].values():
             # Basic dedupe
@@ -581,9 +781,21 @@ class ADCParser(PeripheralParser):
 # DAC Parser
 # --------------------------
 class DACParser(PeripheralParser):
-    """Parse DAC peripheral configurations."""
+    """读取 DAC 实例的输出通道、触发源、DMA 和输出缓冲设置。
+    Reads DAC instances: output channels, trigger, DMA and output buffer.
+    """
 
     def parse(self, p_type: str) -> None:
+        """读取两种 DAC 条目：SH.COMP_DAC<n>_group.<k> 和 DACx.* 属性。
+        Read two kinds of DAC entries: SH.COMP_DAC<n>_group.<k> and DACx.* properties.
+
+        SH.COMP_DAC 条目的值在第一个逗号处拆成通道和别名。一位编号（如 COMP_DAC2_group）归入
+        实例 DAC，通道键为值中的通道；两位编号（如 COMP_DAC12_group）归入 DAC1 的 OUT2。
+        The value of an SH.COMP_DAC entry is split at the first comma into a channel and an
+        alias. A one-digit number such as COMP_DAC2_group goes to the instance DAC under the
+        channel from the value; a two-digit number such as COMP_DAC12_group goes to OUT2 of
+        DAC1.
+        """
         for key, value in self.raw_map.items():
             # 1. SH.COMP_DAC*_group. Compatible with single/multi-channel DAC recognition
             m = re.match(r"^SH\.COMP_DAC(\d{1,2})_group\.\d+$", key)
@@ -609,6 +821,11 @@ class DACParser(PeripheralParser):
                 self._parse_dac_property(key, value)
 
     def _parse_dac_property(self, key: str, value: str) -> None:
+        """读取一个 DACx.<setting> 属性：DAC_Channel-DAC_OUTn 记为通道 OUTn，名字含 Trigger、
+        DMA 或 OutputBuffer 的属性原样存入对应字段。
+        Read one DACx.<setting> property: DAC_Channel-DAC_OUTn becomes channel OUTn, and a
+        setting whose name contains Trigger, DMA or OutputBuffer is stored as is in that field.
+        """
         parts = self._split_ioc_key(key)
         if len(parts) < 2:
             return
@@ -630,6 +847,10 @@ class DACParser(PeripheralParser):
             self.config.peripherals["DAC"][dac_name]["OutputBuffer"] = value
 
     def _ensure_dac_instance(self, dac_name: str) -> None:
+        """DAC 实例不存在时创建，通道表为空，触发源、DMA 和输出缓冲为空。
+        Create the DAC instance when it does not exist, with no channels and empty trigger, DMA
+        and output buffer.
+        """
         if dac_name not in self.config.peripherals["DAC"]:
             self.config.peripherals["DAC"][dac_name] = {
                 "Channels": {},
@@ -643,9 +864,16 @@ class DACParser(PeripheralParser):
 # SPI Parser
 # --------------------------
 class SPIParser(PeripheralParser):
-    """Handle SPI peripheral configurations."""
+    """读取 SPI 实例的波特率、方向、时钟极性和时钟相位。
+    Reads SPI instances: baud rate, direction, clock polarity and clock phase.
+    """
 
     def parse(self, p_type: str) -> None:
+        """读取 SPIx.* 属性：属性名含 BaudRate、Direction、CLKPolarity 或 CLKPhase 时写入对应
+        字段，BaudRate 转为数值。
+        Read SPIx.* properties: a property name containing BaudRate, Direction, CLKPolarity or
+        CLKPhase sets that field, with BaudRate converted to a number.
+        """
         for key, value in self.raw_map.items():
             spi_name = self._ioc_key_root(key)
             if not spi_name.startswith("SPI"):
@@ -668,7 +896,9 @@ class SPIParser(PeripheralParser):
                 self.config.peripherals[p_type][spi_name]["CLKPhase"] = value
 
     def _ensure_spi_instance(self, p_type: str, spi_name: str) -> None:
-        """Initialize SPI instance if not exists."""
+        """SPI 实例不存在时创建，各字段为空，DMA 表为空。
+        Create the SPI instance when it does not exist, with empty fields and an empty DMA map.
+        """
         if not self.config.peripherals[p_type].get(spi_name):
             self.config.peripherals[p_type][spi_name] = {
                 "BaudRate": None,
@@ -683,12 +913,20 @@ class SPIParser(PeripheralParser):
 # USART/UART Parser
 # --------------------------
 class USARTParser(PeripheralParser):
-    """Parse USART, UART, and LPUART configurations, including signal-based instance inference."""
+    """读取 USART、UART 和 LPUART 实例，包括只在引脚信号中出现的实例。
+    Reads USART, UART and LPUART instances, including instances named only by pin signals.
+    """
 
     def parse(self, p_type: str) -> None:
-        """
-        Parse all USART, UART, and LPUART configuration entries,
-        creating instances even if only pin signals are defined.
+        """读取 USART、UART 和 LPUART 配置；只有引脚信号的实例也会创建。
+        Read USART, UART and LPUART configurations; an instance with only pin signals is created
+        too.
+
+        第一遍读取 USARTx/UARTx/LPUARTx.* 属性中的波特率、字长、校验、停止位和模式；第二遍从
+        含 _TX 或 _RX 的引脚信号推断实例名，创建尚未出现的实例。
+        The first pass reads baud rate, word length, parity, stop bits and mode from
+        USARTx/UARTx/LPUARTx.* properties; the second pass derives instance names from pin
+        signals containing _TX or _RX and creates the instances not seen yet.
         """
         found_instances = set()
 
@@ -729,7 +967,10 @@ class USARTParser(PeripheralParser):
                     self._ensure_uart_instance(p_type, uart_root)
 
     def _ensure_uart_instance(self, p_type: str, uart_name: str) -> None:
-        """Ensure the UART/USART/LPUART instance exists in the peripherals configuration."""
+        """UART/USART/LPUART 实例不存在时创建，模式为 Asynchronous，其余字段为空。
+        Create the UART/USART/LPUART instance when it does not exist, with mode Asynchronous
+        and the other fields empty.
+        """
         if uart_name not in self.config.peripherals[p_type]:
             self.config.peripherals[p_type][uart_name] = {
                 "BaudRate": None,
@@ -741,7 +982,10 @@ class USARTParser(PeripheralParser):
             }
 
     def _handle_operation_mode(self, p_type: str, uart_name: str, value: str) -> None:
-        """Decode and set the USART operating mode."""
+        """值中含 IrDA、LIN 或 SmartCard 时把模式设为该名字；其他值保留原模式。
+        Set the mode to IrDA, LIN or SmartCard when the value contains that name; any other
+        value keeps the current mode.
+        """
         if "IrDA" in value:
             self.config.peripherals[p_type][uart_name]["Mode"] = "IrDA"
         elif "LIN" in value:
@@ -754,9 +998,22 @@ class USARTParser(PeripheralParser):
 # I2C Parser
 # --------------------------
 class I2CParser(PeripheralParser):
-    """Handle I2C peripheral configurations."""
+    """读取 I2C 实例的时钟速度、时序、寻址方式和 SCL/SDA 引脚。
+    Reads I2C instances: clock speed, timing, addressing mode and SCL/SDA pins.
+    """
 
     def parse(self, p_type: str) -> None:
+        """从三类条目读取 I2C：Mcu.IP* 中列出的 I2C 实例；信号含 I2C 的引脚，记为该实例的 SCL
+        或 SDA；I2Cx.* 属性。
+        Read I2C from three kinds of entries: I2C instances listed in Mcu.IP*; pins whose signal
+        contains I2C, recorded as SCL or SDA of that instance; and I2Cx.* properties.
+
+        属性按 key 的最后一段匹配：ClockSpeed 转为数值，DualAddressMode 转为布尔值，Timing
+        存为字符串，DutyCycle 和 AddressingMode 原样保存。
+        Properties match on the last token of the key: ClockSpeed becomes a number,
+        DualAddressMode a boolean and Timing a string; DutyCycle and AddressingMode are stored
+        as is.
+        """
         for key, value in self.raw_map.items():
             if self._ioc_key_startswith(key, "Mcu.IP"):
                 val = str(value)
@@ -801,7 +1058,10 @@ class I2CParser(PeripheralParser):
                 self.config.peripherals[p_type][i2c_name]["Timing"] = str(value)
 
     def _ensure_i2c_instance(self, p_type: str, i2c_name: str) -> None:
-        """Initialize I2C instance if not exists."""
+        """I2C 实例不存在时创建：7 位寻址，双地址和 NoStretchMode 关闭，引脚未定。
+        Create the I2C instance when it does not exist: 7-bit addressing, dual address and
+        NoStretchMode off, and no pins.
+        """
         if not self.config.peripherals[p_type].get(i2c_name):
             self.config.peripherals[p_type][i2c_name] = {
                 "ClockSpeed": None,
@@ -819,10 +1079,20 @@ class I2CParser(PeripheralParser):
 # CAN/FDCAN Parser
 # --------------------------
 class CANParser(PeripheralParser):
-    """Handle both CAN and FDCAN peripheral configurations."""
+    """读取 CAN 与 FDCAN 实例；实例名以 FDCAN 开头时归入 FDCAN，否则归入 CAN。
+    Reads CAN and FDCAN instances; a name starting with FDCAN goes to FDCAN, any other to CAN.
+    """
 
     def parse(self, p_type: str) -> None:
-        """Process CAN/FDCAN parameters with legacy support."""
+        """读取 CANx.* 和 FDCANx.* 属性；外设类型由实例名决定，传入的 p_type 被覆盖。
+        Read CANx.* and FDCANx.* properties; the peripheral type follows the instance name and
+        overrides the p_type argument.
+
+        两类都把 CalculateBaudRate 存为 BaudRate、把 Mode 存为 Mode，其余参数交给 CAN 2.0 或
+        FDCAN 专用处理。
+        Both store CalculateBaudRate as BaudRate and Mode as Mode; other parameters go to the
+        CAN 2.0 or the FDCAN handler.
+        """
         for key, value in self.raw_map.items():
             can_name = self._ioc_key_root(key)
             if not can_name.startswith(("CAN", "FDCAN")):
@@ -851,7 +1121,14 @@ class CANParser(PeripheralParser):
                 self._handle_fdcan_params(can_name, prop, value)
 
     def _ensure_can_instance(self, p_type: str, can_name: str) -> None:
-        """Initialize CAN/FDCAN instance with proper structure."""
+        """实例不存在时按类型创建默认字段。
+        Create the instance with the default fields of its type when it does not exist.
+
+        CAN 为波特率、模式、两个时间段和自动重传/自动唤醒；FDCAN 为标称预分频、标称波特率、
+        帧格式和标准/扩展滤波器数量。
+        CAN gets baud rate, mode, two time segments and auto retransmission/wakeup; FDCAN gets
+        nominal prescaler, nominal baud rate, frame format and standard/extended filter counts.
+        """
         if can_name not in self.config.peripherals[p_type]:
             defaults = {
                 "CAN": {
@@ -873,7 +1150,11 @@ class CANParser(PeripheralParser):
             self.config.peripherals[p_type][can_name] = defaults[p_type].copy()
 
     def _handle_legacy_can_params(self, can_name: str, prop: str, value: str) -> None:
-        """Process legacy CAN 2.0 parameters."""
+        """读取 CAN 2.0 参数：BS1、BS2 原样存为 TimeSeg1、TimeSeg2；ABOM、AWUM 转为布尔值存为
+        AutoRetransmission、AutoWakeup。
+        Read CAN 2.0 parameters: BS1 and BS2 are stored as is in TimeSeg1 and TimeSeg2; ABOM
+        and AWUM become the booleans AutoRetransmission and AutoWakeup.
+        """
         param_map = {
             "BS1": "TimeSeg1",
             "BS2": "TimeSeg2",
@@ -889,7 +1170,15 @@ class CANParser(PeripheralParser):
                 self.config.peripherals["CAN"][can_name][mapping] = value
 
     def _handle_fdcan_params(self, can_name: str, prop: str, value: str) -> None:
-        """Process FDCAN specific parameters."""
+        """读取 FDCAN 参数并转换类型；转换失败时记录警告。
+        Read FDCAN parameters with type conversion; a failed conversion is logged as a warning.
+
+        NominalPrescaler 转为浮点数；BaudRateNominal 转为浮点数，存为 CalculateBaudRateNominal；
+        FrameFormat 为字符串；StdFiltersNbr、ExtFiltersNbr 转为整数，存为 StdFilters、ExtFilters。
+        NominalPrescaler becomes a float; BaudRateNominal a float stored as
+        CalculateBaudRateNominal; FrameFormat a string; StdFiltersNbr and ExtFiltersNbr
+        integers stored as StdFilters and ExtFilters.
+        """
         param_map = {
             "NominalPrescaler": ("NominalPrescaler", float),
             "BaudRateNominal": ("CalculateBaudRateNominal", float),
@@ -910,16 +1199,24 @@ class CANParser(PeripheralParser):
 # USB Parser
 # --------------------------
 class USBParser(PeripheralParser):
-    """
-    Parse USB peripheral configurations from CubeMX .ioc style raw_map.
+    """把 USB 相关 IP 的 .ioc 属性原样收集到 USB 类型下，带 -<profile> 后缀的参数按 profile 分组。
+    Collects the .ioc properties of USB-related IPs as is under the USB type; parameters with
+    a -<profile> suffix are grouped by profile.
     """
 
     def parse(self, p_type: str) -> None:
-        """
-        Process USB parameters from CubeMX .ioc file.
+        """找出 USB 相关实例，并收集每个实例的全部属性。
+        Find the USB-related instances and collect all properties of each.
 
-        Args:
-            p_type (str): The type of peripheral to process (should be "USB").
+        实例来自 Mcu.IP* 中含 USB 的 IP 名，以及以 USB.、USB_OTG_FS.、USB_OTG_HS. 开头的
+        key，按 .ioc 中的出现顺序。
+        The instances come from Mcu.IP* entries that contain USB and from keys starting with
+        USB., USB_OTG_FS. or USB_OTG_HS., in .ioc order.
+
+        "<param>-<profile>" 形式的参数存入 profiles[profile][param]，其余存在实例下；
+        IPParameters 拆成列表。
+        A "<param>-<profile>" parameter is stored in profiles[profile][param] and any other
+        under the instance; IPParameters is split into a list.
         """
         # 1. Find all USB peripheral names in the raw_map, in .ioc order
         usb_names = {}
@@ -971,11 +1268,8 @@ class USBParser(PeripheralParser):
                         self.config.peripherals["USB"][usb_name][rest_key] = value
 
     def _ensure_usb_instance(self, usb_name: str) -> None:
-        """
-        Ensure the USB peripheral entry exists in the configuration.
-
-        Args:
-            usb_name (str): The name of the USB peripheral.
+        """USB 实例不存在时创建空字典。
+        Create an empty dict for the USB instance when it does not exist.
         """
         if usb_name not in self.config.peripherals["USB"]:
             self.config.peripherals["USB"][usb_name] = {}
@@ -986,9 +1280,9 @@ class USBParser(PeripheralParser):
 # DMA Parser
 # --------------------------
 class DMAParser(PeripheralParser):
-    """
-    Parses and structures DMA/BDMA configurations from .ioc files
-    and links them to corresponding peripherals.
+    """读取 DMA 和 BDMA 的请求与 stream 配置，并挂到对应的外设实例下。
+    Reads DMA and BDMA requests and stream configurations and attaches them to the peripheral
+    instances they serve.
     """
 
     # Maps CubeMX DMA config properties to internal fields and conversion logic
@@ -1008,9 +1302,9 @@ class DMAParser(PeripheralParser):
     }
 
     def parse(self, p_type: str) -> None:
-        """
-        Entry point: Parses all DMA and BDMA configurations in the .ioc data.
-        Handles both Dma. and Bdma. prefixes.
+        """依次解析 Dma. 与 Bdma. 前缀下的请求和配置，然后把配置挂到外设实例下。
+        Parse the requests and configurations under the Dma. and Bdma. prefixes, then attach
+        the configurations to the peripheral instances.
         """
         for prefix, dma_type in (("Dma", "DMA"), ("Bdma", "BDMA")):
             self._parse_requests(prefix, dma_type)
@@ -1018,9 +1312,9 @@ class DMAParser(PeripheralParser):
         self._link_configs()
 
     def _parse_requests(self, prefix="Dma", dma_type="DMA") -> None:
-        """
-        Extracts DMA/BDMA request mappings: (RequestID → Peripheral).
-        Stores the mapping and its type for each request.
+        """记录每个 <prefix>.RequestN 条目：请求 key 到目标外设信号的映射，以及 DMA 类型。
+        Record each <prefix>.RequestN entry: the mapping from the request key to the target
+        peripheral signal, and the DMA type.
         """
         for key, value in self.raw_map.items():
             req_id = self._dma_request_id(key, prefix)
@@ -1030,9 +1324,17 @@ class DMAParser(PeripheralParser):
                 self.config.dma_types[request_key] = dma_type  # Store DMA type (DMA or BDMA)
 
     def _parse_configs(self, prefix="Dma", dma_type="DMA") -> None:
-        """
-        Parses and structures DMA/BDMA stream/instance configurations
-        for each peripheral and request ID.
+        """读取 <prefix>.<外设>.<N>[.<属性>] 条目，为每个外设与请求号生成一份结构化配置，
+        存入 dma_configs["<外设>_<N>"]。
+        Read <prefix>.<Periph>.<N>[.<Prop>] entries and build one structured configuration
+        per peripheral and request number, stored in dma_configs["<Periph>_<N>"].
+
+        配置包含请求号、请求目标、DMA 类型、stream 和经 _PROPERTY_MAP 转换的属性；有 Direction
+        时另存完整方向 direction_full。转换失败的属性记录警告后跳过。
+        A configuration holds the request number, the request target, the DMA type, the stream
+        and the properties converted through _PROPERTY_MAP; a Direction property also gives
+        direction_full, the complete direction. A property that fails to convert is logged as
+        a warning and skipped.
         """
         config_map = defaultdict(dict)
         for key, value in self.raw_map.items():
@@ -1076,10 +1378,16 @@ class DMAParser(PeripheralParser):
             self.config.dma_configs[config_key] = structured
 
     def _link_configs(self) -> None:
-        """
-        Links structured DMA/BDMA config objects to their respective peripherals.
-        Marks dma_type for each config, and for each TX/RX config,
-        automatically sets DMA_TX/DMA_RX and their type for buffer generation.
+        """把每份 DMA 配置挂到请求目标对应的外设实例下。
+        Attach each DMA configuration to the peripheral instance its request targets.
+
+        依次在 SPI、I2C、USART、LPUART、ADC、TIM 中查找同名实例，把配置存入其 dma 字典的
+        dma_<方向> 或 dma 键；方向为 tx/rx 时另设 DMA_TX/DMA_RX 为 ENABLE 并记录 DMA 类型，
+        供生成缓冲区使用。
+        The instance is looked up in SPI, I2C, USART, LPUART, ADC and TIM in that order, and
+        the configuration goes into its dma dict under dma_<direction> or dma; a tx/rx
+        direction also sets DMA_TX/DMA_RX to ENABLE and records the DMA type for buffer
+        generation.
         """
         for cfg in self.config.dma_configs.values():
             peripheral_full = cfg["peripheral"]
@@ -1104,9 +1412,25 @@ class DMAParser(PeripheralParser):
 
 
 class ThreadXParser(PeripheralParser):
-    """Handle ThreadX and Azure RTOS-related configurations from .ioc."""
+    """读取 ThreadX（Azure RTOS）的内存池大小、内存分配方式、内核选择和任务栈大小。
+    Reads ThreadX (Azure RTOS) memory pool size, allocation method, core selection and task
+    stack sizes.
+    """
 
     def parse(self, p_type: str) -> None:
+        """读取 ThreadX 条目写入 threadx_config。
+        Read ThreadX entries into threadx_config.
+
+        以 TX_APP_MEM_POOL_SIZE 结尾的 key 为 MemPoolSize；以 AZRTOS_APP_MEM_ALLOCATION_METHOD
+        结尾的 key 为 AllocationMethod（1 为 Static，0 为 Dynamic）；含
+        ThreadXCcRTOSJjThreadXJjCore 的 key（ThreadX Core 组件选择）为布尔值 CorePresent；
+        AZRTOS.ThreadX.<任务>.StackSize 为任务栈大小。大小值带 B 后缀。
+        A key ending in TX_APP_MEM_POOL_SIZE gives MemPoolSize; one ending in
+        AZRTOS_APP_MEM_ALLOCATION_METHOD gives AllocationMethod (1 is Static, 0 Dynamic); a key
+        containing ThreadXCcRTOSJjThreadXJjCore, the ThreadX Core component selection, gives
+        the boolean CorePresent; AZRTOS.ThreadX.<task>.StackSize gives a task stack size. Sizes
+        carry a B suffix.
+        """
         for key, value in self.raw_map.items():
             if key.endswith("TX_APP_MEM_POOL_SIZE"):
                 self.config.threadx_config["MemPoolSize"] = f"{sanitize_numeric(value)}B"
@@ -1134,9 +1458,21 @@ class ThreadXParser(PeripheralParser):
 # Watchdog Parser
 # --------------------------
 class WatchdogParser(PeripheralParser):
-    """Parse IWDG and WWDG configurations."""
+    """读取 IWDG 与 WWDG 实例的启用状态、预分频、重载值、窗口和计数值。
+    Reads IWDG and WWDG instances: enable state, prescaler, reload, window and counter.
+    """
 
     def parse(self, p_type: str) -> None:
+        """读取看门狗条目，数值属性转为数值，Enable 转为布尔值 Enabled。
+        Read watchdog entries; numeric properties become numbers and Enable becomes the
+        boolean Enabled.
+
+        VP_IWDG*_VS_IWDG.Mode 为 IWDG_Activate 时启用对应 IWDG 实例；IWDGx.* 读取 Prescaler、
+        Reload、Window 和 Enable；WWDGx.* 读取 Prescaler、Window、Counter 和 Enable。
+        VP_IWDG*_VS_IWDG.Mode set to IWDG_Activate enables that IWDG instance; IWDGx.* gives
+        Prescaler, Reload, Window and Enable; WWDGx.* gives Prescaler, Window, Counter and
+        Enable.
+        """
         for key, value in self.raw_map.items():
             # IWDG
             if (
@@ -1186,6 +1522,9 @@ class WatchdogParser(PeripheralParser):
                     self.config.peripherals["WWDG"][wwdg_name]["Enabled"] = value == "ENABLE"
 
     def _ensure_wdg_instance(self, wdg_type: str, wdg_name: str) -> None:
+        """wdg_type 类型下没有该实例时创建空字典。
+        Create an empty dict for the instance under wdg_type when it does not exist.
+        """
         if wdg_name not in self.config.peripherals[wdg_type]:
             self.config.peripherals[wdg_type][wdg_name] = {}
 
@@ -1194,9 +1533,16 @@ class WatchdogParser(PeripheralParser):
 # FreeRTOS Parser
 # --------------------------
 class FreeRTOSParser(PeripheralParser):
-    """Handle FreeRTOS-related configurations."""
+    """读取 FreeRTOS 的任务、堆大小和 INCLUDE_ 功能开关。
+    Reads FreeRTOS tasks, heap size and INCLUDE_ feature flags.
+    """
 
     def parse(self, p_type: str) -> None:
+        """读取 FREERTOS.* 条目：Tasks* 为任务定义，key 含 HeapSize 时为堆大小（带 B 后缀），
+        key 含 INCLUDE_ 时为功能开关。
+        Read FREERTOS.* entries: Tasks* holds task definitions, a key containing HeapSize the
+        heap size with a B suffix, and a key containing INCLUDE_ a feature flag.
+        """
         for key, value in self.raw_map.items():
             if not self._ioc_root_startswith(key, "FREERTOS"):
                 continue
@@ -1212,7 +1558,14 @@ class FreeRTOSParser(PeripheralParser):
                 self._process_feature_flag(parts[1], value)
 
     def _process_task_configuration(self, task_data: str) -> None:
-        """Parse FreeRTOS task definitions."""
+        """按逗号拆分任务定义，去掉空项和 NULL；至少五项时记录一个任务。
+        Split a task definition at commas and drop empty and NULL items; with at least five
+        items one task is recorded.
+
+        前五项依次为任务名、优先级、栈大小（带 B 后缀）、入口函数和类型。
+        The first five items are the task name, priority, stack size with a B suffix, entry
+        function and type.
+        """
         elements = [x for x in task_data.split(",") if x and x != "NULL"]
         if len(elements) >= 5:
             task_name = elements[0]
@@ -1224,7 +1577,9 @@ class FreeRTOSParser(PeripheralParser):
             }
 
     def _process_feature_flag(self, feature: str, state: str) -> None:
-        """Track enabled FreeRTOS features."""
+        """记录一个 FreeRTOS 功能开关，state 为 ENABLE 时为 True。
+        Record one FreeRTOS feature flag; True when state is ENABLE.
+        """
         self.config.freertos_config["Features"][feature] = state == "ENABLE"
 
 
@@ -1232,7 +1587,16 @@ class FreeRTOSParser(PeripheralParser):
 # Core Parsing Workflow
 # --------------------------
 def parse_ioc_file(ioc_path: str) -> dict[str, Any] | None:
-    """Orchestrate the parsing of an .ioc file through registered parsers."""
+    """解析一个 .ioc 文件，返回清理后的配置结构；读取或解析失败时记录错误并返回 None。
+    Parse one .ioc file and return the cleaned configuration; a read or parse failure is
+    logged as an error and gives None.
+
+    依次读取时基（NVIC.TimeBaseIP、NVIC.TimeBase）和 GPIO，运行各外设解析器，最后按 DMA
+    请求设置对应外设的 DMA 开关。
+    The timebase (NVIC.TimeBaseIP, NVIC.TimeBase) and GPIO are read first, then each
+    peripheral parser runs, and finally the DMA flags of the peripherals named by DMA
+    requests are set.
+    """
     config = ConfigurationManager()
 
     try:
@@ -1288,7 +1652,13 @@ def parse_ioc_file(ioc_path: str) -> dict[str, Any] | None:
 
 
 def _extract_key_value_pairs(file_handler: TextIO) -> dict[str, str]:
-    """Robust key-value extraction with line validation."""
+    """把 .ioc 文本读成 key=value 表，key 和值去掉首尾空白。
+    Read .ioc text into a key=value map, with keys and values stripped.
+
+    跳过空行和以 # 开头的行；key 中转义的 # 连同反斜杠一起去掉；没有 = 的行记录警告后跳过。
+    Empty lines and lines starting with # are skipped; an escaped # in a key is removed
+    together with its backslash; a line without = is logged as a warning and skipped.
+    """
     raw_map = {}
     for line_num, line in enumerate(file_handler, 1):
         line = line.strip()
@@ -1305,7 +1675,13 @@ def _extract_key_value_pairs(file_handler: TextIO) -> dict[str, str]:
 
 
 def _link_dma_requests(config: ConfigurationManager) -> None:
-    """Associate DMA requests with corresponding peripherals."""
+    """按每个 DMA 请求的目标，把 USART、SPI、ADC、I2C 中同名实例的 DMA_<方向> 设为 ENABLE。
+    For each DMA request target, set DMA_<DIRECTION> to ENABLE on the USART, SPI, ADC and I2C
+    instances of that name.
+
+    请求目标没有方向后缀时设置的字段为 DMA。
+    A request target without a direction suffix sets the field DMA.
+    """
     for peripheral in config.dma_requests.values():
         p_name, direction = PeripheralParser._parse_dma_request_endpoint(peripheral)
         direction_key = f"DMA_{direction.upper()}" if direction != "general" else "DMA"
@@ -1319,7 +1695,13 @@ def _link_dma_requests(config: ConfigurationManager) -> None:
 # Output Generation
 # --------------------------
 def save_to_yaml(data: dict[str, Any], output_path: str = "parsed_ioc.yaml") -> bool:
-    """Serialize configuration data to YAML with error handling."""
+    """把配置写成 YAML 文件，首行为生成文件说明注释，键保持插入顺序；成功时为 True。
+    Write the configuration as a YAML file with a generated-file comment on the first line and
+    keys in insertion order; True on success.
+
+    写入或序列化失败时记录错误并返回 False。
+    A write or serialization failure is logged as an error and gives False.
+    """
     try:
         with open(output_path, "w", encoding="utf-8") as f:
             f.write("# Generated by xr_parse_ioc from the CubeMX .ioc file; do not edit by hand.\n")
@@ -1339,7 +1721,10 @@ def save_to_yaml(data: dict[str, Any], output_path: str = "parsed_ioc.yaml") -> 
 
 
 def print_summary(data: dict[str, Any]) -> None:
-    """Generate human-readable configuration summary."""
+    """向标准输出打印配置摘要：MCU、GPIO 输出/输入/外部中断数量、各外设实例和看门狗。
+    Print a configuration summary to standard output: the MCU, GPIO output/input/external
+    interrupt counts, each peripheral instance and the watchdogs.
+    """
     print("\n===== [Configuration Summary] =====")
 
     # MCU Info
@@ -1375,7 +1760,12 @@ def print_summary(data: dict[str, Any]) -> None:
 
 
 def _format_peripheral_config(p_type: str, config: dict) -> str:
-    """Generate single-line peripheral configuration summary."""
+    """外设实例的一行摘要：TIM 为模式和周期，ADC 为规则转换通道数，DAC 为通道列表，SPI、
+    I2C、USART 为波特率或时钟速度，其他类型为空字符串。
+    A one-line summary of a peripheral instance: mode and period for TIM, the number of
+    regular conversion channels for ADC, the channel list for DAC, the baud rate or clock
+    speed for SPI, I2C and USART, and an empty string for other types.
+    """
     if p_type == "TIM":
         return f"Mode={config.get('Mode')} | Period={config.get('Period')}"
     elif p_type == "ADC":
@@ -1392,11 +1782,19 @@ def _format_peripheral_config(p_type: str, config: dict) -> str:
 # Main Entry Point
 # --------------------------
 def main() -> None:
+    """xr_parse_ioc 命令行入口：检查包版本，解析 -d 目录中唯一的 .ioc 文件，写出 YAML 并打印摘要。
+    Command-line entry of xr_parse_ioc: check the package version, parse the single .ioc file
+    in the -d directory, write the YAML and print a summary.
+
+    输出路径默认为该目录下的 .config.yaml。目录不存在、没有 .ioc 文件或有多个 .ioc 文件时
+    以状态 1 退出。
+    The output defaults to .config.yaml in that directory. A missing directory, no .ioc file
+    or several .ioc files exit with status 1.
+    """
     from libxr.package_info import LibXRPackageInfo
 
     LibXRPackageInfo.check_and_print()
 
-    """Command line interface handler."""
     parser = argparse.ArgumentParser(
         description="STM32CubeMX IOC Configuration Parser v2.0",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,

@@ -1,4 +1,12 @@
 #!/usr/bin/env python3
+"""xr_stm32_toolchain_switch：切换 STM32 CMake 工程默认 preset 的工具链和 starm-clang 的标准库。
+xr_stm32_toolchain_switch: switches the toolchain of the default preset of an STM32 CMake
+project and the standard library of starm-clang.
+
+在工程根目录运行，修改 CMakePresets.json 和 cmake/starm-clang.cmake。
+Run in the project root; it edits CMakePresets.json and cmake/starm-clang.cmake.
+"""
+
 import argparse
 import json
 import logging
@@ -26,8 +34,14 @@ STD_MAP = {
 
 
 def patch_cmakepresets(compiler):
-    """
-    Patch the default toolchain in CMakePresets.json according to the given compiler.
+    """把 CMakePresets.json 中名为 default 的 configure preset 的 toolchainFile 设为 compiler
+    对应的工具链文件，并写回文件。
+    Set toolchainFile of the configure preset named default in CMakePresets.json to the
+    toolchain file of compiler, and write the file back.
+
+    文件不存在、没有 default preset 或 compiler 不是 gcc/clang 时记录错误并以状态 1 退出。
+    A missing file, a missing default preset or a compiler other than gcc/clang logs an error
+    and exits with status 1.
     """
     if not os.path.exists(CMAKE_PRESETS_PATH):
         logging.error(f"{CMAKE_PRESETS_PATH} not found.")
@@ -62,8 +76,13 @@ def patch_cmakepresets(compiler):
 
 
 def patch_clang_stdlib(starm_config):
-    """
-    Patch the starm-clang.cmake file to use the specified STARM_TOOLCHAIN_CONFIG value.
+    """把 cmake/starm-clang.cmake 中第一条 set(STARM_TOOLCHAIN_CONFIG "...") 的值改为
+    starm_config，并以 LF 换行写回文件。
+    Set the value of the first set(STARM_TOOLCHAIN_CONFIG "...") in cmake/starm-clang.cmake
+    to starm_config, and write the file back with LF line endings.
+
+    文件不存在或找不到这条 set 语句时记录错误并以状态 1 退出。
+    A missing file or a missing set statement logs an error and exits with status 1.
     """
     cmake_file = CLANG_TOOLCHAIN
     if not os.path.exists(cmake_file):
@@ -94,6 +113,15 @@ def patch_clang_stdlib(starm_config):
 
 
 def main():
+    """xr_stm32_toolchain_switch 命令行入口。
+    Command-line entry of xr_stm32_toolchain_switch.
+
+    gcc 不接受标准库选项，只切换工具链；clang 必须带 -g、-n、-p 之一，同时切换工具链和
+    STARM_TOOLCHAIN_CONFIG。选项组合错误时打印用法并以状态 1 退出。
+    gcc takes no standard library option and only switches the toolchain; clang needs one of
+    -g, -n and -p and switches both the toolchain and STARM_TOOLCHAIN_CONFIG. A wrong option
+    combination prints the usage and exits with status 1.
+    """
     parser = argparse.ArgumentParser(
         description=(
             "Switch STM32 toolchain and clang standard library.\n"

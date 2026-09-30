@@ -1,5 +1,13 @@
 #!/usr/bin/env python
-"""STM32 Peripheral Code Generator - Core Module (Optimized)"""
+"""xr_gen_code_stm32：由 xr_parse_ioc 输出的 CubeMX 工程 YAML 生成 LibXR 的 app_main 源文件。
+xr_gen_code_stm32: generate the LibXR app_main source file from the CubeMX project YAML that
+xr_parse_ioc writes.
+
+同时生成 app_main.h 和 flash_map.hpp，并更新 libxr_config.yaml；已有 app_main 源文件中 User Code
+区域的内容被保留。
+It also generates app_main.h and flash_map.hpp and updates libxr_config.yaml; the User Code
+bodies of an existing app_main source file are kept.
+"""
 
 import argparse
 import logging
@@ -51,7 +59,10 @@ libxr_config_document = None
 # Configuration Initialization
 # --------------------------
 def initialize_registry(use_xrobot: bool) -> None:
-    """Reset the generated-device registry; only XRobot output registers devices."""
+    """清空生成对象的登记表；use_xrobot 为真时先登记 power_manager（PowerManager）。
+    Reset the registry of generated objects; with use_xrobot, power_manager (PowerManager) is
+    registered first.
+    """
     registered_devices.clear()
     registered_origins.clear()
     if use_xrobot:
@@ -62,6 +73,9 @@ def initialize_registry(use_xrobot: bool) -> None:
 # CLI Arguments
 # --------------------------
 def parse_arguments():
+    """解析命令行参数：-i/--input、-o/--output、--xrobot 和 --libxr-config。
+    Parse the command-line arguments -i/--input, -o/--output, --xrobot and --libxr-config.
+    """
     parser = argparse.ArgumentParser(
         description="Generate STM32 Peripheral Initialization Code",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
@@ -79,7 +93,18 @@ def parse_arguments():
 # Device Registration
 # --------------------------
 def _register_device(name: str, dev_type: str, origin: str = ""):
-    """Record one generated object; one name has exactly one registered type."""
+    """登记一个生成的对象及其 LibXR 接口类型；每个名字只登记一种类型。
+    Record one generated object with its LibXR interface type; one name has exactly one
+    registered type.
+
+    Args:
+        origin: 冲突信息中对该对象的描述；为空时为 "<dev_type> object"。
+            How collision messages describe the object; "<dev_type> object" when empty.
+
+    Raises:
+        ValueError: 该名字已经登记。
+            The name is already registered.
+    """
     origin = origin or f"{dev_type} object"
     if name in registered_devices:
         raise ValueError(
@@ -92,10 +117,18 @@ def _register_device(name: str, dev_type: str, origin: str = ""):
 
 
 def _generate_fdcan_can_alias(instance: str) -> str:
-    """Expose an FDCAN object under the classic CAN interface as well.
+    """让 FDCAN 对象也能通过经典 CAN 接口使用，返回声明引用 canN 的 C++ 行。
+    Expose an FDCAN object under the classic CAN interface as well and return the C++ line
+    that declares the reference canN.
 
+    fdcanN 仍登记为 LibXR::FDCAN；引用 canN 以 LibXR::CAN 指向同一对象，因此每个登记的名字只有
+    一种类型。
     fdcanN stays registered as LibXR::FDCAN; the reference canN names the
     same object as LibXR::CAN, so each registered name keeps one type.
+
+    Raises:
+        ValueError: 实例名不是 fdcan<N> 形式，或 canN 已经登记。
+            The instance name is not of the form fdcan<N>, or canN is already registered.
     """
     fdcan_name = instance.lower()
     match = re.fullmatch(r"fdcan(\d+)", fdcan_name)
@@ -110,7 +143,14 @@ def _generate_fdcan_can_alias(instance: str) -> str:
 # Peripheral Instance Generation
 # --------------------------
 def generate_peripheral_instances(project_data: dict, use_xrobot: bool = False) -> str:
-    """Generate initialization code for all peripherals with topological sorting."""
+    """生成所有外设对象的构造代码，按 ADC、PWM、其他外设的顺序拼接。
+    Generate the construction code of all peripheral objects, joined in the order ADC, PWM,
+    then the other peripherals.
+
+    启用 XRobot 时每个 FDCAN 对象另有一个 LibXR::CAN 引用；没有生成方法的外设类型不产生代码。
+    With XRobot each FDCAN object also gets a LibXR::CAN reference; peripheral types without a
+    generator method produce no code.
+    """
     code_sections = {"adc": [], "pwm": [], "main": []}
 
     for p_type, instances in project_data.get("Peripherals", {}).items():
@@ -135,7 +175,18 @@ def generate_peripheral_instances(project_data: dict, use_xrobot: bool = False) 
 # Configuration Loading
 # --------------------------
 def load_configuration(file_path: str, use_xrobot: bool) -> dict:
-    """Load and validate project YAML configuration with enhanced error reporting."""
+    """读取工程 YAML，检查必需的 Mcu、GPIO 和 Peripherals 段，并返回其内容。
+    Read the project YAML, check the required Mcu, GPIO and Peripherals sections and return
+    its content.
+
+    同时按 FreeRTOS 或 ThreadX 段设置 libxr_settings 的 SYSTEM，把 software_timer 和
+    terminal_source 写入 libxr_settings，并删除空的外设条目。文件不存在、YAML 语法错误或缺少
+    必需段时记录错误并以状态 1 退出。
+    It also sets SYSTEM in libxr_settings from the FreeRTOS or ThreadX section, copies
+    software_timer and terminal_source into libxr_settings, and deletes empty peripheral
+    entries. A missing file, a YAML syntax error or a missing section logs an error and exits
+    with status 1.
+    """
     try:
         with open(file_path, encoding="utf-8") as f:
             config = yaml.safe_load(f)
@@ -185,10 +236,21 @@ def load_configuration(file_path: str, use_xrobot: bool) -> dict:
 # Library Configuration
 # --------------------------
 def load_libxr_config(output_dir: str, config_source: str) -> None:
-    """Load libxr_config.yaml (or --libxr-config) into the effective settings.
+    """把 output_dir 中的 libxr_config.yaml（或 --libxr-config 给出的路径或 URL）合并进生效的设置。
+    Merge libxr_config.yaml in output_dir, or the path or URL given by --libxr-config, into the
+    effective settings.
 
-    A configuration that exists but cannot be read or parsed stops
-    generation; defaults never silently replace it.
+    文件中的 SYSTEM 被忽略，它由工程 YAML 决定。没有配置文件时保留默认设置并使用新的空文档。
+    已存在但无法读取或解析的配置会中止生成，而不是换用默认值。
+    SYSTEM from the file is ignored because the project YAML decides it. Without a
+    configuration file the defaults stay and a new, empty document is used. A configuration
+    that exists but cannot be read or parsed stops generation instead of falling back to the
+    defaults.
+
+    Raises:
+        LibXRConfigError: 配置无法下载、找到、读取或解析，或其值的类型与默认设置冲突。
+            The configuration cannot be downloaded, located, read or parsed, or the type of a
+            value conflicts with the default settings.
     """
     global libxr_settings, libxr_config_document
     config_path = os.path.join(output_dir, "libxr_config.yaml")
@@ -222,7 +284,13 @@ def load_libxr_config(output_dir: str, config_source: str) -> None:
 
 
 def _report_dropped_device_aliases(aliases) -> None:
-    """Name every alias of the removed device_aliases table for migration."""
+    """以警告列出已移除的 device_aliases 表中的每个别名（别名 -> 设备），便于迁移配置。
+    Log a warning that names every alias of the removed device_aliases table (alias -> device),
+    for migrating configurations.
+
+    表中没有可识别的别名时列出表的 repr。
+    When the table holds no recognizable alias, its repr is listed instead.
+    """
     pairs = []
     if isinstance(aliases, dict):
         for device, entry in aliases.items():
@@ -241,10 +309,14 @@ def _report_dropped_device_aliases(aliases) -> None:
 
 
 def save_libxr_config(config_path: str) -> None:
-    """Write the effective settings, dropping empty sections and legacy keys.
+    """把生效的设置写入 config_path，去掉空的段和旧的 device_aliases 表。
+    Write the effective settings to config_path, dropping empty sections and the legacy
+    device_aliases table.
 
+    生成器不解释的键（例如 ``generator`` 版本固定项）和注释被保留；device_aliases 中的别名以警告
+    列出。
     Keys the generator does not interpret (such as the ``generator`` pin) and
-    comments are kept.
+    comments are kept; the aliases of device_aliases are listed in a warning.
     """
     # device_aliases was the legacy runtime alias table; it is no longer used.
     if "device_aliases" in libxr_settings:
@@ -262,7 +334,14 @@ def save_libxr_config(config_path: str) -> None:
 
 
 def _deep_merge(base: dict, update: dict) -> dict:
-    """Recursively merge nested dictionaries with type checking."""
+    """把 update 递归合并进 base 并返回 base；映射逐键合并，其他值直接覆盖。
+    Merge update into base recursively and return base; mappings are merged key by key and
+    other values overwrite.
+
+    Raises:
+        LibXRConfigError: update 中的映射对应 base 中的非映射值。
+            A mapping in update meets a non-mapping value in base.
+    """
     for key, value in update.items():
         if isinstance(value, dict):
             node = base.setdefault(key, {})
@@ -281,6 +360,10 @@ def _deep_merge(base: dict, update: dict) -> dict:
 # GPIO Configuration
 # --------------------------
 def _sanitize_cpp_identifier(name: str) -> str:
+    """把名字转换为 C++ 标识符：非单词字符替换为下划线，以数字开头时在前面加下划线。
+    Turn a name into a C++ identifier: non-word characters become underscores, and a leading
+    digit gets an underscore in front.
+    """
     return re.sub(r"\W|^(?=\d)", "_", name)
 
 
@@ -395,16 +478,29 @@ _HAL_MACROS = frozenset({"NULL", "UNUSED", "UID_BASE"})
 
 
 def _gpio_object_name(port: str, gpio_data: dict) -> str:
+    """GPIO 对象的 C++ 名字：CubeMX 标签，没有标签时为 GPIO 段中的引脚键，经
+    _sanitize_cpp_identifier() 处理。
+    The C++ name of a GPIO object: its CubeMX label, or its pin key in the GPIO section without
+    a label, passed through _sanitize_cpp_identifier().
+    """
     return _sanitize_cpp_identifier(gpio_data.get("Label", "") or port)
 
 
 def check_gpio_names(project_data: dict, generated_code: str, use_xrobot: bool) -> None:
-    """Reject GPIO object names that the generated app_main cannot declare.
+    """拒绝生成的 app_main 无法声明的 GPIO 对象名。
+    Reject GPIO object names that the generated app_main cannot declare.
 
+    GPIO 对象以其 CubeMX 标签命名。标签若是 C++ 关键字或保留标识符、CMSIS/HAL 宏或 IRQ 名、
+    CubeMX 由其他标签派生的宏，或生成代码中用到的其他名字，就会编译失败或在 app_main 中静默遮蔽
+    该名字。
     A GPIO object is named after its CubeMX label. A label that is a C++
-    keyword or reserved identifier, a CMSIS/HAL macro, a macro CubeMX derives
+    keyword or reserved identifier, a CMSIS/HAL macro or IRQ name, a macro CubeMX derives
     from another label, or any other name the generated code uses would fail
     to compile or silently shadow that name inside app_main.
+
+    Raises:
+        ValueError: 至少一个 GPIO 名字有上述问题；信息列出全部问题。
+            At least one GPIO name has one of these problems; the message lists all of them.
     """
     gpio = project_data.get("GPIO", {})
     label_macros = {}
@@ -437,6 +533,14 @@ def check_gpio_names(project_data: dict, generated_code: str, use_xrobot: bool) 
 
 
 def generate_gpio_alias(port: str, gpio_data: dict, project_data: dict) -> str:
+    """生成一个 GPIO 对象的声明符 ``name(port, pin[, irq])`` 并登记该对象。
+    Generate the declarator ``name(port, pin[, irq])`` of one GPIO object and register the
+    object.
+
+    有标签时使用 CubeMX 的 <label>_GPIO_Port 和 <label>_Pin 宏；配置为 EXTI 的引脚另带中断号。
+    With a label the CubeMX macros <label>_GPIO_Port and <label>_Pin are used; a pin configured
+    for EXTI also gets its IRQ number.
+    """
     base_port = port.split("-")[0]
     port_define = f"GPIO{base_port[1]}"
     pin_num = int(base_port[2:])
@@ -478,6 +582,18 @@ _EXTI_PER_LINE_FAMILIES = frozenset(
 def _get_exti_irq(
     pin_num: int, port: str, is_exti: bool, mcu_family: str, mcu_type: str = ""
 ) -> str:
+    """按 MCU 系列返回引脚的 EXTI 中断号名字；不是 EXTI 引脚时为空字符串。
+    The EXTI IRQ name of a pin for its MCU family; an empty string when the pin is not an EXTI
+    pin.
+
+    STM32WB0 的 PA/PB 引脚使用 GPIOA_IRQn/GPIOB_IRQn；共享向量的系列使用 EXTI0_1_IRQn、
+    EXTI2_3_IRQn 和 EXTI4_15_IRQn；每线一个向量的系列以及 STM32H7R/S 使用 EXTI<n>_IRQn；其余系列
+    的 0~4 线使用 EXTI<n>_IRQn，5~9 线和 10~15 线分别使用 EXTI9_5_IRQn 和 EXTI15_10_IRQn。
+    STM32WB0 PA/PB pins use GPIOA_IRQn/GPIOB_IRQn; the shared-vector families use EXTI0_1_IRQn,
+    EXTI2_3_IRQn and EXTI4_15_IRQn; the per-line families and STM32H7R/S use EXTI<n>_IRQn; the
+    other families use EXTI<n>_IRQn for lines 0 to 4, EXTI9_5_IRQn for lines 5 to 9 and
+    EXTI15_10_IRQn for lines 10 to 15.
+    """
     if not is_exti:
         return ""
 
@@ -515,14 +631,28 @@ DMA_DEFAULT_SIZES = {
 
 
 def generate_dma_resources(project_data: dict) -> str:
-    """
-    Generate DMA buffer definitions for all relevant peripherals,
-    using per-buffer 'dma_section' config.
-    - Reads libxr_settings['SPI'/'USART'/...][instance]['dma_section']
-    - If section is empty, no attribute is added; if not, __attribute__((section("..."))) is added
-    Returns generated C code as string.
-    Cache-equipped targets use padded storage with the original array extent.
-    Both ends are isolated without changing DMA lengths or endpoint capacities.
+    """生成外设 DMA 缓冲区的定义，返回 C++ 代码文本；没有缓冲区时返回一行说明注释。
+    Generate the definitions of the peripheral DMA buffers and return them as C++ code; without
+    any buffer a one-line comment says so.
+
+    SPI/USART/UART/LPUART 为开启 DMA 的方向各生成一个缓冲区；I2C 和 ADC 各生成一个缓冲区，ADC 的
+    元素数为通道数乘以每通道元素数；已启用的 USB 实例生成端点缓冲区。缓冲区大小和 dma_section 取自
+    libxr_settings，缺少时写入默认值；dma_section 非空时声明带 __attribute__((section("...")))。
+    SPI/USART/UART/LPUART get one buffer per direction with DMA enabled; I2C and ADC get one
+    buffer each, the ADC one holding the channel count times the elements per channel; enabled
+    USB instances get endpoint buffers. Buffer sizes and dma_section come from libxr_settings,
+    which receives the defaults for missing values; a non-empty dma_section adds
+    __attribute__((section("..."))) to the declarations.
+
+    有数据 cache 的目标使用按 cache 行对齐并补齐的存储，缓冲区两端不与其他数据共用 cache 行；数组
+    长度不变，因此 DMA 长度和端点容量不变。
+    On targets with a data cache the storage is aligned and padded to the cache line, so no
+    other data shares a cache line with either end of a buffer; the array extent stays, so DMA
+    lengths and endpoint capacities do not change.
+
+    Raises:
+        ValueError: 已启用的 USB 实例设置了 cdc_count。
+            An enabled USB instance sets cdc_count.
     """
     dma_code = []
     # Default section settings
@@ -532,16 +662,29 @@ def generate_dma_resources(project_data: dict) -> str:
     }
 
     def get_buf_section(user_section: str, dma_type: str) -> str:
-        """
-        Return buffer section name:
-        - If user config is set, use it.
-        - Otherwise, use default by dma_type.
+        """缓冲区的段名：有用户设置时用它，否则用 dma_type 的默认段（DMA 和 BDMA 均为空）。
+        The section name of a buffer: the user setting when there is one, otherwise the default
+        section of dma_type (empty for both DMA and BDMA).
         """
         if user_section:  # User configuration takes priority
             return user_section
         return DEFAULT_SECTIONS.get(dma_type, "")
 
     def buffer_declaration(data_type: str, name: str, count, section: str) -> str:
+        """生成一个 DMA 缓冲区的声明，按 __DCACHE_PRESENT 分为两种写法。
+        Generate the declaration of one DMA buffer in two forms selected by __DCACHE_PRESENT.
+
+        有数据 cache 时数组放在按 XR_DCACHE_LINE_SIZE 对齐的结构体 <name>_storage 中，并以
+        constexpr 引用 <name> 指向该数组；否则为 4 字节对齐的静态数组 <name>。两种写法的数组长度
+        都是 count。
+        With a data cache the array sits in the struct <name>_storage aligned to
+        XR_DCACHE_LINE_SIZE, and the constexpr reference <name> refers to it; otherwise <name>
+        is a static array aligned to 4 bytes. Both forms have count elements.
+
+        Args:
+            section: 加在声明上的段属性文本，可为空字符串。
+                The section attribute text added to the declaration; may be empty.
+        """
         # Align the storage type, not only its object: sizeof then includes tail
         # padding. Keep the array extent so RawData and split buffers are unchanged.
         return "\n".join(
@@ -659,6 +802,10 @@ def generate_dma_resources(project_data: dict) -> str:
                 usb_cfg = libxr_settings.setdefault("USB", {}).setdefault(inst_lower, {})
 
                 def _as_int(v, d):
+                    """按 Python 整数字面量规则（含 0x 等前缀）把 v 转为 int；失败时返回 d。
+                    Convert v to an int by Python integer literal rules, prefixes such as 0x
+                    included; d when that fails.
+                    """
                     try:
                         return int(str(v), 0)
                     except Exception:
@@ -751,8 +898,24 @@ def generate_dma_resources(project_data: dict) -> str:
 # Peripheral Generation
 # --------------------------
 class PeripheralFactory:
+    """按外设类型生成 LibXR 外设对象的构造代码，并登记生成的对象。
+    Generate the construction code of LibXR peripheral objects by peripheral type and register
+    the generated objects.
+
+    各生成方法返回 (段, 代码)：段为 "adc"、"pwm" 或 "main"，决定代码在 app_main 中的位置；
+    ("", "") 表示不生成代码。缺少的设置以默认值写入 libxr_settings。
+    Each generator method returns (section, code): the section, "adc", "pwm" or "main", decides
+    where the code goes in app_main, and ("", "") means no code. Missing settings are written
+    to libxr_settings with their defaults.
+    """
+
     @staticmethod
     def create(p_type: str, instance: str, config: dict) -> str:
+        """调用 p_type 对应的生成方法并返回 (段, 代码)；类型名不区分大小写，没有对应方法时
+        为 ("", "")。
+        Call the generator method of p_type, case-insensitively, and return (section, code);
+        ("", "") when the type has none.
+        """
         handler_map = {
             "ADC": PeripheralFactory._generate_adc,
             "DAC": PeripheralFactory._generate_dac,
@@ -772,7 +935,14 @@ class PeripheralFactory:
 
     @staticmethod
     def _generate_adc(instance: str, config: dict) -> tuple:
-        """Generate ADC initialization with configurable queue size."""
+        """生成 STM32ADC 对象和每个通道的引用；DMA 开启时用 RegularConversions，否则用 Channels。
+        Generate the STM32ADC object and a reference per channel; RegularConversions with DMA
+        enabled, Channels otherwise.
+
+        参考电压取 libxr_settings 中的 vref（默认 3.3）；每个通道引用 <adc>_<channel> 登记为 ADC。
+        The reference voltage is vref from libxr_settings (default 3.3); each channel reference
+        <adc>_<channel> is registered as ADC.
+        """
         conversions = (
             config.get("RegularConversions", [])
             if config.get("DMA") == "ENABLE"
@@ -795,9 +965,15 @@ class PeripheralFactory:
 
     @staticmethod
     def _generate_dac(instance: str, config: dict) -> tuple:
-        """
-        Generate DAC initialization code.
-        Always use variable name as <instance>_<out_name> (e.g., dac1_out2).
+        """为每个 DAC 输出通道生成一个 STM32DAC 对象，名字为 <instance>_<out_name>（如 dac1_out2）。
+        Generate one STM32DAC object per DAC output channel, named <instance>_<out_name>, for
+        example dac1_out2.
+
+        DAC_OUT<n> 写作 DAC_CHANNEL_<n>，名字开头的 dac_dac_ 缩为 dac_。初始电压和参考电压取自
+        libxr_settings（默认 0.0 和 3.3）。没有通道时不生成代码。
+        DAC_OUT<n> is written as DAC_CHANNEL_<n>, and a name starting with dac_dac_ is shortened
+        to dac_. The initial and reference voltages come from libxr_settings (defaults 0.0 and
+        3.3). No channel means no code.
         """
         channels = config.get("Channels", {})
         if not channels:
@@ -821,6 +997,15 @@ class PeripheralFactory:
 
     @staticmethod
     def _generate_uart(instance: str, config: dict) -> tuple:
+        """生成 STM32UART 对象；未开启 DMA 的方向使用空缓冲区 {nullptr, 0}。
+        Generate the STM32UART object; a direction without DMA gets the empty buffer
+        {nullptr, 0}.
+
+        HAL 句柄名中的 usart 写作 uart；发送队列长度取 libxr_settings 中 USART 下的
+        tx_queue_size（默认 5）。
+        The HAL handle name writes usart as uart; the transmit queue length is tx_queue_size
+        under USART in libxr_settings (default 5).
+        """
         tx_dma = config.get("DMA_TX", "DISABLE") == "ENABLE"
         rx_dma = config.get("DMA_RX", "DISABLE") == "ENABLE"
         tx_buf = f"{instance.lower()}_tx_buf" if tx_dma else "{nullptr, 0}"
@@ -838,7 +1023,10 @@ class PeripheralFactory:
 
     @staticmethod
     def _generate_i2c(instance: str, config: dict) -> tuple:
-        """Generate I2C initialization code with dynamic buffer configuration."""
+        """生成使用 <instance>_buf 缓冲区的 STM32I2C 对象；dma_enable_min_size 默认为 3。
+        Generate the STM32I2C object with the <instance>_buf buffer; dma_enable_min_size
+        defaults to 3.
+        """
         i2c_config = libxr_settings["I2C"].setdefault(instance.lower(), {})
         dma_min_size = i2c_config.setdefault("dma_enable_min_size", 3)
         _register_device(f"{instance.lower()}", "I2C")
@@ -849,6 +1037,14 @@ class PeripheralFactory:
 
     @staticmethod
     def _generate_tim(instance: str, config: dict) -> tuple:
+        """为定时器的每个通道生成一个 STM32PWM 对象 pwm_<tim>_ch<n>；没有通道时不生成代码。
+        Generate one STM32PWM object pwm_<tim>_ch<n> per timer channel; no channel means no
+        code.
+
+        互补通道使用去掉末尾 N 的 TIM_CHANNEL_<n>，并传入 true 表示互补输出。
+        A complementary channel uses TIM_CHANNEL_<n> without the trailing N and passes true for
+        the complementary output.
+        """
         channels = config.get("Channels", {})
         if not channels:
             return "", ""
@@ -868,7 +1064,10 @@ class PeripheralFactory:
 
     @staticmethod
     def _generate_canfd(instance: str, config: dict) -> tuple:
-        """Generate CAN FD initialization with configurable queue size."""
+        """生成 STM32CANFD 对象；队列长度取 libxr_settings 中 FDCAN 下的 queue_size（默认 5）。
+        Generate the STM32CANFD object; the queue length is queue_size under FDCAN in
+        libxr_settings (default 5).
+        """
         instance_cfg = libxr_settings["FDCAN"].setdefault(instance, {})
         queue_size = instance_cfg.setdefault("queue_size", 5)
 
@@ -880,7 +1079,12 @@ class PeripheralFactory:
 
     @staticmethod
     def _generate_can(instance: str, config: dict) -> tuple:
-        """Generate classic CAN initialization with queue configuration."""
+        """生成经典 CAN 外设的 STM32CAN 对象。
+        Generate the STM32CAN object of a classic CAN peripheral.
+
+        队列长度取 libxr_settings 中 CAN 下的 queue_size（默认 5）。
+        The queue length is queue_size under CAN in libxr_settings (default 5).
+        """
         instance_cfg = libxr_settings["CAN"].setdefault(instance, {})
         queue_size = instance_cfg.setdefault("queue_size", 5)
 
@@ -892,7 +1096,13 @@ class PeripheralFactory:
 
     @staticmethod
     def _generate_spi(instance: str, config: dict) -> tuple:
-        """Generate SPI initialization with DMA buffer configuration."""
+        """生成 STM32SPI 对象；未开启 DMA 的方向使用空缓冲区 {nullptr, 0}。
+        Generate the STM32SPI object; a direction without DMA gets the empty buffer
+        {nullptr, 0}.
+
+        dma_enable_min_size 取自 libxr_settings 中 SPI 下的设置，默认为 3。
+        dma_enable_min_size comes from the SPI settings in libxr_settings and defaults to 3.
+        """
         tx_enabled = config.get("DMA_TX", "DISABLE") == "ENABLE"
         rx_enabled = config.get("DMA_RX", "DISABLE") == "ENABLE"
 
@@ -911,6 +1121,14 @@ class PeripheralFactory:
 
     @staticmethod
     def _generate_iwdg(instance: str, config: dict) -> tuple:
+        """生成已启用 IWDG 的 STM32Watchdog 对象；未启用时不生成代码。
+        Generate the STM32Watchdog object of an enabled IWDG; a disabled one produces no code.
+
+        超时和喂狗间隔先取 libxr_settings，再取工程 YAML 中的 Configuration，默认为 1000 ms 和
+        250 ms。
+        Timeout and feed interval come from libxr_settings, then from Configuration in the
+        project YAML, and default to 1000 ms and 250 ms.
+        """
         if not config.get("Enabled"):
             return "", ""
         iwdg_config = libxr_settings["IWDG"].setdefault(instance.lower(), {})
@@ -929,10 +1147,23 @@ class PeripheralFactory:
 
     @staticmethod
     def _generate_usb(instance: str, config: dict) -> tuple:
-        """
-        Simple version:
-        - Only writes/updates the final value of libxr_settings['USB'][instance_lower]
-        - Only generates device construction code (references *_buf), does not create any buffer arrays
+        """生成 USB 设备对象及其 CDC 串口，并把最终的 USB 设置写入 libxr_settings。
+        Generate the USB device object with its CDC serial port and write the final USB settings
+        to libxr_settings.
+
+        实例名规范为 USB_FS、USB_HS、USB_OTG_FS 或 USB_OTG_HS，其他名字按 USB_FS 处理。设备对象
+        usb_fs 或 usb_hs 引用 generate_dma_resources() 定义的端点缓冲区，本方法不定义缓冲区。
+        CDC 串口（如 usb_otg_fs_cdc）使用 EP1 收发数据、EP2 发送通知，并登记为 UART。未启用的实例
+        不生成代码。
+        The instance name is normalized to USB_FS, USB_HS, USB_OTG_FS or USB_OTG_HS; other names
+        are treated as USB_FS. The device object, usb_fs or usb_hs, references the endpoint
+        buffers that generate_dma_resources() defines; this method defines no buffer. The CDC
+        serial port, for example usb_otg_fs_cdc, uses EP1 for data and EP2 for notifications
+        and is registered as UART. A disabled instance produces no code.
+
+        Raises:
+            ValueError: 设置了 cdc_count；复合 USB 设备应在 BSP 用户代码中定义。
+                cdc_count is set; a composite USB device belongs in BSP user code.
         """
         cfg_in = config or {}
 
@@ -958,6 +1189,10 @@ class PeripheralFactory:
         inst_cfg = usb_root.setdefault(inst_lower, {})
 
         def _as_int(v, d):
+            """按 Python 整数字面量规则（含 0x 等前缀）把 v 转为 int；失败时返回 d。
+            Convert v to an int by Python integer literal rules, prefixes such as 0x included;
+            d when that fails.
+            """
             try:
                 return int(str(v), 0)  # Support 0x (hex) style
             except Exception:
@@ -1130,7 +1365,11 @@ class PeripheralFactory:
 
 
 def _generate_header_includes(use_xrobot: bool = False) -> str:
-    """Generate essential header inclusions with optional XRobot components."""
+    """生成 app_main 的 #include 行和 ``using namespace LibXR;``；启用 XRobot 时另外 include
+    xrobot_main.hpp。
+    Generate the #include lines of app_main and ``using namespace LibXR;``; with XRobot,
+    xrobot_main.hpp is included as well.
+    """
     headers = [
         '#include "app_main.h"\n',
         '#include "cdc_uart.hpp"',
@@ -1160,7 +1399,15 @@ def _generate_header_includes(use_xrobot: bool = False) -> str:
 
 
 def _generate_extern_declarations(project_data: dict) -> str:
-    """Generate external declarations for HAL handlers with comprehensive checks."""
+    """生成 HAL 句柄的 extern 声明，按字母顺序排列且不重复。
+    Generate the extern declarations of the HAL handles, sorted and without duplicates.
+
+    包括非 SysTick 时基使用的 TIM、LPTIM 或 HRTIM 句柄和每个外设实例的句柄；USB 使用 PCD 句柄，
+    USART/UART/LPUART 使用 UART_HandleTypeDef。
+    They cover the TIM, LPTIM or HRTIM handle of a timebase other than SysTick and the handle
+    of every peripheral instance; USB uses its PCD handle and USART/UART/LPUART use
+    UART_HandleTypeDef.
+    """
     externs = set()
 
     # Timebase source declaration
@@ -1202,7 +1449,14 @@ def _generate_extern_declarations(project_data: dict) -> str:
 
 
 def preserve_user_blocks(existing_code: str, section: int) -> str:
-    """Return one numbered User Code region using the structured C++ parser."""
+    """用结构化 C++ 解析器取出已有代码中编号为 section 的 User Code 区域内容，去掉首尾空白。
+    Return the body of the User Code region numbered section in existing code, parsed with the
+    structured C++ parser and stripped.
+
+    非 1 号区域的非空内容前加两个空格的缩进；没有该区域时返回空字符串。
+    A non-empty body of a region other than 1 gets a two-space indent in front; an absent
+    region gives an empty string.
+    """
     document = CppDocument.parse(existing_code)
     target = str(section)
     for region in document.user_regions():
@@ -1219,16 +1473,31 @@ _PREPROC_DIRECTIVE = re.compile(r"#\s*(\w+)")
 
 
 def _source_line(source: bytes, offset: int) -> int:
+    """source 中字节偏移 offset 所在的行号，从 1 开始。
+    The 1-based line number of byte offset offset in source.
+    """
     return source.count(b"\n", 0, offset) + 1
 
 
 def validate_user_regions(existing_code: str, region_names) -> None:
-    """Refuse a rewrite that would drop code the user placed around markers.
+    """若改写会丢掉用户放在标记附近的代码，则拒绝改写；只含空白的代码直接通过。
+    Refuse a rewrite that would drop code the user placed around markers; code that is only
+    whitespace passes.
 
+    改写只保留生成器自己的 User Code 区域的内容。格式错误、改名、重复、不成对、缺失或位于预处理
+    条件之内的标记会静默丢失代码或改变预处理器保留的内容，因此每个这样的标记都会被报告。
     Only the bodies of the generator's own User Code regions survive a
     rewrite. A marker that is malformed, renamed, duplicated, unpaired,
     missing or inside a preprocessor conditional would silently lose code or
     change what the preprocessor keeps, so every such marker is reported.
+
+    Args:
+        region_names: 生成器输出的 User Code 区域名。
+            The names of the User Code regions the generator emits.
+
+    Raises:
+        ValueError: 标记有问题；信息逐条列出全部问题。
+            A marker has a problem; the message lists every problem.
     """
     if not existing_code.strip():
         return
@@ -1298,10 +1567,20 @@ def validate_user_regions(existing_code: str, region_names) -> None:
 
 
 def _preserve_generated_regions(existing_code: str, generated_code: str) -> str:
-    """Preserve explicit User Code bodies; regenerate format/lint-protected code.
+    """把已有代码中 User Code 区域的内容填回新生成的代码并返回结果；其余代码全部重新生成，包括
+    clang-format 和 NOLINT 保护的代码。
+    Put the User Code bodies of the existing code into the newly generated code and return the
+    result; everything else is regenerated, including code protected by clang-format and NOLINT
+    markers.
 
+    clang-format 和 NOLINT 控制的是工具，不表示生成代码的归属；嵌套在 User Code 中的标记仍属于保留
+    的用户内容。
     clang-format and NOLINT control tooling, not ownership of generated code.
     Markers nested inside User Code remain part of the preserved user body.
+
+    Raises:
+        ValueError: validate_user_regions() 拒绝已有代码中的标记。
+            validate_user_regions() rejects the markers of the existing code.
     """
     previous = CppDocument.parse(existing_code)
     current = CppDocument.parse(generated_code)
@@ -1326,7 +1605,17 @@ def _preserve_generated_regions(existing_code: str, generated_code: str) -> str:
 
 
 def _generate_core_system(project_data: dict) -> str:
-    """Generate core system initialization with timebase configuration."""
+    """生成时基对象、PlatformInit() 调用和 power_manager 对象的代码。
+    Generate the code of the timebase object, the PlatformInit() call and the power_manager
+    object.
+
+    时基来源为 SysTick 时使用 STM32Timebase，否则使用该定时器的 STM32TimerTimebase。FreeRTOS 和
+    ThreadX 下 PlatformInit() 取软件定时器的优先级和栈深度；不支持的 SYSTEM 记录错误并以状态 1
+    退出。
+    SysTick gives STM32Timebase and any other source gives STM32TimerTimebase on that timer.
+    Under FreeRTOS and ThreadX PlatformInit() takes the priority and stack depth of the
+    software timer; an unsupported SYSTEM logs an error and exits with status 1.
+    """
     timebase_cfg = project_data.get("Timebase", {"Source": "SysTick"})
     source = timebase_cfg.get("Source", "SysTick")
 
@@ -1354,7 +1643,10 @@ def _generate_core_system(project_data: dict) -> str:
 
 
 def generate_gpio_config(project_data: dict) -> str:
-    """Generate GPIO initialization code with EXTI support."""
+    """为 GPIO 段中的每个引脚生成一个 STM32GPIO 对象并登记；EXTI 引脚带中断号。
+    Generate one STM32GPIO object per pin of the GPIO section and register it; EXTI pins get
+    their IRQ number.
+    """
     code = "\n  /* GPIO Configuration */\n"
     for port, config in project_data.get("GPIO", {}).items():
         alias = generate_gpio_alias(port, config, project_data)
@@ -1364,6 +1656,15 @@ def generate_gpio_config(project_data: dict) -> str:
 
 # Watchdog
 def configure_watchdog(project_data: dict) -> str:
+    """为每个已启用的 IWDG 生成首次喂狗和周期喂狗的代码；没有已启用的 IWDG 时为空字符串。
+    Generate the first feed and the periodic feeding of every enabled IWDG; an empty string
+    when no IWDG is enabled.
+
+    libxr_settings 中 Watchdog 的 run_as_thread 为真时由独立线程喂狗，否则由软件定时器任务每隔
+    feed_interval_ms（默认 250）喂狗一次。
+    With run_as_thread of Watchdog in libxr_settings a thread of its own feeds the watchdog,
+    otherwise a software timer task feeds it every feed_interval_ms (default 250).
+    """
     code = ""
     watchdog_instances = []
     for name, cfg in project_data.get("Peripherals", {}).get("IWDG", {}).items():
@@ -1398,6 +1699,17 @@ def configure_watchdog(project_data: dict) -> str:
 # Terminal Configuration
 # --------------------------
 def configure_terminal(project_data: dict) -> str:
+    """把 terminal_source 指定的串口设为标准输入输出，并生成 RamFS、Terminal 对象及运行终端的代码。
+    Make the UART named by terminal_source the standard I/O and generate the RamFS and Terminal
+    objects and the code that runs the terminal.
+
+    terminal_source 为空时只输出注释行；它未登记为 UART 时记录警告，不初始化终端。Terminal 的
+    run_as_thread 为真时终端运行于独立线程，否则由软件定时器任务每 10 ms 运行一次。
+    With an empty terminal_source only the comment line is produced; when it is not registered
+    as UART a warning is logged and the terminal is not initialized. With run_as_thread of
+    Terminal the terminal runs in a thread of its own, otherwise in a software timer task every
+    10 ms.
+    """
     code = "  /* Terminal Configuration */\n"
     terminal_source = libxr_settings.get("terminal_source", "").lower()
 
@@ -1456,10 +1768,18 @@ def configure_terminal(project_data: dict) -> str:
 # XRobot Integration
 # --------------------------
 def generate_xrobot_registrations() -> str:
-    """Expose named BSP objects to the static entry without a runtime container.
+    """为每个登记的对象生成一行 XR_REGISTER，使静态入口无需运行时容器即可按名字取得 BSP 对象。
+    Generate one XR_REGISTER line per registered object, exposing the named BSP objects to the
+    static entry without a runtime container.
 
-    Every generated device object is registered under its own C++ name; the
-    YAML configuration selects hardware by these names.
+    每个生成的设备对象以自己的 C++ 名字登记，类型缺少 LibXR:: 前缀时补上；YAML 配置按这些名字
+    选择硬件。
+    Every generated device object is registered under its own C++ name, with LibXR:: added to
+    a type that lacks it; the YAML configuration selects hardware by these names.
+
+    Raises:
+        ValueError: 名字不是合法的 C++ 标识符，或缺少类型。
+            A name is not a valid C++ identifier, or its type is missing.
     """
     lines = []
     for name, cpp_type in registered_devices.items():
@@ -1477,10 +1797,18 @@ def generate_xrobot_registrations() -> str:
 # Main Generator
 # --------------------------
 def reject_user_xrobot_main(existing_code: str) -> None:
-    """XROBOT_MAIN() belongs to the generator; a User Code copy is a leftover.
+    """拒绝在 User Code 区域中调用 XROBOT_MAIN() 的已有代码；该调用属于生成器，区域中的副本是遗留。
+    Reject existing code that calls XROBOT_MAIN() inside a User Code region; the call belongs
+    to the generator, and a User Code copy is a leftover.
 
+    旧版生成器把该调用作为 User Code 3 的默认内容。保留这份副本会产生第二个入口调用，因此由用户
+    删除。
     Older generators emitted the call as the default body of User Code 3.
     Keeping that copy would leave a second entry call, so the user deletes it.
+
+    Raises:
+        ValueError: 某个 User Code 区域调用了 XROBOT_MAIN()。
+            A User Code region calls XROBOT_MAIN().
     """
     if not existing_code.strip():
         return
@@ -1504,6 +1832,21 @@ APP_MAIN_NOTICE = (
 
 
 def generate_full_code(project_data: dict, use_xrobot: bool, existing_code: str) -> str:
+    """生成 app_main 源文件的完整内容，并填回已有代码中 User Code 区域的内容。
+    Generate the full content of the app_main source file and put back the User Code bodies of
+    the existing code.
+
+    启用 XRobot 时为每个生成的对象输出 XR_REGISTER，并在 User Code 3 之后调用 XROBOT_MAIN()；
+    否则 User Code 3 的默认内容是一个无限休眠的循环。
+    With XRobot every generated object gets an XR_REGISTER line and XROBOT_MAIN() is called
+    after User Code 3; otherwise the default body of User Code 3 is a loop that sleeps forever.
+
+    Raises:
+        ValueError: 生成的对象名冲突，或 GPIO 名字、User Code 标记、遗留的 XROBOT_MAIN() 调用
+            不合要求。
+            Generated object names collide, or a GPIO name, a User Code marker or a leftover
+            XROBOT_MAIN() call is rejected.
+    """
     if use_xrobot:
         reject_user_xrobot_main(existing_code)
     user_code_def_3 = "" if use_xrobot else "  while(true) {\n    Thread::Sleep(UINT32_MAX);\n  }\n"
@@ -1543,7 +1886,10 @@ def generate_full_code(project_data: dict, use_xrobot: bool, existing_code: str)
 
 
 def generate_app_main_header(output_dir: str) -> None:
-    """Generate app_main.h header file."""
+    """在 output_dir 中生成声明 app_main() 的 app_main.h；内容相同时不写文件。
+    Generate app_main.h, which declares app_main(), in output_dir; an identical file is not
+    rewritten.
+    """
     header_path = os.path.join(output_dir, "app_main.h")
     content = (
         GENERATED_NOTICE
@@ -1571,12 +1917,14 @@ void app_main(void);
 
 
 def generate_flash_map_cpp(flash_info: dict) -> str:
-    """
-    Convert flash_info dictionary to a C++ constexpr struct array.
+    """把 Flash 布局字典转换为 C++ 代码：constexpr 数组 FLASH_SECTORS 和扇区数 FLASH_SECTOR_NUMBER。
+    Convert a Flash layout dictionary into C++ code: the constexpr array FLASH_SECTORS and the
+    sector count FLASH_SECTOR_NUMBER.
 
-    :param flash_info: Output from flash_info_to_dict
-
-    :return: C++ code as a string
+    Args:
+        flash_info: flash_info_to_dict() 的输出；每个扇区有十六进制的 address 和 size_kb。
+            The output of flash_info_to_dict(); each sector has a hexadecimal address and
+            size_kb.
     """
     lines = [
         '#include "stm32_flash.hpp"',
@@ -1597,13 +1945,14 @@ def generate_flash_map_cpp(flash_info: dict) -> str:
 
 
 def inject_flash_layout(project_data: dict, output_dir: str) -> None:
-    """
-    Automatically generate FlashLayout from project_data['Mcu']['Type']
-    and inject it into libxr_settings. Also generates flash_map.hpp.
+    """按 project_data['Mcu']['Type'] 生成 Flash 布局，存入 libxr_settings 的 FlashLayout，并在
+    output_dir 中生成 flash_map.hpp。
+    Generate the Flash layout of project_data['Mcu']['Type'], store it as FlashLayout in
+    libxr_settings, and generate flash_map.hpp in output_dir.
 
-    :param project_data: Project configuration containing MCU type
-
-    :param output_dir: Output directory for generated flash_map.hpp
+    缺少 MCU 型号或生成失败时只记录警告，生成继续进行；output_dir 为空时不写 flash_map.hpp。
+    A missing MCU type or a failure only logs a warning and generation goes on; an empty
+    output_dir writes no flash_map.hpp.
     """
     try:
         from libxr.stm32_flash_generator import flash_info_to_dict, layout_flash
@@ -1638,6 +1987,15 @@ def inject_flash_layout(project_data: dict, output_dir: str) -> None:
 
 
 def main():
+    """命令行入口：生成 -o 指定的 app_main 源文件，以及同一目录中的 flash_map.hpp、
+    libxr_config.yaml 和 app_main.h。
+    Command-line entry: generate the app_main source file named by -o, and flash_map.hpp,
+    libxr_config.yaml and app_main.h in the same directory.
+
+    已有输出文件中 User Code 区域的内容被保留；出错时记录错误并以状态 1 退出。
+    The User Code bodies of an existing output file are kept; an error is logged and exits
+    with status 1.
+    """
     from libxr.package_info import LibXRPackageInfo
 
     LibXRPackageInfo.check_and_print()

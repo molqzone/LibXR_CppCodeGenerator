@@ -1,4 +1,7 @@
-# src/libxr/libxr_package_info.py
+"""libxr pip 包的版本自检：记录本地版本，PyPI 上有更新版本时提示升级。
+Version self-check of the libxr pip package: log the local version and suggest an upgrade
+when PyPI has a newer one.
+"""
 
 import logging
 
@@ -6,16 +9,18 @@ logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 
 
 class LibXRPackageInfo:
-    """
-    libxr pip package self-check utility:
-    - Prints local version
-    - Checks for new remote version and suggests upgrading
+    """libxr 包的版本信息与更新检查，各命令行工具启动时调用。
+    Version information and update check of the libxr package, called by the command-line
+    tools at start-up.
     """
 
     PKGNAME = "libxr"
 
     @classmethod
     def get_local_version(cls):
+        """已安装的 libxr 版本；包未安装时为 None。
+        The installed libxr version; None when the package is not installed.
+        """
         try:
             from importlib.metadata import PackageNotFoundError, version
         except ImportError:
@@ -27,6 +32,13 @@ class LibXRPackageInfo:
 
     @classmethod
     def get_remote_version(cls):
+        """PyPI 上 libxr 的最新版本。
+        The latest libxr version on PyPI.
+
+        没有安装 requests、请求出错、3 秒超时或状态码不是 200 时为 None。
+        None when requests is not installed, or the request fails, times out after 3 seconds
+        or returns a status other than 200.
+        """
         try:
             import requests
         except ImportError:
@@ -41,6 +53,14 @@ class LibXRPackageInfo:
 
     @classmethod
     def check_and_print(cls):
+        """记录本地版本（未知时为警告）；PyPI 版本更新时以警告给出新版本和升级命令。
+        Log the local version, as a warning when it is unknown; when PyPI has a newer version,
+        log warnings with that version and the upgrade command.
+
+        没有 packaging 或版本号无法比较时，两个版本不同即提示。
+        Without packaging, or when the versions cannot be compared, any difference between
+        them triggers the hint.
+        """
         local_ver = cls.get_local_version()
         remote_ver = cls.get_remote_version()
         if local_ver:

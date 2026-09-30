@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Smoke tests for the standalone STM32CubeMX runner."""
+"""cubemx_generator 的冒烟测试：用 Python 写的假 STM32CubeMX 检查命令组装、成功生成、缺少输出、
+非零退出码和超时。
+Smoke tests for cubemx_generator: a fake STM32CubeMX written in Python checks command building,
+a successful generation, missing output, a non-zero exit code and a timeout.
+"""
 
 from __future__ import annotations
 
@@ -86,6 +90,10 @@ if __name__ == "__main__":
 
 @contextlib.contextmanager
 def patched_env(**values: str) -> Iterator[None]:
+    """在 with 块内临时设置环境变量，值为空字符串时删除该变量；退出时恢复原值。
+    Set environment variables for the with block, removing those whose value is an empty string,
+    and restore the old values on exit.
+    """
     old_values = {key: os.environ.get(key) for key in values}
     try:
         for key, value in values.items():
@@ -103,6 +111,18 @@ def patched_env(**values: str) -> Iterator[None]:
 
 
 def write_fake_cubemx(tmpdir: Path) -> Path:
+    """在 tmpdir 中写入假的 CubeMX 脚本 fake_cubemx.py（shebang 为当前解释器），非 Windows 上
+    加执行权限，返回其路径。
+    Write the fake CubeMX script fake_cubemx.py into tmpdir with the current interpreter as its
+    shebang, make it executable outside Windows, and return its path.
+
+    假 CubeMX 按环境变量 FAKE_CUBEMX_MODE 行为：ok（默认）为 project generate 脚本创建 Core/Inc
+    和 Drivers，fail 以 23 退出，no-output 什么都不生成，timeout 启动一个持续写心跳文件的子进程后
+    等待。
+    The fake CubeMX acts on FAKE_CUBEMX_MODE: ok, the default, creates Core/Inc and Drivers for a
+    project generate script, fail exits with 23, no-output creates nothing, and timeout starts a
+    child that keeps writing a heartbeat file, then waits.
+    """
     fake = tmpdir / "fake_cubemx.py"
     with fake.open("w", encoding="utf-8", newline="\n") as fake_file:
         fake_file.write(f"#!{sys.executable}\n" + textwrap.dedent(FAKE_CUBEMX).lstrip())
@@ -112,15 +132,27 @@ def write_fake_cubemx(tmpdir: Path) -> Path:
 
 
 def write_ioc(project_dir: Path) -> None:
+    """在工程目录中写入最小的 demo.ioc。
+    Write a minimal demo.ioc into the project directory.
+    """
     (project_dir / "demo.ioc").write_text("ProjectManager.ProjectName=demo\n", encoding="utf-8")
 
 
 def assert_contains(haystack: str, needle: str) -> None:
+    """haystack 不含 needle 时抛出 AssertionError。
+    Raise AssertionError when needle is not in haystack.
+    """
     if needle not in haystack:
         raise AssertionError(f"expected {needle!r} in {haystack!r}")
 
 
 def run_command_builder_smoke(tmpdir: Path, fake_cubemx: Path) -> None:
+    """检查 build_cubemx_command：auto 模式下可执行文件直接启动、.jar 经 java -jar 启动，java 模式
+    拒绝非 .jar 路径，direct 模式下 .py 用当前解释器启动并附加 -s。
+    Check build_cubemx_command: in auto mode an executable starts directly and a .jar through
+    java -jar, java mode rejects a path that is not a .jar, and in direct mode a .py starts with
+    the current interpreter and gets -s.
+    """
     script_path = str(tmpdir / "cubemx script.txt")
     exe_path = str(tmpdir / "STM32CubeMX.exe")
     jar_path = str(tmpdir / "STM32CubeMX.jar")
@@ -149,6 +181,10 @@ def run_command_builder_smoke(tmpdir: Path, fake_cubemx: Path) -> None:
 
 
 def run_success_smoke(tmpdir: Path, fake_cubemx: Path) -> None:
+    """检查成功的生成：退出码为 0，临时脚本已删除，日志中有脚本和命令，Core/Inc 和 Drivers 已创建。
+    Check a successful generation: exit code 0, the temporary script removed, the script and the
+    command in the logs, and Core/Inc and Drivers created.
+    """
     project_dir = tmpdir / "project"
     project_dir.mkdir()
     write_ioc(project_dir)
@@ -178,6 +214,10 @@ def run_success_smoke(tmpdir: Path, fake_cubemx: Path) -> None:
 
 
 def run_expect_path_smoke(tmpdir: Path, fake_cubemx: Path) -> None:
+    """检查 CubeMX 正常退出但没有生成期望路径时，运行器抛出 RuntimeError。
+    Check that the runner raises RuntimeError when CubeMX exits normally without creating the
+    expected paths.
+    """
     project_dir = tmpdir / "missing-output"
     project_dir.mkdir()
     write_ioc(project_dir)
@@ -197,6 +237,10 @@ def run_expect_path_smoke(tmpdir: Path, fake_cubemx: Path) -> None:
 
 
 def run_returncode_smoke(tmpdir: Path, fake_cubemx: Path) -> None:
+    """检查 CubeMX 以非零退出码结束时，运行器抛出的 RuntimeError 中带有退出码和标准错误内容。
+    Check that a non-zero CubeMX exit makes the runner raise a RuntimeError carrying the exit code
+    and the stderr text.
+    """
     project_dir = tmpdir / "returncode"
     project_dir.mkdir()
     write_ioc(project_dir)
@@ -217,6 +261,10 @@ def run_returncode_smoke(tmpdir: Path, fake_cubemx: Path) -> None:
 
 
 def child_stopped_writing(heartbeat_file: Path) -> bool:
+    """心跳文件存在且 0.5 秒内内容没有变化时为 True，即子进程已停止写入。
+    True when the heartbeat file exists and its content does not change within 0.5 seconds,
+    meaning the child process stopped writing.
+    """
     if not heartbeat_file.exists():
         return False
     previous = heartbeat_file.read_text(encoding="utf-8")
@@ -226,6 +274,10 @@ def child_stopped_writing(heartbeat_file: Path) -> bool:
 
 
 def run_timeout_smoke(tmpdir: Path, fake_cubemx: Path) -> None:
+    """检查超时：运行器抛出 TimeoutError，并且假 CubeMX 启动的子进程在 3 秒内停止写心跳文件。
+    Check a timeout: the runner raises TimeoutError, and the child process started by the fake
+    CubeMX stops writing its heartbeat file within 3 seconds.
+    """
     project_dir = tmpdir / "timeout"
     project_dir.mkdir()
     write_ioc(project_dir)
@@ -258,6 +310,10 @@ def run_timeout_smoke(tmpdir: Path, fake_cubemx: Path) -> None:
 
 
 def main() -> int:
+    """在临时目录中依次运行各项冒烟检查；全部通过时打印结果并返回 0，失败时抛出 AssertionError。
+    Run every smoke check in a temporary directory; print a message and return 0 when all pass,
+    and raise AssertionError on a failure.
+    """
     with tempfile.TemporaryDirectory(prefix="cubemx_runner_smoke_") as tmp:
         tmpdir = Path(tmp)
         fake_cubemx = write_fake_cubemx(tmpdir)

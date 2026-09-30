@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+"""xr_parse：检查目录中的 .ioc 文件并转发给 xr_parse_ioc；目前只支持 STM32 工程。
+xr_parse: checks a directory for .ioc files and forwards to xr_parse_ioc; only STM32 projects
+are supported so far.
+"""
 
 import argparse
 import logging
@@ -10,6 +14,16 @@ logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 
 
 def main():
+    """xr_parse 命令行入口：检查包版本，确认 -d 目录存在且含 .ioc 文件，再以子进程运行
+    libxr.peripheral_analyzer_stm32，其余参数原样转发。
+    Command-line entry of xr_parse: check the package version, make sure the -d directory
+    exists and holds .ioc files, then run libxr.peripheral_analyzer_stm32 in a subprocess with
+    the remaining arguments passed through.
+
+    目录不存在或没有 .ioc 文件时以状态 1 退出；子进程失败时以其返回码退出。
+    A missing directory or one without .ioc files exits with status 1; a failed subprocess
+    exits with its return code.
+    """
     from libxr.package_info import LibXRPackageInfo
 
     LibXRPackageInfo.check_and_print()

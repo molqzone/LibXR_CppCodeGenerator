@@ -1,5 +1,15 @@
 #!/usr/bin/env python
 
+"""xr_cubemx_cfg：把 STM32CubeMX 工程配置为使用 LibXR 的工程。
+xr_cubemx_cfg: set up an STM32CubeMX project to use LibXR.
+
+依次加入 LibXR 子模块（Middlewares/Third_Party/LibXR），创建 .gitignore 和 User 目录，记录终端设备，
+再调用 xr_parse_ioc、xr_gen_code_stm32 和 xr_stm32_cmake 生成配置、C++ 代码和 CMakeLists.txt。
+In order it adds the LibXR submodule (Middlewares/Third_Party/LibXR), creates .gitignore and the
+User directory, records the terminal device, then runs xr_parse_ioc, xr_gen_code_stm32 and
+xr_stm32_cmake to produce the configuration, the C++ code and CMakeLists.txt.
+"""
+
 import argparse
 import logging
 import os
@@ -15,6 +25,9 @@ DEFAULT_MIRRORS = [
 
 
 def is_git_repo(path):
+    """path 位于 Git 工作树中时为 True。
+    True when path is inside a Git work tree.
+    """
     try:
         result = subprocess.run(
             ["git", "-C", path, "rev-parse", "--is-inside-work-tree"],
@@ -28,6 +41,10 @@ def is_git_repo(path):
 
 
 def is_git_worktree_root(path):
+    """path 本身是 Git 工作树的顶层目录时为 True（按真实路径比较），位于上层仓库之中时为 False。
+    True when path itself is the top level of a Git work tree, compared by real path; False
+    when it lies inside an enclosing repository.
+    """
     try:
         result = subprocess.run(
             ["git", "-C", path, "rev-parse", "--show-toplevel"],
@@ -41,13 +58,24 @@ def is_git_worktree_root(path):
 
 
 def _fmt_cmd(cmd):
+    """把命令写成日志中的一行：列表或元组的各项按 shell 规则引用后以空格连接，字符串原样返回。
+    Format a command as one line for logs: list or tuple items shell-quoted and space-joined, a
+    string as is.
+    """
     if isinstance(cmd, (list, tuple)):
         return " ".join(shlex.quote(str(x)) for x in cmd)
     return str(cmd)
 
 
 def run_command(cmd, ignore_error=False):
-    """Run a command. Accepts either a list/tuple (preferred, shell=False) or a string (shell=True)."""
+    """运行命令并返回标准输出；列表或元组不经 shell 运行（推荐），字符串经 shell 运行。
+    Run a command and return its stdout; a list or tuple runs without a shell (preferred), a
+    string through the shell.
+
+    命令失败时，ignore_error 为 True 则记录警告并仍返回标准输出，否则记录错误并以退出码 1 结束进程。
+    On failure, ignore_error logs a warning and still returns stdout; otherwise the error is
+    logged and the process exits with code 1.
+    """
     if isinstance(cmd, (list, tuple)):
         result = subprocess.run(cmd, capture_output=True, text=True)
     else:
@@ -63,7 +91,9 @@ def run_command(cmd, ignore_error=False):
 
 
 def find_ioc_file(directory):
-    """Search for a .ioc file in the specified directory."""
+    """目录中按文件名排序的第一个 .ioc 文件的路径；没有时为 None。
+    The path of the first .ioc file in the directory by file name order; None when there is none.
+    """
     for file in sorted(os.listdir(directory)):
         if file.endswith(".ioc"):
             return os.path.join(directory, file)
@@ -71,18 +101,34 @@ def find_ioc_file(directory):
 
 
 def pick_git_base(default_base="https://github.com", mirrors=None, timeout=5.0):
-    """
-    Select the fastest accessible Git source among the default and mirrors.
-    Returns either a base URL or a full repository URL.
-    - default_base: e.g. https://github.com
-    - mirrors: a list of base URLs or full repo URLs
+    """在默认源和镜像中选出 git ls-remote 响应最快的 LibXR Git 源。
+    Pick the LibXR Git source whose git ls-remote answers fastest, among the default and the
+    mirrors.
+
+    default_base 和 mirrors 中的每一项可以是基础地址（如 https://github.com，探测
+    <基础地址>/Jiu-Xiao/libxr.git），也可以是以 .git 或 libxr 结尾的完整仓库地址。
+    default_base and each mirror are either a base URL such as https://github.com, probed as
+    <base>/Jiu-Xiao/libxr.git, or a full repository URL ending in .git or libxr.
+
+    Returns:
+        最快的候选项，保持传入时的形式；全部失败或超过 timeout 秒时为 default_base。
+        The fastest candidate as it was given; default_base when every probe fails or takes
+        longer than timeout seconds.
     """
     import time
 
     def is_repo_url(s: str) -> bool:
+        """s 以 .git 结尾，或最后一段为 libxr（不区分大小写）时视为完整仓库地址。
+        Treat s as a full repository URL when it ends in .git or its last path segment is
+        libxr, ignoring case.
+        """
         return s.endswith(".git") or s.rstrip("/").split("/")[-1].lower() == "libxr"
 
     def to_probe_url(base_or_repo: str) -> str:
+        """探测用的仓库地址：完整仓库地址原样使用，基础地址后加 /Jiu-Xiao/libxr.git。
+        The repository URL to probe: a full repository URL as is, a base URL with
+        /Jiu-Xiao/libxr.git appended.
+        """
         if is_repo_url(base_or_repo):
             return base_or_repo
         return f"{base_or_repo.rstrip('/')}/Jiu-Xiao/libxr.git"
@@ -107,6 +153,11 @@ def pick_git_base(default_base="https://github.com", mirrors=None, timeout=5.0):
 
 
 def make_repo_url(base_or_repo: str, owner="Jiu-Xiao", repo="libxr"):
+    """完整的仓库地址：base_or_repo 以 .git 或仓库名结尾时原样返回，否则拼成
+    <base_or_repo>/<owner>/<repo>.git。
+    The full repository URL: base_or_repo as is when it ends in .git or the repository name,
+    else <base_or_repo>/<owner>/<repo>.git.
+    """
     # If a full repository URL is provided (.git or ends with repo name), return it as-is
     if (
         base_or_repo.endswith(".git")
@@ -117,6 +168,11 @@ def make_repo_url(base_or_repo: str, owner="Jiu-Xiao", repo="libxr"):
 
 
 def create_gitignore_file(project_dir):
+    """工程目录没有 .gitignore 时创建一个，忽略 build、.history、.cache、CMakeFiles 和
+    .config.yaml；已有的 .gitignore 不改动。
+    Create a .gitignore in the project directory that ignores build, .history, .cache,
+    CMakeFiles and .config.yaml; an existing .gitignore is left unchanged.
+    """
     gitignore_path = os.path.join(project_dir, ".gitignore")
     if not os.path.exists(gitignore_path):
         logging.info("Creating .gitignore file...")
@@ -130,6 +186,9 @@ CMakeFiles/**
 
 
 def get_git_head(path):
+    """path 处仓库的 HEAD commit；git 执行失败时为空字符串。
+    The HEAD commit of the repository at path; an empty string when git fails.
+    """
     result = subprocess.run(
         ["git", "-C", path, "rev-parse", "HEAD"], capture_output=True, text=True
     )
@@ -139,6 +198,10 @@ def get_git_head(path):
 
 
 def is_commit_ancestor(repo_path, older_commit, newer_commit):
+    """older_commit 是 newer_commit 的祖先或与其相同时为 True；任一为空或 git 执行失败时为 False。
+    True when older_commit is an ancestor of, or the same as, newer_commit; False when either is
+    empty or git fails.
+    """
     if not older_commit or not newer_commit:
         return False
     result = subprocess.run(
@@ -150,12 +213,36 @@ def is_commit_ancestor(repo_path, older_commit, newer_commit):
 
 
 def is_empty_directory(path):
+    """path 是空目录且不是符号链接时为 True。
+    True when path is an empty directory and not a symbolic link.
+    """
     return os.path.isdir(path) and not os.path.islink(path) and not os.listdir(path)
 
 
 def add_libxr(
     project_dir, libxr_commit=None, git_base="https://github.com", default_libxr_commit=None
 ):
+    """把 LibXR 作为 Git 子模块放到 Middlewares/Third_Party/LibXR，并决定检出哪个 commit。
+    Put LibXR at Middlewares/Third_Party/LibXR as a Git submodule and decide which commit is
+    checked out.
+
+    工程还不是 Git 仓库时先执行 git init。已登记的子模块会同步地址，没有检出时按 gitlink 初始化；
+    未登记时从 git_base 加入子模块。已有的 LibXR 目录不会被删除、移动或重新克隆。
+    A project that is not yet a Git repository gets git init. A registered submodule has its URL
+    synced and, without a checkout, is initialized to its gitlink; an unregistered one is added
+    from git_base. An existing LibXR directory is never deleted, moved or re-cloned.
+
+    只有给出 libxr_commit，或本次新加入且原来没有检出的子模块（此时用 default_libxr_commit）才会
+    切换检出；其他情况保持现有检出，与 default_libxr_commit 不同且不比它新时记录警告。
+    Only libxr_commit, or default_libxr_commit for a submodule added by this run without an earlier
+    checkout, moves the checkout; otherwise the existing checkout is kept, with a warning when it
+    differs from default_libxr_commit and is not newer than it.
+
+    Raises:
+        SystemExit: LibXR 目录既不是 Git 检出也不是空目录，或必需的 git 命令失败。
+            The LibXR directory is neither a Git checkout nor empty, or a required git command
+            failed.
+    """
     sub_rel_path_posix = "Middlewares/Third_Party/LibXR"
     libxr_path = os.path.join(project_dir, "Middlewares", "Third_Party", "LibXR")
 
@@ -163,6 +250,11 @@ def add_libxr(
     third_party_path = os.path.join(midware_path, "Third_Party")
 
     def has_registered_submodule(repo_root, rel_path):
+        """rel_path 已登记为子模块时为 True：.gitmodules 中有该路径，或索引中该路径是 gitlink
+        （模式 160000）。
+        True when rel_path is registered as a submodule: .gitmodules names the path, or the index
+        holds a gitlink (mode 160000) there.
+        """
         if os.path.exists(os.path.join(repo_root, ".gitmodules")):
             result = subprocess.run(
                 [
@@ -300,7 +392,9 @@ def add_libxr(
 
 
 def create_user_directory(project_dir):
-    """Ensure the User directory exists."""
+    """确保工程中有 User 目录，并返回其路径。
+    Make sure the project has a User directory and return its path.
+    """
     user_path = os.path.join(project_dir, "User")
     if not os.path.exists(user_path):
         os.makedirs(user_path)
@@ -308,10 +402,16 @@ def create_user_directory(project_dir):
 
 
 def set_terminal_source(user_path, terminal_source):
-    """Record the -t/--terminal device as terminal_source in User/libxr_config.yaml.
+    """把 -t/--terminal 指定的终端设备写入 User/libxr_config.yaml 的 terminal_source，
+    文件不存在时新建。
+    Record the -t/--terminal device as terminal_source in User/libxr_config.yaml, creating the
+    file when it does not exist.
 
-    xr_gen_code_stm32 reads the terminal device from this file, so the choice
-    persists for later regenerations. Other keys and comments are kept.
+    xr_gen_code_stm32 从这个文件读取终端设备，所以之后重新生成时沿用该设置；文件中的其他键和
+    注释保持不变。文件无法按 LibXR 配置读取时记录错误并以退出码 1 结束。
+    xr_gen_code_stm32 reads the terminal device from this file, so the choice persists for later
+    regenerations. Other keys and comments are kept. A file that cannot be read as a LibXR
+    configuration logs an error and exits with code 1.
     """
     from libxr import libxr_config_file
 
@@ -330,13 +430,20 @@ def set_terminal_source(user_path, terminal_source):
 
 
 def process_ioc_file(project_dir, yaml_output):
-    """Parse the .ioc file and generate YAML configuration."""
+    """调用 xr_parse_ioc 解析工程目录中的 .ioc 文件，把 YAML 配置写到 yaml_output。
+    Run xr_parse_ioc to parse the .ioc file of the project and write the YAML configuration to
+    yaml_output.
+    """
     logging.info("Parsing .ioc file...")
     run_command(f"xr_parse_ioc -d {project_dir} -o {yaml_output}")
 
 
 def generate_cpp_code(yaml_output, cpp_output, xrobot_enable=False):
-    """Generate C++ code from YAML configuration, with optional XRobot support."""
+    """调用 xr_gen_code_stm32，根据 YAML 配置把 C++ 代码生成到 cpp_output；xrobot_enable 时
+    加 --xrobot。
+    Run xr_gen_code_stm32 to generate C++ code from the YAML configuration into cpp_output, with
+    --xrobot when xrobot_enable is set.
+    """
     logging.info("Generating C++ code...")
     cmd = f"xr_gen_code_stm32 -i {yaml_output} -o {cpp_output}"
     if xrobot_enable:
@@ -345,15 +452,16 @@ def generate_cpp_code(yaml_output, cpp_output, xrobot_enable=False):
 
 
 def generate_cmake_file(project_dir):
-    """Generate CMakeLists.txt for STM32 project with selected compiler."""
+    """调用 xr_stm32_cmake 为工程生成 CMakeLists.txt。
+    Run xr_stm32_cmake to generate the CMakeLists.txt of the project.
+    """
     run_command(f"xr_stm32_cmake {project_dir}")
 
 
 def _friendly_path_name(path: str) -> str:
-    """
-    Return a human-friendly name for a path.
-    If path is '.', show the current folder name instead of '.'.
-    Falls back to absolute path for root-like cases.
+    """路径的末级名称，用于提示信息（'.' 显示为当前目录名）；没有末级名称（如根目录）时为绝对路径。
+    The last component of a path for messages, so '.' shows the current folder name; the
+    absolute path when there is none, as for a root directory.
     """
     abs_path = os.path.abspath(path)
     base = os.path.basename(abs_path.rstrip(os.sep))
@@ -361,9 +469,10 @@ def _friendly_path_name(path: str) -> str:
 
 
 def ensure_valid_cubemx_project(path: str):
-    """
-    Exit if `path` is not a typical STM32CubeMX project (must contain Core/).
-    Display a friendly name instead of '.' when logging.
+    """path 没有 Core/ 目录、不像 STM32CubeMX 工程时记录错误并以退出码 1 结束；提示中用
+    目录名代替 '.'。
+    Log an error and exit with code 1 when path has no Core/ directory and so does not look like
+    an STM32CubeMX project; the message shows the folder name instead of '.'.
     """
     display_name = _friendly_path_name(path)
     core_dir = os.path.join(path, "Core")
@@ -373,6 +482,16 @@ def ensure_valid_cubemx_project(path: str):
 
 
 def main():
+    """xr_cubemx_cfg 命令入口：选择 Git 源，加入 LibXR 子模块，再生成配置、C++ 代码和
+    CMakeLists.txt。
+    Entry point of xr_cubemx_cfg: choose the Git source, add the LibXR submodule, then generate
+    the configuration, the C++ code and CMakeLists.txt.
+
+    未给出 --commit 时以 libxr_version.py 中锁定的 commit 为默认值。--git-source 为 auto 时，
+    在 GitHub、内置镜像、XR_GIT_MIRRORS 和 --git-mirrors 中选出响应最快的源。
+    Without --commit, the commit locked in libxr_version.py is the default. With --git-source
+    auto, the fastest of GitHub, the built-in mirror, XR_GIT_MIRRORS and --git-mirrors is chosen.
+    """
     from libxr.package_info import LibXRPackageInfo
 
     LibXRPackageInfo.check_and_print()
