@@ -20,6 +20,7 @@ from ruamel.yaml.comments import CommentedMap, CommentedSeq
 from ruamel.yaml.error import CommentMark
 from ruamel.yaml.error import YAMLError as RoundTripYAMLError
 from ruamel.yaml.tokens import CommentToken
+from xr_syntax.i18n import tr
 
 
 class LibXRConfigError(ValueError):
@@ -78,11 +79,18 @@ def parse(text: str, origin: str):
         settings = yaml.safe_load(text)
         document = _loader().load(text)
     except (yaml.YAMLError, RoundTripYAMLError) as error:
-        raise LibXRConfigError(f"Cannot parse {origin}: {error}") from error
+        raise LibXRConfigError(
+            tr(f"Cannot parse {origin}: {error}", f"无法解析 {origin}：{error}")
+        ) from error
     if settings is None:
         return new_document(), {}
     if not isinstance(settings, dict) or not isinstance(document, CommentedMap):
-        raise LibXRConfigError(f"{origin} must contain a YAML mapping at the top level")
+        raise LibXRConfigError(
+            tr(
+                f"{origin} must contain a YAML mapping at the top level",
+                f"{origin} 的顶层必须是 YAML 映射",
+            )
+        )
     return document, settings
 
 
@@ -98,7 +106,9 @@ def read(path: str):
         with open(path, encoding="utf-8") as stream:
             text = stream.read()
     except (OSError, UnicodeDecodeError) as error:
-        raise LibXRConfigError(f"Cannot read {path}: {error}") from error
+        raise LibXRConfigError(
+            tr(f"Cannot read {path}: {error}", f"无法读取 {path}：{error}")
+        ) from error
     return parse(text, path)
 
 

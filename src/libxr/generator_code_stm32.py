@@ -18,12 +18,11 @@ import urllib.request
 
 import yaml
 from xr_syntax.cpp import CppDocument, identifier_occurrences
+from xr_syntax.i18n import localize_argparse, tr
 
 from libxr import libxr_config_file
 from libxr.libxr_config_file import LibXRConfigError
-
-logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
-
+from libxr.output import configure_logging
 
 # --------------------------
 # Global Configuration
@@ -66,7 +65,7 @@ def initialize_registry(use_xrobot: bool) -> None:
     registered_devices.clear()
     registered_origins.clear()
     if use_xrobot:
-        _register_device("power_manager", "PowerManager", "power manager")
+        _register_device("power_manager", "PowerManager", tr("power manager", "电源管理器"))
 
 
 # --------------------------
@@ -76,15 +75,34 @@ def parse_arguments():
     """解析命令行参数：-i/--input、-o/--output、--xrobot 和 --libxr-config。
     Parse the command-line arguments -i/--input, -o/--output, --xrobot and --libxr-config.
     """
+    localize_argparse()
     parser = argparse.ArgumentParser(
-        description="Generate STM32 Peripheral Initialization Code",
+        description=tr(
+            "Generate STM32 Peripheral Initialization Code", "生成 STM32 外设初始化代码"
+        ),
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("-i", "--input", required=True, help="Input YAML configuration file path")
-    parser.add_argument("-o", "--output", required=True, help="Output C++ file path")
-    parser.add_argument("--xrobot", action="store_true", help="Enable XRobot framework integration")
     parser.add_argument(
-        "--libxr-config", default="", help="Optional path or URL to libxr_config.yaml"
+        "-i",
+        "--input",
+        required=True,
+        help=tr("Input YAML configuration file path", "输入的 YAML 配置文件路径"),
+    )
+    parser.add_argument(
+        "-o", "--output", required=True, help=tr("Output C++ file path", "输出的 C++ 文件路径")
+    )
+    parser.add_argument(
+        "--xrobot",
+        action="store_true",
+        help=tr("Enable XRobot framework integration", "启用 XRobot 框架集成"),
+    )
+    parser.add_argument(
+        "--libxr-config",
+        default="",
+        help=tr(
+            "Optional path or URL to libxr_config.yaml",
+            "libxr_config.yaml 的路径或 URL（可选）",
+        ),
     )
     return parser.parse_args()
 
@@ -105,12 +123,16 @@ def _register_device(name: str, dev_type: str, origin: str = ""):
         ValueError: 该名字已经登记。
             The name is already registered.
     """
-    origin = origin or f"{dev_type} object"
+    origin = origin or tr(f"{dev_type} object", f"{dev_type} 对象")
     if name in registered_devices:
+        existing = registered_origins.get(name, registered_devices[name])
         raise ValueError(
-            f"Generated name '{name}' ({origin}) collides with the existing "
-            f"'{name}' ({registered_origins.get(name, registered_devices[name])}); "
-            "every generated object needs its own name"
+            tr(
+                f"Generated name '{name}' ({origin}) collides with the existing "
+                f"'{name}' ({existing}); every generated object needs its own name",
+                f"生成的名字 '{name}'（{origin}）与已有的 '{name}'（{existing}）冲突；"
+                "每个生成的对象都需要自己的名字",
+            )
         )
     registered_devices[name] = dev_type
     registered_origins[name] = origin
@@ -133,9 +155,18 @@ def _generate_fdcan_can_alias(instance: str) -> str:
     fdcan_name = instance.lower()
     match = re.fullmatch(r"fdcan(\d+)", fdcan_name)
     if match is None:
-        raise ValueError(f"Cannot derive the CAN alias of FDCAN instance '{instance}'")
+        raise ValueError(
+            tr(
+                f"Cannot derive the CAN alias of FDCAN instance '{instance}'",
+                f"无法推导 FDCAN 实例 '{instance}' 的 CAN 别名",
+            )
+        )
     can_name = f"can{match.group(1)}"
-    _register_device(can_name, "CAN", f"LibXR::CAN alias of {fdcan_name}")
+    _register_device(
+        can_name,
+        "CAN",
+        tr(f"LibXR::CAN alias of {fdcan_name}", f"{fdcan_name} 的 LibXR::CAN 别名"),
+    )
     return f"  LibXR::CAN& {can_name} = {fdcan_name};\n"
 
 
@@ -195,12 +226,17 @@ def load_configuration(file_path: str, use_xrobot: bool) -> dict:
             required_sections = ["Mcu", "GPIO", "Peripherals"]
             for section in required_sections:
                 if section not in config:
-                    raise ValueError(f"Missing required section: {section}")
+                    raise ValueError(
+                        tr(
+                            f"Missing required section: {section}",
+                            f"缺少必需的段：{section}",
+                        )
+                    )
 
             # Detect RTOS
             if "FreeRTOS" in config:
                 libxr_settings["SYSTEM"] = "FreeRTOS"
-                logging.info("Detected FreeRTOS configuration")
+                logging.info(tr("Detected FreeRTOS configuration", "检测到 FreeRTOS 配置"))
             elif "ThreadX" in config:
                 libxr_settings["SYSTEM"] = "ThreadX"
             else:
@@ -217,18 +253,25 @@ def load_configuration(file_path: str, use_xrobot: bool) -> dict:
             if "Peripherals" in config:
                 empty_keys = [k for k, v in config["Peripherals"].items() if not v or v == {}]
                 for k in empty_keys:
-                    logging.info(f"Skipping empty peripheral config: {k}")
+                    logging.info(
+                        tr(
+                            f"Skipping empty peripheral config: {k}",
+                            f"跳过空的外设配置：{k}",
+                        )
+                    )
                     del config["Peripherals"][k]
 
             return config
     except FileNotFoundError:
-        logging.error(f"Configuration file not found: {file_path}")
+        logging.error(
+            tr(f"Configuration file not found: {file_path}", f"找不到配置文件：{file_path}")
+        )
         sys.exit(1)
     except yaml.YAMLError as e:
-        logging.error(f"YAML syntax error: {str(e)}")
+        logging.error(tr(f"YAML syntax error: {str(e)}", f"YAML 语法错误：{str(e)}"))
         sys.exit(1)
     except ValueError as e:
-        logging.error(f"Configuration validation failed: {str(e)}")
+        logging.error(tr(f"Configuration validation failed: {str(e)}", f"配置校验失败：{str(e)}"))
         sys.exit(1)
 
 
@@ -257,24 +300,46 @@ def load_libxr_config(output_dir: str, config_source: str) -> None:
 
     if config_source:
         if config_source.startswith("http://") or config_source.startswith("https://"):
-            logging.info(f"Downloading libxr_config.yaml from {config_source}")
+            logging.info(
+                tr(
+                    f"Downloading libxr_config.yaml from {config_source}",
+                    f"正在从 {config_source} 下载 libxr_config.yaml",
+                )
+            )
             try:
                 with urllib.request.urlopen(config_source) as response:
                     text = response.read().decode("utf-8")
             except (OSError, UnicodeDecodeError) as error:
-                raise LibXRConfigError(f"Cannot download {config_source}: {error}") from error
+                raise LibXRConfigError(
+                    tr(
+                        f"Cannot download {config_source}: {error}",
+                        f"无法下载 {config_source}：{error}",
+                    )
+                ) from error
             document, saved_config = libxr_config_file.parse(text, config_source)
         elif os.path.exists(config_source):
-            logging.info(f"Using external libxr_config.yaml from {config_source}")
+            logging.info(
+                tr(
+                    f"Using external libxr_config.yaml from {config_source}",
+                    f"使用外部的 libxr_config.yaml：{config_source}",
+                )
+            )
             document, saved_config = libxr_config_file.read(config_source)
         else:
-            raise LibXRConfigError(f"Cannot locate config source: {config_source}")
+            raise LibXRConfigError(
+                tr(
+                    f"Cannot locate config source: {config_source}",
+                    f"找不到配置来源：{config_source}",
+                )
+            )
     elif os.path.exists(config_path):
         document, saved_config = libxr_config_file.read(config_path)
         if saved_config.get("config_version", 1) > 1:
-            logging.warning("Config file format is newer than expected")
+            logging.warning(
+                tr("Config file format is newer than expected", "配置文件格式比预期的新")
+            )
     else:
-        logging.info("Creating new library configuration file")
+        logging.info(tr("Creating new library configuration file", "新建库配置文件"))
         libxr_config_document = libxr_config_file.new_document()
         return
 
@@ -300,9 +365,13 @@ def _report_dropped_device_aliases(aliases) -> None:
             for name in names or []:
                 pairs.append(f"{name} -> {device}")
     logging.warning(
-        "Removed the legacy device_aliases table from libxr_config.yaml; generated "
-        "objects are registered only under their own names. Update configurations "
-        "that used these aliases (alias -> device):"
+        tr(
+            "Removed the legacy device_aliases table from libxr_config.yaml; generated "
+            "objects are registered only under their own names. Update configurations "
+            "that used these aliases (alias -> device):",
+            "已从 libxr_config.yaml 中删除旧的 device_aliases 表；"
+            "生成的对象只以自己的名字登记。请更新使用了以下别名的配置（别名 -> 设备）：",
+        )
     )
     for pair in pairs or [repr(aliases)]:
         logging.warning(f"  {pair}")
@@ -348,8 +417,12 @@ def _deep_merge(base: dict, update: dict) -> dict:
             if isinstance(node, dict):
                 _deep_merge(node, value)
             else:
+                expected = type(node).__name__
                 raise LibXRConfigError(
-                    f"Config type conflict for key '{key}': expected {type(node).__name__}, got a mapping"
+                    tr(
+                        f"Config type conflict for key '{key}': expected {expected}, got a mapping",
+                        f"配置键 '{key}' 的类型冲突：应为 {expected}，实际是映射",
+                    )
                 )
         else:
             base[key] = value
@@ -517,19 +590,41 @@ def check_gpio_names(project_data: dict, generated_code: str, use_xrobot: bool) 
     problems = []
     for port, data in gpio.items():
         name = _gpio_object_name(port, data)
-        where = f"GPIO object '{name}' (pin {port.split('-')[0]})"
+        pin = port.split("-")[0]
+        where = tr(f"GPIO object '{name}' (pin {pin})", f"GPIO 对象 '{name}'（引脚 {pin}）")
         if name in CPP_KEYWORDS:
-            problems.append(f"{where} is a C++ keyword")
+            problems.append(tr(f"{where} is a C++ keyword", f"{where}是 C++ 关键字"))
         elif "__" in name or re.match(r"_[A-Z]", name):
-            problems.append(f"{where} is a reserved C++ identifier")
+            problems.append(
+                tr(f"{where} is a reserved C++ identifier", f"{where}是 C++ 保留标识符")
+            )
         elif name in label_macros:
-            problems.append(f"{where} is the CubeMX macro of GPIO label '{label_macros[name]}'")
+            label = label_macros[name]
+            problems.append(
+                tr(
+                    f"{where} is the CubeMX macro of GPIO label '{label}'",
+                    f"{where}是 GPIO 标签 '{label}' 的 CubeMX 宏",
+                )
+            )
         elif name in _HAL_MACROS or name.endswith("_IRQn") or _CMSIS_INSTANCE_MACRO.fullmatch(name):
-            problems.append(f"{where} is a CMSIS/HAL macro or IRQ name")
+            problems.append(
+                tr(f"{where} is a CMSIS/HAL macro or IRQ name", f"{where}是 CMSIS/HAL 宏或 IRQ 名")
+            )
         elif counts.get(name, 0) > expected_uses:
-            problems.append(f"{where} collides with a name the generated code uses")
+            problems.append(
+                tr(
+                    f"{where} collides with a name the generated code uses",
+                    f"{where}与生成代码使用的名字冲突",
+                )
+            )
     if problems:
-        raise ValueError("rename these GPIO labels in CubeMX:\n  " + "\n  ".join(problems))
+        raise ValueError(
+            tr(
+                "rename these GPIO labels in CubeMX:\n  ",
+                "请在 CubeMX 中重命名以下 GPIO 标签：\n  ",
+            )
+            + "\n  ".join(problems)
+        )
 
 
 def generate_gpio_alias(port: str, gpio_data: dict, project_data: dict) -> str:
@@ -563,7 +658,11 @@ def generate_gpio_alias(port: str, gpio_data: dict, project_data: dict) -> str:
     var_name = _gpio_object_name(port, gpio_data)
 
     _register_device(
-        var_name, "GPIO", f"GPIO label {label} on {base_port}" if label else f"GPIO {base_port}"
+        var_name,
+        "GPIO",
+        tr(f"GPIO label {label} on {base_port}", f"{base_port} 上的 GPIO 标签 {label}")
+        if label
+        else f"GPIO {base_port}",
     )
 
     return f"{var_name}({port_define}, {pin_define}{irq_str})"
@@ -813,12 +912,21 @@ def generate_dma_resources(project_data: dict) -> str:
 
                 enable = usb_cfg.setdefault("enable", cfg.get("enable", False))
                 if not enable:
-                    logging.info(f"Skipping disabled USB instance: {instance}")
+                    logging.info(
+                        tr(
+                            f"Skipping disabled USB instance: {instance}",
+                            f"跳过未启用的 USB 实例：{instance}",
+                        )
+                    )
                     continue
 
                 if "cdc_count" in usb_cfg or "cdc_count" in cfg:
                     raise ValueError(
-                        "USB cdc_count is not a generator option; define composite USB in BSP user code"
+                        tr(
+                            "USB cdc_count is not a generator option; define composite USB in "
+                            "BSP user code",
+                            "USB 的 cdc_count 不是生成器选项；复合 USB 设备请在 BSP 用户代码中定义",
+                        )
                     )
 
                 # EP0 packet size, fallback to defaults if needed
@@ -1088,7 +1196,11 @@ class PeripheralFactory:
         instance_cfg = libxr_settings["CAN"].setdefault(instance, {})
         queue_size = instance_cfg.setdefault("queue_size", 5)
 
-        _register_device(f"{instance.lower()}", "CAN", f"classic CAN peripheral {instance}")
+        _register_device(
+            f"{instance.lower()}",
+            "CAN",
+            tr(f"classic CAN peripheral {instance}", f"经典 CAN 外设 {instance}"),
+        )
         return (
             "main",
             f"  static STM32CAN {instance.lower()}(&h{instance.lower()}, {queue_size});\n",
@@ -1201,7 +1313,12 @@ class PeripheralFactory:
         # Enable switch
         inst_cfg.setdefault("enable", cfg_in.get("enable", False))
         if not inst_cfg["enable"]:
-            logging.info(f"USB instance '{inst_lower}' is disabled. Skipping generation.")
+            logging.info(
+                tr(
+                    f"USB instance '{inst_lower}' is disabled. Skipping generation.",
+                    f"USB 实例 '{inst_lower}' 未启用，跳过生成。",
+                )
+            )
             return "", ""
 
         # Packet size and FIFO setup
@@ -1252,7 +1369,11 @@ class PeripheralFactory:
         )
         if "cdc_count" in cfg_in or "cdc_count" in inst_cfg:
             raise ValueError(
-                "USB cdc_count is not a generator option; define composite USB in BSP user code"
+                tr(
+                    "USB cdc_count is not a generator option; define composite USB in "
+                    "BSP user code",
+                    "USB 的 cdc_count 不是生成器选项；复合 USB 设备请在 BSP 用户代码中定义",
+                )
             )
         # DMA section name
         inst_cfg.setdefault(
@@ -1532,37 +1653,77 @@ def validate_user_regions(existing_code: str, region_names) -> None:
         begin = _USER_MARKER_BEGIN.fullmatch(text)
         end = _USER_MARKER_END.fullmatch(text)
         if begin is None and end is None:
-            problems.append(f"line {line}: malformed User Code marker {text}")
+            problems.append(
+                tr(
+                    f"line {line}: malformed User Code marker {text}",
+                    f"第 {line} 行：User Code 标记格式错误：{text}",
+                )
+            )
             continue
         name = ((begin or end).group(1) or "").strip()
         if depth:
-            problems.append(f"line {line}: {text} is inside a preprocessor conditional")
-        if name not in expected:
             problems.append(
-                f"line {line}: {text} names a region the generator does not emit "
-                f"(expected {', '.join(expected)})"
+                tr(
+                    f"line {line}: {text} is inside a preprocessor conditional",
+                    f"第 {line} 行：{text} 位于预处理条件之内",
+                )
+            )
+        if name not in expected:
+            names = ", ".join(expected)
+            problems.append(
+                tr(
+                    f"line {line}: {text} names a region the generator does not emit "
+                    f"(expected {names})",
+                    f"第 {line} 行：{text} 指定的区域不是生成器输出的区域（应为 {names}）",
+                )
             )
         if begin is not None:
             if open_region is not None:
-                problems.append(f"line {line}: {text} opens before User Code End {open_region}")
+                problems.append(
+                    tr(
+                        f"line {line}: {text} opens before User Code End {open_region}",
+                        f"第 {line} 行：{text} 出现在 User Code End {open_region} 之前",
+                    )
+                )
             if name in seen:
-                problems.append(f"line {line}: {text} is duplicated")
+                problems.append(
+                    tr(f"line {line}: {text} is duplicated", f"第 {line} 行：{text} 重复")
+                )
             seen.append(name)
             open_region = name
         else:
             if open_region != name:
-                problems.append(f"line {line}: {text} has no matching Begin marker")
+                problems.append(
+                    tr(
+                        f"line {line}: {text} has no matching Begin marker",
+                        f"第 {line} 行：{text} 没有对应的 Begin 标记",
+                    )
+                )
             else:
                 open_region = None
     if open_region is not None:
-        problems.append(f"User Code Begin {open_region} has no matching End marker")
+        problems.append(
+            tr(
+                f"User Code Begin {open_region} has no matching End marker",
+                f"User Code Begin {open_region} 没有对应的 End 标记",
+            )
+        )
     for name in expected:
         if name not in seen:
-            problems.append(f"User Code Begin {name} / End {name} markers are missing")
+            problems.append(
+                tr(
+                    f"User Code Begin {name} / End {name} markers are missing",
+                    f"缺少 User Code Begin {name} / End {name} 标记",
+                )
+            )
     if problems:
         raise ValueError(
-            "existing User Code markers cannot be preserved safely; nothing was "
-            "written. Fix the markers and regenerate:\n  " + "\n  ".join(problems)
+            tr(
+                "existing User Code markers cannot be preserved safely; nothing was "
+                "written. Fix the markers and regenerate:\n  ",
+                "已有的 User Code 标记无法安全保留，未写入任何文件。请修正这些标记后重新生成：\n  ",
+            )
+            + "\n  ".join(problems)
         )
 
 
@@ -1634,7 +1795,9 @@ def _generate_core_system(project_data: dict) -> str:
     elif system_type == "FreeRTOS" or system_type == "ThreadX":
         init_args = f"{timer_cfg['priority']}, {timer_cfg['stack_depth']}"
     else:
-        logging.error(f"Unsupported system type: {system_type}")
+        logging.error(
+            tr(f"Unsupported system type: {system_type}", f"不支持的系统类型：{system_type}")
+        )
         sys.exit(1)
 
     return f"""{timebase_init}
@@ -1719,7 +1882,11 @@ def configure_terminal(project_data: dict) -> str:
         # Device must be registered and of type UART, otherwise log a warning and skip
         if registered_devices.get(dev) != "UART":
             logging.warning(
-                f"terminal_source '{terminal_source}' is not registered as UART, terminal will not be initialized!"
+                tr(
+                    f"terminal_source '{terminal_source}' is not registered as UART, terminal "
+                    "will not be initialized!",
+                    f"terminal_source '{terminal_source}' 没有登记为 UART，不初始化终端！",
+                )
             )
             return code
         dev = terminal_source.upper()
@@ -1784,9 +1951,19 @@ def generate_xrobot_registrations() -> str:
     lines = []
     for name, cpp_type in registered_devices.items():
         if not re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]*", name):
-            raise ValueError(f"Static registration needs an existing C++ name: {name}")
+            raise ValueError(
+                tr(
+                    f"Static registration needs an existing C++ name: {name}",
+                    f"静态登记需要已有的 C++ 名字：{name}",
+                )
+            )
         if not isinstance(cpp_type, str) or not cpp_type or cpp_type == "Unknown":
-            raise ValueError(f"Explicit registration type is missing for {name}")
+            raise ValueError(
+                tr(
+                    f"Explicit registration type is missing for {name}",
+                    f"{name} 缺少显式的登记类型",
+                )
+            )
         if not cpp_type.startswith("LibXR::"):
             cpp_type = "LibXR::" + cpp_type
         lines.append(f"  XR_REGISTER({name}, {cpp_type});")
@@ -1817,10 +1994,16 @@ def reject_user_xrobot_main(existing_code: str) -> None:
         for invocation in document.invocation_views("XROBOT_MAIN"):
             if region.body_span.start <= invocation.span.start < region.body_span.end:
                 raise ValueError(
-                    f"line {invocation.line}: User Code {region.name} still calls "
-                    f"{invocation.text}. The generator now emits XROBOT_MAIN() after "
-                    "the User Code regions of app_main; delete this call from the "
-                    "User Code region and regenerate. Nothing was written."
+                    tr(
+                        f"line {invocation.line}: User Code {region.name} still calls "
+                        f"{invocation.text}. The generator now emits XROBOT_MAIN() after "
+                        "the User Code regions of app_main; delete this call from the "
+                        "User Code region and regenerate. Nothing was written.",
+                        f"第 {invocation.line} 行：User Code {region.name} 仍然调用 "
+                        f"{invocation.text}。生成器现在在 app_main 的 User Code 区域之后输出 "
+                        "XROBOT_MAIN()；请从 User Code 区域中删除这一调用后重新生成。"
+                        "未写入任何文件。",
+                    )
                 )
 
 
@@ -1913,7 +2096,7 @@ void app_main(void);
     if current != content:
         with open(header_path, "w", encoding="utf-8", newline="\n") as f:
             f.write(content)
-        logging.info(f"Generated header: {header_path}")
+        logging.info(tr(f"Generated header: {header_path}", f"已生成头文件：{header_path}"))
 
 
 def generate_flash_map_cpp(flash_info: dict) -> str:
@@ -1959,13 +2142,23 @@ def inject_flash_layout(project_data: dict, output_dir: str) -> None:
 
         mcu_model = project_data.get("Mcu", {}).get("Type", "").strip()
         if not mcu_model:
-            logging.warning("Cannot find MCU name, skipping FlashLayout generation")
+            logging.warning(
+                tr(
+                    "Cannot find MCU name, skipping FlashLayout generation",
+                    "找不到 MCU 型号，跳过 FlashLayout 生成",
+                )
+            )
             return
 
         flash_info = layout_flash(mcu_model)
         flash_dict = flash_info_to_dict(flash_info)
         libxr_settings["FlashLayout"] = flash_dict
-        logging.info(f"FlashLayout is generated and injected, MCU: {mcu_model}")
+        logging.info(
+            tr(
+                f"FlashLayout is generated and injected, MCU: {mcu_model}",
+                f"已生成并写入 FlashLayout，MCU：{mcu_model}",
+            )
+        )
 
         cpp_code = generate_flash_map_cpp(flash_dict)
         if output_dir:
@@ -1979,11 +2172,21 @@ def inject_flash_layout(project_data: dict, output_dir: str) -> None:
 
 """)
                 f.write(cpp_code)
-            logging.info(f"Flash layout map written to: {hpp_path}")
+            logging.info(
+                tr(
+                    f"Flash layout map written to: {hpp_path}",
+                    f"Flash 布局映射已写入：{hpp_path}",
+                )
+            )
     except ImportError as e:
-        logging.warning(f"Cannot import FlashLayout generator: {e}")
+        logging.warning(
+            tr(
+                f"Cannot import FlashLayout generator: {e}",
+                f"无法导入 FlashLayout 生成器：{e}",
+            )
+        )
     except Exception as e:
-        logging.warning(f"Cannot generate FlashLayout: {e}")
+        logging.warning(tr(f"Cannot generate FlashLayout: {e}", f"无法生成 FlashLayout：{e}"))
 
 
 def main():
@@ -1998,6 +2201,7 @@ def main():
     """
     from libxr.package_info import LibXRPackageInfo
 
+    configure_logging()
     LibXRPackageInfo.check_and_print()
 
     try:
@@ -2033,13 +2237,13 @@ def main():
 
         save_libxr_config(config_path)
 
-        logging.info(f"Successfully generated: {output_dir}")
+        logging.info(tr(f"Successfully generated: {output_dir}", f"生成成功：{output_dir}"))
 
         generate_app_main_header(output_dir)
-        logging.info("Generated header file: app_main.h")
+        logging.info(tr("Generated header file: app_main.h", "已生成头文件：app_main.h"))
 
     except Exception as e:
-        logging.error(f"Generation failed: {str(e)}")
+        logging.error(tr(f"Generation failed: {str(e)}", f"生成失败：{str(e)}"))
         sys.exit(1)
 
 

@@ -10,7 +10,7 @@ import os
 import subprocess
 import sys
 
-logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
+from xr_syntax.i18n import localize_argparse, tr
 
 
 def main():
@@ -24,26 +24,46 @@ def main():
     A missing directory or one without .ioc files exits with status 1; a failed subprocess
     exits with its return code.
     """
+    from libxr.output import configure_logging
     from libxr.package_info import LibXRPackageInfo
 
+    configure_logging()
     LibXRPackageInfo.check_and_print()
 
-    parser = argparse.ArgumentParser(description="Run xr_parse_ioc on a specified directory.")
+    localize_argparse()
+    parser = argparse.ArgumentParser(
+        description=tr(
+            "Run xr_parse_ioc on a specified directory.", "对指定目录运行 xr_parse_ioc。"
+        )
+    )
     parser.add_argument(
-        "-d", "--directory", required=True, help="Input directory containing .ioc files"
+        "-d",
+        "--directory",
+        required=True,
+        help=tr("Input directory containing .ioc files", "包含 .ioc 文件的输入目录"),
     )
     args, extra_args = parser.parse_known_args()
 
     target_dir = os.path.abspath(args.directory)
 
     if not os.path.isdir(target_dir):
-        logging.error(f"Specified directory does not exist: {target_dir}")
+        logging.error(
+            tr(
+                f"Specified directory does not exist: {target_dir}",
+                f"指定的目录不存在：{target_dir}",
+            )
+        )
         sys.exit(1)
 
     # Search for .ioc files in the specified directory
     ioc_files = [f for f in os.listdir(target_dir) if f.endswith(".ioc")]
     if not ioc_files:
-        logging.error(f"No .ioc files found in directory: {target_dir}")
+        logging.error(
+            tr(
+                f"No .ioc files found in directory: {target_dir}",
+                f"目录中没有 .ioc 文件：{target_dir}",
+            )
+        )
         sys.exit(1)
 
     # Construct the command to run the parser
@@ -56,7 +76,12 @@ def main():
         *extra_args,  # Forward other arguments
     ]
 
-    logging.info(f"Detected {len(ioc_files)} .ioc file(s) in '{target_dir}':")
+    logging.info(
+        tr(
+            f"Detected {len(ioc_files)} .ioc file(s) in '{target_dir}':",
+            f"在 '{target_dir}' 中找到 {len(ioc_files)} 个 .ioc 文件：",
+        )
+    )
     for f in ioc_files:
         logging.info(f"       - {f}")
     logging.debug(f"CMD: {' '.join(cmd)}")
@@ -64,7 +89,12 @@ def main():
     try:
         subprocess.run(cmd, check=True)
     except subprocess.CalledProcessError as e:
-        logging.error(f"xr_parse_ioc exited with code {e.returncode}")
+        logging.error(
+            tr(
+                f"xr_parse_ioc exited with code {e.returncode}",
+                f"xr_parse_ioc 以返回码 {e.returncode} 退出",
+            )
+        )
         sys.exit(e.returncode)
 
 

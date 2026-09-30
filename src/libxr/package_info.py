@@ -5,7 +5,7 @@ when PyPI has a newer one.
 
 import logging
 
-logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
+from xr_syntax.i18n import tr
 
 
 class LibXRPackageInfo:
@@ -66,20 +66,33 @@ class LibXRPackageInfo:
         if local_ver:
             logging.info(f"{cls.PKGNAME} {local_ver}")
         else:
-            logging.warning(f"{cls.PKGNAME} (version unknown)")
+            logging.warning(tr(f"{cls.PKGNAME} (version unknown)", f"{cls.PKGNAME}（版本未知）"))
         if local_ver and remote_ver:
             try:
                 from packaging.version import parse as vparse
 
                 if vparse(local_ver) < vparse(remote_ver):
-                    logging.warning(
-                        f"A new version of {cls.PKGNAME} is available: {remote_ver} (your version: {local_ver})"
-                    )
-                    logging.warning(f"Tip: Upgrade with: pip install -U {cls.PKGNAME}\n")
+                    cls._print_upgrade_notice(local_ver, remote_ver)
             except Exception:
                 # fallback: only show if different
                 if local_ver != remote_ver:
-                    logging.warning(
-                        f"A new version of {cls.PKGNAME} is available: {remote_ver} (your version: {local_ver})"
-                    )
-                    logging.warning(f"Tip: Upgrade with: pip install -U {cls.PKGNAME}\n")
+                    cls._print_upgrade_notice(local_ver, remote_ver)
+
+    @classmethod
+    def _print_upgrade_notice(cls, local_ver, remote_ver):
+        """以警告给出 PyPI 上的新版本和升级命令。
+        Log warnings with the newer version on PyPI and the upgrade command.
+        """
+        logging.warning(
+            tr(
+                f"A new version of {cls.PKGNAME} is available: {remote_ver} "
+                f"(your version: {local_ver})",
+                f"{cls.PKGNAME} 有新版本可用：{remote_ver}（当前版本：{local_ver}）",
+            )
+        )
+        logging.warning(
+            tr(
+                f"Tip: Upgrade with: pip install -U {cls.PKGNAME}\n",
+                f"提示：用 pip install -U {cls.PKGNAME} 升级\n",
+            )
+        )

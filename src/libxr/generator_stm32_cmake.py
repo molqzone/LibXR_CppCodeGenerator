@@ -16,8 +16,7 @@ import shutil
 from pathlib import Path
 
 from xr_syntax.cpp import CppDocument
-
-logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
+from xr_syntax.i18n import localize_argparse, tr
 
 LIBXR_CMAKE_TEMPLATE = """set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -198,9 +197,19 @@ def update_or_create_libxr_cmake(file_path: str, system: str, use_xrobot: bool) 
         new_content = normalize_libxr_cmake(content, system)
         if new_content != content:
             cmake_path.write_text(new_content, encoding="utf-8")
-            logging.info(f"Updated existing LibXR.CMake for system: {system}")
+            logging.info(
+                tr(
+                    f"Updated existing LibXR.CMake for system: {system}",
+                    f"已按系统 {system} 更新现有的 LibXR.CMake",
+                )
+            )
         else:
-            logging.info("LibXR.CMake already up to date, no changes needed.")
+            logging.info(
+                tr(
+                    "LibXR.CMake already up to date, no changes needed.",
+                    "LibXR.CMake 已是最新，无需修改。",
+                )
+            )
         # The existing file is user-owned here; report a mismatch only.
         declares_modules = (
             re.search(r"^\s*set\s*\(\s*XROBOT_MODULES_DIR\b", new_content, flags=re.MULTILINE)
@@ -208,13 +217,22 @@ def update_or_create_libxr_cmake(file_path: str, system: str, use_xrobot: bool) 
         )
         if declares_modules and not use_xrobot:
             logging.warning(
-                "LibXR.CMake sets XROBOT_MODULES_DIR, but User/app_main.cpp was not "
-                "generated with --xrobot; remove that line for a LibXR-only project."
+                tr(
+                    "LibXR.CMake sets XROBOT_MODULES_DIR, but User/app_main.cpp was not "
+                    "generated with --xrobot; remove that line for a LibXR-only project.",
+                    "LibXR.CMake 设置了 XROBOT_MODULES_DIR，但 User/app_main.cpp 不是用 --xrobot "
+                    "生成的；仅使用 LibXR 的工程请删除这一行。",
+                )
             )
         elif use_xrobot and not declares_modules:
             logging.warning(
-                "User/app_main.cpp uses XRobot, but LibXR.CMake does not set "
-                "XROBOT_MODULES_DIR; add: " + XROBOT_MODULES_DIR_LINE.strip()
+                tr(
+                    "User/app_main.cpp uses XRobot, but LibXR.CMake does not set "
+                    "XROBOT_MODULES_DIR; add: ",
+                    "User/app_main.cpp 使用了 XRobot，但 LibXR.CMake 没有设置 "
+                    "XROBOT_MODULES_DIR；请添加：",
+                )
+                + XROBOT_MODULES_DIR_LINE.strip()
             )
     else:
         # XRobot projects build their Modules through LibXR; plain LibXR
@@ -225,7 +243,9 @@ def update_or_create_libxr_cmake(file_path: str, system: str, use_xrobot: bool) 
             ),
             encoding="utf-8",
         )
-        logging.info(f"Generated LibXR.CMake at: {cmake_path}")
+        logging.info(
+            tr(f"Generated LibXR.CMake at: {cmake_path}", f"已生成 LibXR.CMake：{cmake_path}")
+        )
 
 
 # Inserted after CubeMX's set(STARM_TOOLCHAIN_CONFIG "<default>") line, which
@@ -288,7 +308,12 @@ def normalize_starm_clang_toolchain(file_path: str | Path) -> None:
     )
     match = line_pattern.search(content)
     if match is None:
-        logging.warning(f"STARM_TOOLCHAIN_CONFIG not found in {path}")
+        logging.warning(
+            tr(
+                f"STARM_TOOLCHAIN_CONFIG not found in {path}",
+                f"{path} 中没有 STARM_TOOLCHAIN_CONFIG",
+            )
+        )
         return
 
     replacement = f'{match.group(1)}{match.group(2)}")'
@@ -321,7 +346,12 @@ def normalize_starm_clang_toolchain(file_path: str | Path) -> None:
         # the package's Python 3.8 support while still emitting deterministic LF.
         with path.open("w", encoding="utf-8", newline="\n") as stream:
             stream.write(new_content)
-        logging.info(f"Normalized STARM_TOOLCHAIN_CONFIG in {path}")
+        logging.info(
+            tr(
+                f"Normalized STARM_TOOLCHAIN_CONFIG in {path}",
+                f"已规范化 {path} 中的 STARM_TOOLCHAIN_CONFIG",
+            )
+        )
 
 
 def clean_cmake_build_dirs(input_directory: str | Path) -> None:
@@ -333,10 +363,15 @@ def clean_cmake_build_dirs(input_directory: str | Path) -> None:
     for d in input_directory.iterdir():
         if d.is_dir() and (d.name == "build" or d.name.startswith("cmake-build")):
             shutil.rmtree(d)
-            logging.info(f"Removed {d}")
+            logging.info(tr(f"Removed {d}", f"已删除 {d}"))
             removed = True
     if not removed:
-        logging.info("No build or cmake-build* directory found, nothing to clean.")
+        logging.info(
+            tr(
+                "No build or cmake-build* directory found, nothing to clean.",
+                "没有 build 或 cmake-build* 目录，无需清理。",
+            )
+        )
 
 
 def read_text_with_fallback(path: str) -> str:
@@ -368,18 +403,27 @@ def main():
     when it is missing. LIBXR_SYSTEM follows FreeRTOSConfig.h or app_threadx.h in Core/Inc, and
     is None without either. A missing input directory or CMakeLists.txt exits with status 1.
     """
+    from libxr.output import configure_logging
     from libxr.package_info import LibXRPackageInfo
 
+    configure_logging()
     LibXRPackageInfo.check_and_print()
 
-    parser = argparse.ArgumentParser(description="Generate CMake file for LibXR.")
-    parser.add_argument("input_dir", type=str, help="CubeMX CMake Project Directory")
+    localize_argparse()
+    parser = argparse.ArgumentParser(
+        description=tr("Generate CMake file for LibXR.", "为 LibXR 生成 CMake 文件。")
+    )
+    parser.add_argument(
+        "input_dir",
+        type=str,
+        help=tr("CubeMX CMake Project Directory", "CubeMX CMake 工程目录"),
+    )
 
     args = parser.parse_args()
     input_directory = args.input_dir
 
     if not os.path.isdir(input_directory):
-        logging.error("Input directory does not exist.")
+        logging.error(tr("Input directory does not exist.", "输入目录不存在。"))
         exit(1)
 
     clean_cmake_build_dirs(input_directory)
@@ -402,7 +446,7 @@ def main():
         system = "None"
 
     update_or_create_libxr_cmake(file_path, system, project_uses_xrobot(input_directory))
-    logging.info("LibXR.CMake generated/updated successfully.")
+    logging.info(tr("LibXR.CMake generated/updated successfully.", "LibXR.CMake 已生成或更新。"))
 
     normalize_starm_clang_toolchain(os.path.join(cmake_dir, "starm-clang.cmake"))
 
@@ -413,9 +457,19 @@ def main():
         if include_cmake_cmd not in cmake_content:
             with open(main_cmake_path, "a", encoding="utf-8", newline="\n") as f:
                 f.write("\n# Add LibXR\n" + include_cmake_cmd)
-            logging.info("LibXR.CMake included in CMakeLists.txt.")
+            logging.info(
+                tr(
+                    "LibXR.CMake included in CMakeLists.txt.",
+                    "已在 CMakeLists.txt 中 include LibXR.CMake。",
+                )
+            )
         else:
-            logging.info("LibXR.CMake already included in CMakeLists.txt.")
+            logging.info(
+                tr(
+                    "LibXR.CMake already included in CMakeLists.txt.",
+                    "CMakeLists.txt 已经 include LibXR.CMake。",
+                )
+            )
     else:
-        logging.error("CMakeLists.txt not found.")
+        logging.error(tr("CMakeLists.txt not found.", "找不到 CMakeLists.txt。"))
         exit(1)

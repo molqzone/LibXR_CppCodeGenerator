@@ -25,6 +25,10 @@ import time
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 
+from xr_syntax.i18n import localize_argparse, tr
+
+from libxr.output import configure_logging
+
 LOGGER = logging.getLogger(__name__)
 
 POSITIVE_BUTTON_LABELS = (
@@ -248,7 +252,12 @@ def _consume_generic_dialog_fallback(confirm_counts: dict[int, int], window_id: 
     count = confirm_counts.get(window_id, 0)
     if count >= GENERIC_DIALOG_CONFIRM_LIMIT:
         if count == GENERIC_DIALOG_CONFIRM_LIMIT:
-            LOGGER.info(f"Leaving generic CubeMX dialog untouched after {count} keyboard attempts")
+            LOGGER.info(
+                tr(
+                    f"Leaving generic CubeMX dialog untouched after {count} keyboard attempts",
+                    f"已尝试 {count} 次键盘确认，不再处理这个 CubeMX 通用对话框",
+                )
+            )
             confirm_counts[window_id] = count + 1
         return False
     confirm_counts[window_id] = count + 1
@@ -340,7 +349,10 @@ def resolve_cubemx_command(explicit_cmd: str = "") -> str:
             continue
 
     raise FileNotFoundError(
-        "Unable to locate STM32CubeMX. Pass --cubemx-cmd or set STM32CUBEMX_CMD."
+        tr(
+            "Unable to locate STM32CubeMX. Pass --cubemx-cmd or set STM32CUBEMX_CMD.",
+            "找不到 STM32CubeMX。请传入 --cubemx-cmd 或设置 STM32CUBEMX_CMD。",
+        )
     )
 
 
@@ -388,7 +400,11 @@ def resolve_java_command(cubemx_cmd: str, java_cmd: str = "") -> str:
             continue
 
     raise FileNotFoundError(
-        "Unable to locate Java runtime for STM32CubeMX. Pass --java-cmd or use --launch-mode direct."
+        tr(
+            "Unable to locate Java runtime for STM32CubeMX. "
+            "Pass --java-cmd or use --launch-mode direct.",
+            "找不到运行 STM32CubeMX 所需的 Java。请传入 --java-cmd 或使用 --launch-mode direct。",
+        )
     )
 
 
@@ -465,14 +481,20 @@ def build_cubemx_command(
     """
     launch_mode = launch_mode.lower()
     if launch_mode not in {"auto", "direct", "java"}:
-        raise ValueError(f"Unsupported launch mode: {launch_mode}")
+        raise ValueError(
+            tr(f"Unsupported launch mode: {launch_mode}", f"不支持的启动方式：{launch_mode}")
+        )
 
     use_java = launch_mode == "java" or (launch_mode == "auto" and _is_java_archive(cubemx_cmd))
 
     if use_java and not _is_java_archive(cubemx_cmd):
         raise ValueError(
-            "Java launch mode requires an STM32CubeMX .jar path. "
-            "Use --launch-mode direct for STM32CubeMX.exe."
+            tr(
+                "Java launch mode requires an STM32CubeMX .jar path. "
+                "Use --launch-mode direct for STM32CubeMX.exe.",
+                "java 启动方式需要 STM32CubeMX 的 .jar 路径；"
+                "STM32CubeMX.exe 请使用 --launch-mode direct。",
+            )
         )
 
     command: list[str]
@@ -791,7 +813,10 @@ class _WindowsDialogController(_BaseDialogController):
             raise DialogBlockedError(_st_login_blocked_message())
         if self._is_progress_window(flat_text, child_items):
             LOGGER.info(
-                "Skipping CubeMX progress window to avoid interrupting downloads/extraction"
+                tr(
+                    "Skipping CubeMX progress window to avoid interrupting downloads/extraction",
+                    "跳过 CubeMX 进度窗口，以免打断下载或解压",
+                )
             )
             return False
 
@@ -804,22 +829,41 @@ class _WindowsDialogController(_BaseDialogController):
             checked = self.user32.SendMessageW(child_hwnd, self.BM_GETCHECK, 0, 0)
             if checked != self.BST_CHECKED:
                 self.user32.SendMessageW(child_hwnd, self.BM_CLICK, 0, 0)
-                LOGGER.info(f"Auto-confirmed agreement checkbox: {text}")
+                LOGGER.info(
+                    tr(
+                        f"Auto-confirmed agreement checkbox: {text}",
+                        f"已自动勾选同意复选框：{text}",
+                    )
+                )
 
         for child_hwnd, _, text in child_items:
             lowered = text.lower()
             if any(label in lowered for label in POSITIVE_BUTTON_LABELS):
                 self.user32.SendMessageW(child_hwnd, self.BM_CLICK, 0, 0)
-                LOGGER.info(f"Auto-confirmed CubeMX dialog button: {text}")
+                LOGGER.info(
+                    tr(
+                        f"Auto-confirmed CubeMX dialog button: {text}",
+                        f"已自动点击 CubeMX 对话框按钮：{text}",
+                    )
+                )
                 return True
 
         if self._can_use_keyboard_fallback(hwnd, flat_text, class_name):
             self._confirm_awt_dialog(hwnd)
-            LOGGER.info("Auto-confirmed CubeMX Java dialog with keyboard fallback")
+            LOGGER.info(
+                tr(
+                    "Auto-confirmed CubeMX Java dialog with keyboard fallback",
+                    "已用键盘备用方式自动确认 CubeMX Java 对话框",
+                )
+            )
             return True
 
         LOGGER.info(
-            "Relevant CubeMX window detected but no safe positive button was found; leaving it untouched"
+            tr(
+                "Relevant CubeMX window detected but no safe positive button was found; "
+                "leaving it untouched",
+                "检测到相关的 CubeMX 窗口，但没有找到可安全点击的确认按钮；不做处理",
+            )
         )
         return False
 
@@ -906,7 +950,11 @@ class _LinuxX11DialogController(_BaseDialogController):
                 continue
             if self._is_progress_window(flat_text):
                 LOGGER.info(
-                    "Skipping CubeMX progress window to avoid interrupting downloads/extraction"
+                    tr(
+                        "Skipping CubeMX progress window to avoid interrupting "
+                        "downloads/extraction",
+                        "跳过 CubeMX 进度窗口，以免打断下载或解压",
+                    )
                 )
                 continue
             if self._acted_recently(window.id):
@@ -1126,7 +1174,12 @@ class _LinuxX11DialogController(_BaseDialogController):
             self.xtest.fake_input(self.display, self.X.ButtonPress, 1)
             self.xtest.fake_input(self.display, self.X.ButtonRelease, 1)
             self.display.sync()
-            LOGGER.info(f"Auto-clicked CubeMX dialog default button at {click_x},{click_y}")
+            LOGGER.info(
+                tr(
+                    f"Auto-clicked CubeMX dialog default button at {click_x},{click_y}",
+                    f"已自动点击 CubeMX 对话框默认按钮位置 {click_x},{click_y}",
+                )
+            )
             return True
         except Exception as error:
             LOGGER.debug(f"CubeMX X11 default-button click failed: {error}")
@@ -1180,8 +1233,13 @@ class _LinuxX11DialogController(_BaseDialogController):
         ):
             self._tap(key_name, alt=alt)
         clicked = self._click_default_dialog_button(window)
-        suffix = " and default-button click" if clicked else ""
-        LOGGER.info(f"Auto-confirmed CubeMX dialog with X11 key sequence{suffix}")
+        suffix = tr(" and default-button click", "，并点击了默认按钮位置") if clicked else ""
+        LOGGER.info(
+            tr(
+                f"Auto-confirmed CubeMX dialog with X11 key sequence{suffix}",
+                f"已用 X11 按键序列自动确认 CubeMX 对话框{suffix}",
+            )
+        )
 
 
 def _st_login_blocked_message() -> str:
@@ -1190,9 +1248,12 @@ def _st_login_blocked_message() -> str:
     The error message for an ST account login request: sign in and install the required firmware
     packages in CubeMX on this machine by hand, then generate again.
     """
-    return (
-        "STM32CubeMX requested ST account login. This tool does not automate CubeMX login or state setup; "
-        "open CubeMX on this machine, sign in, install required firmware packages, then run generation again."
+    return tr(
+        "STM32CubeMX requested ST account login. This tool does not automate CubeMX login or "
+        "state setup; open CubeMX on this machine, sign in, install required firmware packages, "
+        "then run generation again.",
+        "STM32CubeMX 要求登录 ST 账号。本工具不会自动登录 CubeMX，也不会自动配置它的状态；"
+        "请在本机打开 CubeMX，登录并安装所需的固件包，然后重新生成。",
     )
 
 
@@ -1212,18 +1273,32 @@ def create_dialog_controller(
         return _WindowsDialogController(process_id)
     if not os.environ.get("DISPLAY"):
         LOGGER.warning(
-            "CubeMX auto-confirm is enabled but DISPLAY is not set; dialog automation is disabled."
+            tr(
+                "CubeMX auto-confirm is enabled but DISPLAY is not set; "
+                "dialog automation is disabled.",
+                "已启用 CubeMX 自动确认，但没有设置 DISPLAY；对话框自动处理已关闭。",
+            )
         )
         return _NullDialogController()
     try:
         return _LinuxX11DialogController(process_id)
     except ImportError:
         LOGGER.warning(
-            "CubeMX auto-confirm on Linux requires python-xlib. Install it or disable --auto-confirm."
+            tr(
+                "CubeMX auto-confirm on Linux requires python-xlib. "
+                "Install it or disable --auto-confirm.",
+                "在 Linux 上自动确认 CubeMX 对话框需要 python-xlib。"
+                "请安装它，或不使用 --auto-confirm。",
+            )
         )
         return _NullDialogController()
     except Exception as error:
-        LOGGER.warning(f"CubeMX auto-confirm could not start on Linux: {error}")
+        LOGGER.warning(
+            tr(
+                f"CubeMX auto-confirm could not start on Linux: {error}",
+                f"无法在 Linux 上启动 CubeMX 自动确认：{error}",
+            )
+        )
         return _NullDialogController()
 
 
@@ -1264,7 +1339,12 @@ class _DialogWatchThread(threading.Thread):
                 self.stop_event.set()
                 break
             except Exception as error:
-                LOGGER.warning(f"CubeMX dialog watcher error: {error}")
+                LOGGER.warning(
+                    tr(
+                        f"CubeMX dialog watcher error: {error}",
+                        f"CubeMX 对话框监视线程出错：{error}",
+                    )
+                )
             self.stop_event.wait(self.poll_interval)
 
 
@@ -1415,11 +1495,19 @@ def generate_cubemx_project(
     """
     project_dir = os.path.abspath(project_dir)
     if not os.path.isdir(project_dir):
-        raise FileNotFoundError(f"Project directory not found: {project_dir}")
+        raise FileNotFoundError(
+            tr(f"Project directory not found: {project_dir}", f"找不到工程目录：{project_dir}")
+        )
 
     ioc_path = os.path.abspath(ioc_file) if ioc_file else find_ioc_file(project_dir)
     if not ioc_path:
-        raise FileNotFoundError(f"No .ioc file found in {_friendly_path_name(project_dir)}")
+        project_name = _friendly_path_name(project_dir)
+        raise FileNotFoundError(
+            tr(
+                f"No .ioc file found in {project_name}",
+                f"{project_name} 中没有 .ioc 文件",
+            )
+        )
 
     resolved_cubemx_cmd = resolve_cubemx_command(cubemx_cmd)
     actual_script_path, should_cleanup_script = _prepare_script_path(
@@ -1439,7 +1527,8 @@ def generate_cubemx_project(
         java_cmd=java_cmd,
         silent=silent,
     )
-    LOGGER.info(f"Running CubeMX command: {_shell_join(command)}")
+    command_line = _shell_join(command)
+    LOGGER.info(tr(f"Running CubeMX command: {command_line}", f"运行 CubeMX 命令：{command_line}"))
 
     stdout_lines: list[str] = []
     stderr_lines: list[str] = []
@@ -1531,7 +1620,12 @@ def generate_cubemx_project(
                 if time.time() >= deadline:
                     _terminate_process_tree(process)
                     returncode = process.wait(timeout=5)
-                    timeout_error = TimeoutError(f"STM32CubeMX timed out after {timeout} seconds")
+                    timeout_error = TimeoutError(
+                        tr(
+                            f"STM32CubeMX timed out after {timeout} seconds",
+                            f"STM32CubeMX 运行超过 {timeout} 秒，已超时",
+                        )
+                    )
                     break
                 time.sleep(0.2)
         finally:
@@ -1568,8 +1662,12 @@ def generate_cubemx_project(
         stdout_tail = _tail_text(stdout_text)
         stderr_tail = _tail_text(stderr_text)
         raise RuntimeError(
-            "STM32CubeMX generation failed with exit code "
-            f"{returncode}\nSTDOUT tail:\n{stdout_tail}\nSTDERR tail:\n{stderr_tail}"
+            tr(
+                "STM32CubeMX generation failed with exit code "
+                f"{returncode}\nSTDOUT tail:\n{stdout_tail}\nSTDERR tail:\n{stderr_tail}",
+                f"STM32CubeMX 生成失败，退出码 {returncode}\n"
+                f"标准输出末尾：\n{stdout_tail}\n标准错误末尾：\n{stderr_tail}",
+            )
         )
 
     effective_expect_paths = DEFAULT_EXPECT_PATHS if expect_paths is None else expect_paths
@@ -1580,10 +1678,14 @@ def generate_cubemx_project(
     ]
     if missing_paths:
         raise RuntimeError(
-            "STM32CubeMX finished but expected paths are still missing: " + ", ".join(missing_paths)
+            tr(
+                "STM32CubeMX finished but expected paths are still missing: ",
+                "STM32CubeMX 已结束，但仍缺少期望的路径：",
+            )
+            + ", ".join(missing_paths)
         )
 
-    LOGGER.info("STM32CubeMX generation finished successfully.")
+    LOGGER.info(tr("STM32CubeMX generation finished successfully.", "STM32CubeMX 生成完成。"))
     return result
 
 
@@ -1593,58 +1695,112 @@ def main() -> None:
     Entry point of xr_cubemx_generate: parse the command line and call generate_cubemx_project;
     on an error, log it and exit with code 1.
     """
-    logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
+    configure_logging()
+    localize_argparse()
 
-    parser = argparse.ArgumentParser(description="Generate STM32CubeMX projects in script mode")
+    parser = argparse.ArgumentParser(
+        description=tr(
+            "Generate STM32CubeMX projects in script mode", "以脚本模式运行 STM32CubeMX 生成工程"
+        )
+    )
     parser.add_argument(
-        "-d", "--directory", required=True, help="Directory containing the CubeMX .ioc file"
+        "-d",
+        "--directory",
+        required=True,
+        help=tr("Directory containing the CubeMX .ioc file", "含有 CubeMX .ioc 文件的目录"),
     )
     parser.add_argument(
         "--ioc",
         default="",
-        help="Explicit .ioc file path (defaults to the first .ioc in --directory)",
+        help=tr(
+            "Explicit .ioc file path (defaults to the first .ioc in --directory)",
+            ".ioc 文件路径（默认：--directory 中的第一个 .ioc 文件）",
+        ),
     )
-    parser.add_argument("--cubemx-cmd", default="", help="STM32CubeMX executable path")
-    parser.add_argument("--java-cmd", default="", help="Java executable path for -jar launch mode")
+    parser.add_argument(
+        "--cubemx-cmd",
+        default="",
+        help=tr("STM32CubeMX executable path", "STM32CubeMX 可执行文件路径"),
+    )
+    parser.add_argument(
+        "--java-cmd",
+        default="",
+        help=tr(
+            "Java executable path for -jar launch mode",
+            "java -jar 启动方式使用的 Java 可执行文件路径",
+        ),
+    )
     parser.add_argument(
         "--launch-mode",
         choices=("auto", "direct", "java"),
         default="auto",
-        help="CubeMX launch mode (default: auto; .jar uses java -jar, executables launch directly)",
+        help=tr(
+            "CubeMX launch mode (default: auto; .jar uses java -jar, executables launch directly)",
+            "CubeMX 启动方式（默认：auto；.jar 用 java -jar 启动，可执行文件直接启动）",
+        ),
     )
     parser.add_argument(
         "--generate-code-dir",
         default="",
-        help="Use 'generate code <dir>' instead of 'project generate'",
+        help=tr(
+            "Use 'generate code <dir>' instead of 'project generate'",
+            "用 'generate code <dir>' 代替 'project generate'",
+        ),
     )
     parser.add_argument(
         "--expect-path",
         action="append",
         default=None,
-        help="Path that must exist after generation (default: Core/Inc and Drivers)",
+        help=tr(
+            "Path that must exist after generation (default: Core/Inc and Drivers)",
+            "生成后必须存在的路径（默认：Core/Inc 和 Drivers）",
+        ),
     )
     parser.add_argument(
-        "--log-dir", default="", help="Optional directory for command/script/stdout/stderr logs"
+        "--log-dir",
+        default="",
+        help=tr(
+            "Optional directory for command/script/stdout/stderr logs",
+            "存放命令、脚本、标准输出和标准错误日志的目录（可选）",
+        ),
     )
     parser.add_argument(
-        "--script-path", default="", help="Optional path for the generated CubeMX script file"
+        "--script-path",
+        default="",
+        help=tr(
+            "Optional path for the generated CubeMX script file",
+            "生成的 CubeMX 脚本文件的路径（可选）",
+        ),
     )
     parser.add_argument(
         "--keep-script",
         action="store_true",
-        help="Keep the generated CubeMX script in the project directory",
+        help=tr(
+            "Keep the generated CubeMX script in the project directory",
+            "在工程目录中保留生成的 CubeMX 脚本",
+        ),
     )
-    parser.add_argument("--silent", action="store_true", help="Pass -s to STM32CubeMX")
+    parser.add_argument(
+        "--silent",
+        action="store_true",
+        help=tr("Pass -s to STM32CubeMX", "向 STM32CubeMX 传入 -s"),
+    )
     parser.add_argument(
         "--auto-confirm",
         action="store_true",
-        help="Attempt to auto-confirm migration/license/download dialogs",
+        help=tr(
+            "Attempt to auto-confirm migration/license/download dialogs",
+            "尝试自动确认迁移、许可和下载对话框",
+        ),
     )
     parser.add_argument(
         "--timeout",
         type=int,
         default=1200,
-        help="CubeMX process timeout in seconds (default: 1200)",
+        help=tr(
+            "CubeMX process timeout in seconds (default: 1200)",
+            "CubeMX 进程的超时时间，单位为秒（默认：1200）",
+        ),
     )
 
     args = parser.parse_args()

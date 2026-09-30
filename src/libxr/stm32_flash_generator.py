@@ -16,6 +16,7 @@ from pathlib import Path
 from re import Pattern
 
 import yaml
+from xr_syntax.i18n import tr
 
 
 @dataclass
@@ -127,7 +128,12 @@ def get_flash_kb(model: str) -> int:
     model = model.strip().upper()
 
     if model.startswith("STM32N6"):
-        raise ValueError("STM32N6 devices do not provide internal user flash")
+        raise ValueError(
+            tr(
+                "STM32N6 devices do not provide internal user flash",
+                "STM32N6 器件没有内部用户 Flash",
+            )
+        )
     if model.startswith("STM32WL"):
         if "X" in model:
             return 1024
@@ -150,7 +156,9 @@ def get_flash_kb(model: str) -> int:
     try:
         return FLASH_SIZE_CODES[model[10]]
     except (KeyError, IndexError):
-        raise ValueError(f"Unrecognized capacity code for {model}") from None
+        raise ValueError(
+            tr(f"Unrecognized capacity code for {model}", f"无法识别 {model} 的容量代码")
+        ) from None
 
 
 def layout_flash(model: str) -> FlashInfo:
@@ -253,7 +261,12 @@ def _build_uniform_sector_sizes(flash_kb: int, size_bytes: int) -> list[int]:
     """
     total_bytes = flash_kb * 1024
     if total_bytes % size_bytes != 0:
-        raise ValueError(f"Flash size {flash_kb}KB is not divisible by erase size {size_bytes}B")
+        raise ValueError(
+            tr(
+                f"Flash size {flash_kb}KB is not divisible by erase size {size_bytes}B",
+                f"Flash 容量 {flash_kb}KB 不能被擦除扇区大小 {size_bytes}B 整除",
+            )
+        )
     return [size_bytes] * (total_bytes // size_bytes)
 
 
@@ -275,7 +288,12 @@ def _build_sequence_sector_sizes(flash_kb: int, pattern_kb: tuple[int, ...]) -> 
         remaining_kb -= size_kb
 
     if remaining_kb != 0:
-        raise ValueError(f"Flash size {flash_kb}KB is not fully covered by sequence {pattern_kb}")
+        raise ValueError(
+            tr(
+                f"Flash size {flash_kb}KB is not fully covered by sequence {pattern_kb}",
+                f"扇区序列 {pattern_kb} 无法完整覆盖 {flash_kb}KB 的 Flash 容量",
+            )
+        )
     return sector_sizes
 
 
@@ -296,7 +314,12 @@ def _build_banked_sector_entries(
             pattern_kb does not add up to bank_kb, or a bank cannot be filled exactly.
     """
     if sum(pattern_kb) != bank_kb:
-        raise ValueError(f"Bank pattern {pattern_kb} does not sum to bank size {bank_kb}KB")
+        raise ValueError(
+            tr(
+                f"Bank pattern {pattern_kb} does not sum to bank size {bank_kb}KB",
+                f"bank 扇区序列 {pattern_kb} 之和不等于 bank 大小 {bank_kb}KB",
+            )
+        )
 
     remaining_kb = flash_kb
     bank_index = 0
@@ -316,7 +339,12 @@ def _build_banked_sector_entries(
             bank_used_kb += size_kb
 
         if bank_used_kb != bank_remaining_kb:
-            raise ValueError(f"Bank pattern {pattern_kb} does not cover {bank_remaining_kb}KB")
+            raise ValueError(
+                tr(
+                    f"Bank pattern {pattern_kb} does not cover {bank_remaining_kb}KB",
+                    f"bank 扇区序列 {pattern_kb} 无法恰好覆盖 {bank_remaining_kb}KB",
+                )
+            )
 
         remaining_kb -= bank_remaining_kb
         bank_index += 1
@@ -340,7 +368,9 @@ def _build_sector_entries_from_rule(
     """
     if rule.layout_type == "uniform":
         if rule.size_bytes is None:
-            raise ValueError(f"Rule {rule.name} is missing size_bytes")
+            raise ValueError(
+                tr(f"Rule {rule.name} is missing size_bytes", f"规则 {rule.name} 缺少 size_bytes")
+            )
         return _build_contiguous_sector_entries(
             _build_uniform_sector_sizes(flash_kb, rule.size_bytes)
         )
@@ -352,7 +382,9 @@ def _build_sector_entries_from_rule(
 
     if rule.layout_type == "banked":
         if rule.bank_kb is None:
-            raise ValueError(f"Rule {rule.name} is missing bank_kb")
+            raise ValueError(
+                tr(f"Rule {rule.name} is missing bank_kb", f"规则 {rule.name} 缺少 bank_kb")
+            )
         bank_address_stride_kb = rule.bank_address_stride_kb or rule.bank_kb
         return _build_banked_sector_entries(
             flash_kb,
@@ -361,7 +393,12 @@ def _build_sector_entries_from_rule(
             bank_address_stride_kb,
         )
 
-    raise ValueError(f"Unsupported flash layout type: {rule.layout_type}")
+    raise ValueError(
+        tr(
+            f"Unsupported flash layout type: {rule.layout_type}",
+            f"不支持的 Flash 布局类型：{rule.layout_type}",
+        )
+    )
 
 
 @lru_cache(maxsize=1)
@@ -382,7 +419,12 @@ def _load_flash_rules() -> tuple[FlashRule, ...]:
     for rule_elem in root.findall("rule"):
         child_elements = list(rule_elem)
         if len(child_elements) != 1:
-            raise ValueError("Each flash rule must contain exactly one layout element")
+            raise ValueError(
+                tr(
+                    "Each flash rule must contain exactly one layout element",
+                    "每条 Flash 规则必须恰好包含一个布局元素",
+                )
+            )
 
         layout_elem = child_elements[0]
         layout_tag = _local_name(layout_elem.tag)
@@ -398,7 +440,9 @@ def _load_flash_rules() -> tuple[FlashRule, ...]:
             bank_kb = int(layout_elem.attrib["bank_kb"], 0)
             pattern_kb = _parse_pattern_kb(layout_elem.attrib["sizes_kb"])
         else:
-            raise ValueError(f"Unsupported layout tag: {layout_tag}")
+            raise ValueError(
+                tr(f"Unsupported layout tag: {layout_tag}", f"不支持的布局标签：{layout_tag}")
+            )
 
         regex = rule_elem.attrib.get("regex")
         rules.append(
@@ -457,7 +501,12 @@ def _parse_rule_size_bytes(elem: ET.Element) -> int:
         return int(elem.attrib["size_bytes"], 0)
     if "size_kb" in elem.attrib:
         return int(elem.attrib["size_kb"], 0) * 1024
-    raise ValueError("uniform layout must provide size_bytes or size_kb")
+    raise ValueError(
+        tr(
+            "uniform layout must provide size_bytes or size_kb",
+            "uniform 布局必须提供 size_bytes 或 size_kb",
+        )
+    )
 
 
 def _parse_pattern_kb(spec: str) -> tuple[int, ...]:
@@ -483,7 +532,9 @@ def _parse_pattern_kb(spec: str) -> tuple[int, ...]:
             pattern.append(int(token, 0))
 
     if not pattern:
-        raise ValueError(f"Invalid pattern specification: {spec}")
+        raise ValueError(
+            tr(f"Invalid pattern specification: {spec}", f"无效的扇区序列写法：{spec}")
+        )
     return tuple(pattern)
 
 
@@ -516,8 +567,10 @@ def main():
     A wrong argument count prints the usage and exits with code 1; a failure prints the reason
     and the stack trace and exits with code 2.
     """
+    from libxr.output import configure_logging
     from libxr.package_info import LibXRPackageInfo
 
+    configure_logging()
     LibXRPackageInfo.check_and_print()
 
     def validate_model(model: str) -> bool:
@@ -527,10 +580,10 @@ def main():
         return "-" not in model and model.upper().startswith("STM32") and len(model) > 8
 
     if len(sys.argv) != 2:
-        print("STM32 Flash Information Tool")
-        print("Usage:")
+        print(tr("STM32 Flash Information Tool", "STM32 Flash 信息工具"))
+        print(tr("Usage:", "用法："))
         print("  xr_stm32_flash <STM32_MODEL>")
-        print("\nExamples:")
+        print(tr("\nExamples:", "\n示例："))
         print("  xr_stm32_flash STM32F103C8T6")
         print("  xr_stm32_flash STM32L476RG")
         sys.exit(1)
@@ -539,7 +592,9 @@ def main():
 
     try:
         if not validate_model(model):
-            raise ValueError(f"Invalid STM32 model format: {model}")
+            raise ValueError(
+                tr(f"Invalid STM32 model format: {model}", f"STM32 型号格式无效：{model}")
+            )
 
         info = layout_flash(model)
         print(
@@ -552,9 +607,9 @@ def main():
         )
 
     except Exception as error:
-        print(f"\nERROR: Failed to process model {model}")
-        print(f"Reason: {str(error)}")
-        print("\nStack trace:")
+        print(tr(f"\nERROR: Failed to process model {model}", f"\n错误：无法处理型号 {model}"))
+        print(tr(f"Reason: {str(error)}", f"原因：{str(error)}"))
+        print(tr("\nStack trace:", "\n调用栈："))
         traceback.print_exc()
         sys.exit(2)
 

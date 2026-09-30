@@ -20,8 +20,7 @@ from re import Pattern
 from typing import Any, TextIO
 
 import yaml
-
-logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
+from xr_syntax.i18n import localize_argparse, tr
 
 
 # --------------------------
@@ -1192,7 +1191,12 @@ class CANParser(PeripheralParser):
             try:
                 self.config.peripherals["FDCAN"][can_name][key] = converter(value)
             except ValueError:
-                logging.warning(f"Invalid {key} value for {can_name}: {value}")
+                logging.warning(
+                    tr(
+                        f"Invalid {key} value for {can_name}: {value}",
+                        f"{can_name} 的 {key} 值无效：{value}",
+                    )
+                )
 
 
 # --------------------------
@@ -1226,11 +1230,21 @@ class USBParser(PeripheralParser):
             elif re.match(r"^USB(_OTG(_FS|_HS))?\.", key):
                 usb_names.setdefault(self._ioc_key_root(key))
 
-        logging.info(f"[USBParser] Detected USB peripherals: {list(usb_names)}")
+        logging.info(
+            tr(
+                f"[USBParser] Detected USB peripherals: {list(usb_names)}",
+                f"[USBParser] 检测到的 USB 外设：{list(usb_names)}",
+            )
+        )
 
         for usb_name in usb_names:
             self._ensure_usb_instance(usb_name)
-            logging.info(f"[USBParser] Parsing configuration for: {usb_name}")
+            logging.info(
+                tr(
+                    f"[USBParser] Parsing configuration for: {usb_name}",
+                    f"[USBParser] 正在解析配置：{usb_name}",
+                )
+            )
 
             for key, value in self.raw_map.items():
                 if not self._has_ioc_prefix(key, usb_name):
@@ -1249,9 +1263,14 @@ class USBParser(PeripheralParser):
                         self.config.peripherals["USB"][usb_name]["profiles"][profile][param] = (
                             value.split(",")
                         )
+                        parameters = self.config.peripherals["USB"][usb_name]["profiles"][profile][
+                            param
+                        ]
                         logging.info(
-                            f"[USBParser] IPParameters for profile={profile}: "
-                            f"{self.config.peripherals['USB'][usb_name]['profiles'][profile][param]}"
+                            tr(
+                                f"[USBParser] IPParameters for profile={profile}: {parameters}",
+                                f"[USBParser] profile={profile} 的 IPParameters：{parameters}",
+                            )
                         )
                     else:
                         self.config.peripherals["USB"][usb_name]["profiles"][profile][param] = value
@@ -1260,9 +1279,12 @@ class USBParser(PeripheralParser):
                     logging.debug(f"[USBParser] Global param: {usb_name}.{rest_key} = {value}")
                     if rest_key == "IPParameters":
                         self.config.peripherals["USB"][usb_name][rest_key] = value.split(",")
+                        parameters = self.config.peripherals["USB"][usb_name][rest_key]
                         logging.info(
-                            f"[USBParser] IPParameters: "
-                            f"{self.config.peripherals['USB'][usb_name][rest_key]}"
+                            tr(
+                                f"[USBParser] IPParameters: {parameters}",
+                                f"[USBParser] IPParameters：{parameters}",
+                            )
                         )
                     else:
                         self.config.peripherals["USB"][usb_name][rest_key] = value
@@ -1371,7 +1393,11 @@ class DMAParser(PeripheralParser):
                         structured[field] = converter(props[cube_prop])
                     except Exception as e:
                         logging.warning(
-                            f"DMA property conversion failed for {config_key}.{cube_prop}: {str(e)}"
+                            tr(
+                                f"DMA property conversion failed for {config_key}.{cube_prop}: "
+                                f"{str(e)}",
+                                f"{config_key}.{cube_prop} 的 DMA 属性转换失败：{str(e)}",
+                            )
                         )
             if "Direction" in props:
                 structured["direction_full"] = self._normalize_dma_direction(props["Direction"])
@@ -1603,7 +1629,7 @@ def parse_ioc_file(ioc_path: str) -> dict[str, Any] | None:
         with open(ioc_path, encoding="utf-8") as f:
             raw_map = _extract_key_value_pairs(f)
     except (OSError, UnicodeDecodeError) as e:
-        logging.error(f"File processing failed: {str(e)}")
+        logging.error(tr(f"File processing failed: {str(e)}", f"文件处理失败：{str(e)}"))
         return None
 
     # Timebase special fields parsing
@@ -1647,7 +1673,7 @@ def parse_ioc_file(ioc_path: str) -> dict[str, Any] | None:
 
         return config.clean_structure()
     except Exception as e:
-        logging.error(f"Parsing failed: {str(e)}")
+        logging.error(tr(f"Parsing failed: {str(e)}", f"解析失败：{str(e)}"))
         return None
 
 
@@ -1669,7 +1695,12 @@ def _extract_key_value_pairs(file_handler: TextIO) -> dict[str, str]:
             key, value = map(str.strip, line.split("=", 1))
             raw_map[key.replace("\\#", "")] = value
         except ValueError:
-            logging.warning(f"Ignored malformed entry at line {line_num}: {line}")
+            logging.warning(
+                tr(
+                    f"Ignored malformed entry at line {line_num}: {line}",
+                    f"忽略第 {line_num} 行格式错误的条目：{line}",
+                )
+            )
 
     return raw_map
 
@@ -1713,10 +1744,12 @@ def save_to_yaml(data: dict[str, Any], output_path: str = "parsed_ioc.yaml") -> 
                 default_flow_style=False,
                 indent=2,
             )
-        logging.info(f"Configuration exported to: {output_path}")
+        logging.info(
+            tr(f"Configuration exported to: {output_path}", f"配置已导出到：{output_path}")
+        )
         return True
     except (OSError, yaml.YAMLError) as e:
-        logging.error(f"YAML export failed: {str(e)}")
+        logging.error(tr(f"YAML export failed: {str(e)}", f"YAML 导出失败：{str(e)}"))
         return False
 
 
@@ -1725,30 +1758,34 @@ def print_summary(data: dict[str, Any]) -> None:
     Print a configuration summary to standard output: the MCU, GPIO output/input/external
     interrupt counts, each peripheral instance and the watchdogs.
     """
-    print("\n===== [Configuration Summary] =====")
+    print(tr("\n===== [Configuration Summary] =====", "\n===== [配置摘要] ====="))
 
     # MCU Info
     mcu = data.get("Mcu", {})
-    print(f"\nMCU: {mcu.get('Family', 'Unknown')} {mcu.get('Type', '')}")
+    family = mcu.get("Family", tr("Unknown", "未知"))
+    print(tr(f"\nMCU: {family} {mcu.get('Type', '')}", f"\nMCU：{family} {mcu.get('Type', '')}"))
 
     # GPIO Summary
     gpio = data.get("GPIO", {})
-    print(f"\nGPIO ({len(gpio)} pins):")
-    print(f"  Outputs: {sum(1 for c in gpio.values() if c.get('Signal') == 'GPIO_Output')}")
-    print(f"  Inputs: {sum(1 for c in gpio.values() if c.get('Signal') == 'GPIO_Input')}")
-    print(f"  External Interrupts: {sum(1 for c in gpio.values() if c.get('GPXTI'))}")
+    outputs = sum(1 for c in gpio.values() if c.get("Signal") == "GPIO_Output")
+    inputs = sum(1 for c in gpio.values() if c.get("Signal") == "GPIO_Input")
+    interrupts = sum(1 for c in gpio.values() if c.get("GPXTI"))
+    print(tr(f"\nGPIO ({len(gpio)} pins):", f"\nGPIO（{len(gpio)} 个引脚）："))
+    print(tr(f"  Outputs: {outputs}", f"  输出：{outputs}"))
+    print(tr(f"  Inputs: {inputs}", f"  输入：{inputs}"))
+    print(tr(f"  External Interrupts: {interrupts}", f"  外部中断：{interrupts}"))
 
     # Peripheral Summary
-    print("\nActive Peripherals:")
+    print(tr("\nActive Peripherals:", "\n已启用的外设："))
     for p_type, group in data.get("Peripherals", {}).items():
-        print(f"  {p_type}: {len(group)} instance(s)")
+        print(tr(f"  {p_type}: {len(group)} instance(s)", f"  {p_type}：{len(group)} 个实例"))
         for name, cfg in group.items():
             print(f"    {name}: {_format_peripheral_config(p_type, cfg)}")
 
     iwdgs = data.get("Peripherals", {}).get("IWDG", {})
     wwdgs = data.get("Peripherals", {}).get("WWDG", {})
     if iwdgs or wwdgs:
-        print("\nWatchdogs:")
+        print(tr("\nWatchdogs:", "\n看门狗："))
         for k, v in iwdgs.items():
             print(
                 f"  {k}: Enabled={v.get('Enabled', False)}, Prescaler={v.get('Prescaler')}, Reload={v.get('Reload')}"
@@ -1791,49 +1828,71 @@ def main() -> None:
     The output defaults to .config.yaml in that directory. A missing directory, no .ioc file
     or several .ioc files exit with status 1.
     """
+    from libxr.output import configure_logging
     from libxr.package_info import LibXRPackageInfo
 
+    configure_logging()
     LibXRPackageInfo.check_and_print()
 
+    localize_argparse()
     parser = argparse.ArgumentParser(
-        description="STM32CubeMX IOC Configuration Parser v2.0",
+        description=tr(
+            "STM32CubeMX IOC Configuration Parser v2.0", "STM32CubeMX .ioc 配置解析器 v2.0"
+        ),
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
-        "-d", "--directory", required=True, help="Input directory containing .ioc files"
+        "-d",
+        "--directory",
+        required=True,
+        help=tr("Input directory containing .ioc files", "包含 .ioc 文件的输入目录"),
     )
     parser.add_argument(
         "-o",
         "--output",
-        help="output YAML file (default: .config.yaml in DIRECTORY)",
+        help=tr(
+            "output YAML file (default: .config.yaml in DIRECTORY)",
+            "输出的 YAML 文件（默认：DIRECTORY 中的 .config.yaml）",
+        ),
     )
-    parser.add_argument("--verbose", action="store_true", help="Enable debug logging")
+    parser.add_argument(
+        "--verbose", action="store_true", help=tr("Enable debug logging", "输出调试日志")
+    )
 
     args = parser.parse_args()
 
     if args.verbose:
-        logging.getLogger().setLevel(logging.DEBUG)
+        configure_logging(logging.DEBUG)
 
     if not os.path.isdir(args.directory):
-        logging.error(f"Invalid input directory: {args.directory}")
+        logging.error(
+            tr(
+                f"Invalid input directory: {args.directory}",
+                f"无效的输入目录：{args.directory}",
+            )
+        )
         sys.exit(1)
 
     ioc_files = sorted(f for f in os.listdir(args.directory) if f.endswith(".ioc"))
     if not ioc_files:
-        logging.error("No .ioc files found in target directory")
+        logging.error(tr("No .ioc files found in target directory", "目标目录中没有 .ioc 文件"))
         sys.exit(1)
     if len(ioc_files) > 1:
         # 一个目录对应一个 CubeMX 工程；多个 .ioc 会写进同一个输出文件。
         # One directory is one CubeMX project; several .ioc files would share the output.
         logging.error(
-            f"{args.directory} holds several .ioc files ({', '.join(ioc_files)}); "
-            "run xr_parse_ioc on a directory with one CubeMX project"
+            tr(
+                f"{args.directory} holds several .ioc files ({', '.join(ioc_files)}); "
+                "run xr_parse_ioc on a directory with one CubeMX project",
+                f"{args.directory} 中有多个 .ioc 文件（{', '.join(ioc_files)}）；"
+                "请对只含一个 CubeMX 工程的目录运行 xr_parse_ioc",
+            )
         )
         sys.exit(1)
 
     for ioc_file in ioc_files:
         input_path = os.path.join(args.directory, ioc_file)
-        logging.info(f"Processing {ioc_file}...")
+        logging.info(tr(f"Processing {ioc_file}...", f"正在处理 {ioc_file}……"))
 
         config_data = parse_ioc_file(input_path)
         if not config_data:

@@ -17,7 +17,7 @@ import shlex
 import subprocess
 import sys
 
-logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
+from xr_syntax.i18n import localize_argparse, tr
 
 DEFAULT_MIRRORS = [
     "https://gitee.com/jiu-xiao/libxr",
@@ -80,13 +80,21 @@ def run_command(cmd, ignore_error=False):
         result = subprocess.run(cmd, capture_output=True, text=True)
     else:
         result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+    command_line = _fmt_cmd(cmd)
     if result.returncode == 0:
-        logging.info(f"[OK] {_fmt_cmd(cmd)}")
+        logging.info(tr(f"[OK] {command_line}", f"[完成] {command_line}"))
         return result.stdout
     if ignore_error:
-        logging.warning(f"[IGNORED FAILURE] {_fmt_cmd(cmd)}\n{result.stderr}")
+        logging.warning(
+            tr(
+                f"[IGNORED FAILURE] {command_line}\n{result.stderr}",
+                f"[已忽略的失败] {command_line}\n{result.stderr}",
+            )
+        )
         return result.stdout
-    logging.error(f"[FAILED] {_fmt_cmd(cmd)}\n{result.stderr}")
+    logging.error(
+        tr(f"[FAILED] {command_line}\n{result.stderr}", f"[失败] {command_line}\n{result.stderr}")
+    )
     sys.exit(1)
 
 
@@ -175,7 +183,7 @@ def create_gitignore_file(project_dir):
     """
     gitignore_path = os.path.join(project_dir, ".gitignore")
     if not os.path.exists(gitignore_path):
-        logging.info("Creating .gitignore file...")
+        logging.info(tr("Creating .gitignore file...", "正在创建 .gitignore 文件……"))
         with open(gitignore_path, "w", encoding="utf-8", newline="\n") as gitignore_file:
             gitignore_file.write("""build/**
 .history/**
@@ -291,14 +299,19 @@ def add_libxr(
         return False
 
     if not os.path.exists(midware_path):
-        logging.info("Creating Middleware folder...")
+        logging.info(tr("Creating Middleware folder...", "正在创建 Middlewares 目录……"))
         os.makedirs(midware_path)
     if not os.path.exists(third_party_path):
-        logging.info("Creating Third Party folder...")
+        logging.info(tr("Creating Third Party folder...", "正在创建 Third_Party 目录……"))
         os.makedirs(third_party_path)
 
     if not is_git_repo(project_dir):
-        logging.warning(f"{project_dir} is not a Git repository. Initializing...")
+        logging.warning(
+            tr(
+                f"{project_dir} is not a Git repository. Initializing...",
+                f"{project_dir}: 不是 Git 仓库，正在初始化……",
+            )
+        )
         run_command(["git", "init", project_dir])
 
     registered = has_registered_submodule(project_dir, sub_rel_path_posix)
@@ -310,8 +323,12 @@ def add_libxr(
     # it is never deleted, moved or re-cloned.
     if checkout_path_present and not existing_checkout and not is_empty_directory(libxr_path):
         logging.error(
-            f"{libxr_path} exists but is not a valid Git checkout; it was left untouched. "
-            "Move it away or turn it into a LibXR checkout, then run again."
+            tr(
+                f"{libxr_path} exists but is not a valid Git checkout; it was left untouched. "
+                "Move it away or turn it into a LibXR checkout, then run again.",
+                f"{libxr_path}: 已存在，但不是有效的 Git 检出，未做改动。"
+                "请把它移走或改成 LibXR 的检出，然后重新运行。",
+            )
         )
         sys.exit(1)
 
@@ -321,7 +338,12 @@ def add_libxr(
                 ["git", "-C", project_dir, "submodule", "sync", "--", sub_rel_path_posix],
                 ignore_error=False,
             )
-            logging.info("LibXR submodule already exists; preserving current checkout.")
+            logging.info(
+                tr(
+                    "LibXR submodule already exists; preserving current checkout.",
+                    "LibXR 子模块已存在，保留当前检出。",
+                )
+            )
         else:
             run_command(
                 ["git", "-C", project_dir, "submodule", "sync", "--", sub_rel_path_posix],
@@ -342,19 +364,29 @@ def add_libxr(
                 ignore_error=False,
             )
     else:
-        logging.info("LibXR submodule not registered yet; skipping preemptive update.")
+        logging.info(
+            tr(
+                "LibXR submodule not registered yet; skipping preemptive update.",
+                "LibXR 子模块尚未登记，跳过预先更新。",
+            )
+        )
 
     repo_url = make_repo_url(git_base, "Jiu-Xiao", "libxr")
     if not registered:
-        logging.info(f"Adding LibXR as submodule from {repo_url} ...")
+        logging.info(
+            tr(
+                f"Adding LibXR as submodule from {repo_url} ...",
+                f"正在从 {repo_url} 加入 LibXR 子模块……",
+            )
+        )
         run_command(["git", "-C", project_dir, "submodule", "add", repo_url, sub_rel_path_posix])
-        logging.info("LibXR submodule added and initialized.")
+        logging.info(tr("LibXR submodule added and initialized.", "LibXR 子模块已加入并初始化。"))
         added_submodule = True
     else:
-        logging.info("LibXR submodule already registered.")
+        logging.info(tr("LibXR submodule already registered.", "LibXR 子模块已登记。"))
 
     if os.path.exists(libxr_path):
-        logging.info("LibXR submodule path exists.")
+        logging.info(tr("LibXR submodule path exists.", "LibXR 子模块路径已存在。"))
         current_commit = get_git_head(libxr_path)
         target_commit = ""
 
@@ -364,27 +396,48 @@ def add_libxr(
         # reported.
         if libxr_commit:
             target_commit = libxr_commit
-            logging.info(f"Checking out LibXR to requested commit {target_commit}")
+            logging.info(
+                tr(
+                    f"Checking out LibXR to requested commit {target_commit}",
+                    f"把 LibXR 检出到指定的提交 {target_commit}",
+                )
+            )
         elif added_submodule and not existing_checkout and default_libxr_commit:
             target_commit = default_libxr_commit
-            logging.info(f"Initializing new LibXR submodule to default commit {target_commit}")
+            logging.info(
+                tr(
+                    f"Initializing new LibXR submodule to default commit {target_commit}",
+                    f"把新加入的 LibXR 子模块初始化到默认提交 {target_commit}",
+                )
+            )
         elif default_libxr_commit and current_commit != default_libxr_commit:
             if is_commit_ancestor(libxr_path, default_libxr_commit, current_commit):
-                logging.info("LibXR checkout is newer than this generator's default; keeping it.")
+                logging.info(
+                    tr(
+                        "LibXR checkout is newer than this generator's default; keeping it.",
+                        "LibXR 的检出比本生成器的默认提交新，保留不变。",
+                    )
+                )
             else:
                 relation = (
-                    "older than"
+                    tr("older than", "早于")
                     if is_commit_ancestor(libxr_path, current_commit, default_libxr_commit)
-                    else "different from"
+                    else tr("different from", "不同于")
                 )
                 logging.warning(
-                    f"LibXR checkout {current_commit[:12]} is {relation} this generator's default "
-                    f"{default_libxr_commit[:12]}; it was left unchanged. To switch, run "
-                    f"xr_cubemx_cfg with --commit {default_libxr_commit} (or check out the commit "
-                    "in Middlewares/Third_Party/LibXR) and commit the gitlink."
+                    tr(
+                        f"LibXR checkout {current_commit[:12]} is {relation} this generator's "
+                        f"default {default_libxr_commit[:12]}; it was left unchanged. To switch, "
+                        f"run xr_cubemx_cfg with --commit {default_libxr_commit} (or check out "
+                        "the commit in Middlewares/Third_Party/LibXR) and commit the gitlink.",
+                        f"LibXR 的检出 {current_commit[:12]} {relation}本生成器的默认提交 "
+                        f"{default_libxr_commit[:12]}，未做改动。如需切换，请用 --commit "
+                        f"{default_libxr_commit} 运行 xr_cubemx_cfg（或在 "
+                        "Middlewares/Third_Party/LibXR 中检出该提交），然后提交 gitlink。",
+                    )
                 )
         else:
-            logging.info("Keeping the existing LibXR checkout.")
+            logging.info(tr("Keeping the existing LibXR checkout.", "保留现有的 LibXR 检出。"))
 
         if target_commit:
             run_command(["git", "-C", libxr_path, "fetch", "origin"], ignore_error=True)
@@ -426,7 +479,12 @@ def set_terminal_source(user_path, terminal_source):
         sys.exit(1)
     libxr_config_file.set_value(document, "terminal_source", terminal_source)
     libxr_config_file.write(config_path, document)
-    logging.info(f"Set terminal_source to {terminal_source} in {config_path}")
+    logging.info(
+        tr(
+            f"Set terminal_source to {terminal_source} in {config_path}",
+            f"已在 {config_path} 中把 terminal_source 设为 {terminal_source}",
+        )
+    )
 
 
 def process_ioc_file(project_dir, yaml_output):
@@ -434,7 +492,7 @@ def process_ioc_file(project_dir, yaml_output):
     Run xr_parse_ioc to parse the .ioc file of the project and write the YAML configuration to
     yaml_output.
     """
-    logging.info("Parsing .ioc file...")
+    logging.info(tr("Parsing .ioc file...", "正在解析 .ioc 文件……"))
     run_command(f"xr_parse_ioc -d {project_dir} -o {yaml_output}")
 
 
@@ -444,7 +502,7 @@ def generate_cpp_code(yaml_output, cpp_output, xrobot_enable=False):
     Run xr_gen_code_stm32 to generate C++ code from the YAML configuration into cpp_output, with
     --xrobot when xrobot_enable is set.
     """
-    logging.info("Generating C++ code...")
+    logging.info(tr("Generating C++ code...", "正在生成 C++ 代码……"))
     cmd = f"xr_gen_code_stm32 -i {yaml_output} -o {cpp_output}"
     if xrobot_enable:
         cmd += " --xrobot"
@@ -477,7 +535,12 @@ def ensure_valid_cubemx_project(path: str):
     display_name = _friendly_path_name(path)
     core_dir = os.path.join(path, "Core")
     if not os.path.isdir(core_dir):
-        logging.error(f"{display_name} is not a valid STM32CubeMX project: missing Core/ directory")
+        logging.error(
+            tr(
+                f"{display_name} is not a valid STM32CubeMX project: missing Core/ directory",
+                f"{display_name}: 不是有效的 STM32CubeMX 工程，缺少 Core/ 目录",
+            )
+        )
         sys.exit(1)
 
 
@@ -492,30 +555,54 @@ def main():
     Without --commit, the commit locked in libxr_version.py is the default. With --git-source
     auto, the fastest of GitHub, the built-in mirror, XR_GIT_MIRRORS and --git-mirrors is chosen.
     """
+    from libxr.output import configure_logging
     from libxr.package_info import LibXRPackageInfo
 
+    configure_logging()
     LibXRPackageInfo.check_and_print()
 
-    parser = argparse.ArgumentParser(description="Automate STM32CubeMX project setup")
-    parser.add_argument("-d", "--directory", required=True, help="STM32CubeMX project directory")
+    localize_argparse()
+    parser = argparse.ArgumentParser(
+        description=tr("Automate STM32CubeMX project setup", "自动配置 STM32CubeMX 工程")
+    )
+    parser.add_argument(
+        "-d",
+        "--directory",
+        required=True,
+        help=tr("STM32CubeMX project directory", "STM32CubeMX 工程目录"),
+    )
     parser.add_argument(
         "-t",
         "--terminal",
         default="",
-        help="Terminal device (e.g. usart1, usb_fs_cdc); stored as "
-        "terminal_source in User/libxr_config.yaml",
+        help=tr(
+            "Terminal device (e.g. usart1, usb_fs_cdc); stored as "
+            "terminal_source in User/libxr_config.yaml",
+            "终端设备（例如 usart1、usb_fs_cdc），记录为 User/libxr_config.yaml 中的 "
+            "terminal_source",
+        ),
     )
-    parser.add_argument("--xrobot", action="store_true", help="Support XRobot")
-    parser.add_argument("--commit", default="", help="Specify locked LibXR commit hash")
+    parser.add_argument("--xrobot", action="store_true", help=tr("Support XRobot", "支持 XRobot"))
+    parser.add_argument(
+        "--commit",
+        default="",
+        help=tr("Specify locked LibXR commit hash", "指定锁定的 LibXR 提交哈希"),
+    )
     parser.add_argument(
         "--git-source",
         default="auto",
-        help="Git source base URL or full repo URL, or 'auto'/'github' (default: auto)",
+        help=tr(
+            "Git source base URL or full repo URL, or 'auto'/'github' (default: auto)",
+            "Git 源的基础地址或完整仓库地址，或 'auto'/'github'（默认：auto）",
+        ),
     )
     parser.add_argument(
         "--git-mirrors",
         default="",
-        help="Comma-separated mirror base/repo URLs (will be tried when --git-source=auto)",
+        help=tr(
+            "Comma-separated mirror base/repo URLs (will be tried when --git-source=auto)",
+            "以逗号分隔的镜像基础地址或仓库地址（--git-source=auto 时参与选择）",
+        ),
     )
 
     args = parser.parse_args()
@@ -533,16 +620,29 @@ def main():
 
             default_libxr_commit = LibXRInfo.COMMIT
         except Exception as e:
-            logging.info(f"No lock commit found in src/libxr/libxr_version.py: {e}")
+            logging.info(
+                tr(
+                    f"No lock commit found in src/libxr/libxr_version.py: {e}",
+                    f"src/libxr/libxr_version.py 中没有锁定的提交：{e}",
+                )
+            )
             default_libxr_commit = ""
 
     if libxr_commit:
-        logging.info(f"Requested LibXR commit: {libxr_commit}")
+        logging.info(
+            tr(f"Requested LibXR commit: {libxr_commit}", f"指定的 LibXR 提交：{libxr_commit}")
+        )
     elif default_libxr_commit:
-        logging.info(f"Default LibXR commit: {default_libxr_commit}")
+        logging.info(
+            tr(
+                f"Default LibXR commit: {default_libxr_commit}",
+                f"默认的 LibXR 提交：{default_libxr_commit}",
+            )
+        )
 
     if not os.path.isdir(project_dir):
-        logging.error(f"Directory {_friendly_path_name(project_dir)} does not exist")
+        display_name = _friendly_path_name(project_dir)
+        logging.error(tr(f"Directory {display_name} does not exist", f"目录 {display_name} 不存在"))
         sys.exit(1)
 
     # Validate STM32CubeMX project structure (must have Core/ directory)
@@ -565,7 +665,7 @@ def main():
         git_base = "https://github.com"
     else:
         git_base = args.git_source
-    logging.info(f"Selected Git base/repo: {git_base}")
+    logging.info(tr(f"Selected Git base/repo: {git_base}", f"选用的 Git 源：{git_base}"))
 
     # Add Git submodule if necessary
     add_libxr(
@@ -578,10 +678,10 @@ def main():
     # Find .ioc file
     ioc_file = find_ioc_file(project_dir)
     if not ioc_file:
-        logging.error("No .ioc file found")
+        logging.error(tr("No .ioc file found", "找不到 .ioc 文件"))
         sys.exit(1)
 
-    logging.info(f"Found .ioc file: {ioc_file}")
+    logging.info(tr(f"Found .ioc file: {ioc_file}", f"找到 .ioc 文件：{ioc_file}"))
 
     create_gitignore_file(project_dir)
 
@@ -605,7 +705,7 @@ def main():
     # Generate CMakeLists.txt with selected compiler
     generate_cmake_file(project_dir)
 
-    logging.info("[Pass] All tasks completed successfully!")
+    logging.info(tr("[Pass] All tasks completed successfully!", "[通过] 全部任务已完成！"))
 
 
 if __name__ == "__main__":

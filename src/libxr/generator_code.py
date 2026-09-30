@@ -10,7 +10,7 @@ import os
 import subprocess
 import sys
 
-logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
+from xr_syntax.i18n import localize_argparse, tr
 
 
 def is_stm32_project(path: str) -> bool:
@@ -21,7 +21,7 @@ def is_stm32_project(path: str) -> bool:
     try:
         return any(f.endswith(".ioc") for f in os.listdir(path))
     except Exception as e:
-        logging.error(f"Cannot check directory '{path}': {e}")
+        logging.error(tr(f"Cannot check directory '{path}': {e}", f"无法检查目录 '{path}'：{e}"))
         return False
 
 
@@ -34,12 +34,22 @@ def main():
     Exits with a non-zero status when the input file is missing or the generator fails, and
     with status 0 when the project is not an STM32 project.
     """
+    from libxr.output import configure_logging
     from libxr.package_info import LibXRPackageInfo
 
+    configure_logging()
     LibXRPackageInfo.check_and_print()
 
-    parser = argparse.ArgumentParser(description="Wrapper for STM32 code generation.")
-    parser.add_argument("-i", "--input", required=True, help="Input YAML configuration file path")
+    localize_argparse()
+    parser = argparse.ArgumentParser(
+        description=tr("Wrapper for STM32 code generation.", "STM32 代码生成的包装入口。")
+    )
+    parser.add_argument(
+        "-i",
+        "--input",
+        required=True,
+        help=tr("Input YAML configuration file path", "输入的 YAML 配置文件路径"),
+    )
 
     # We don't parse all args because we want to forward unknown ones later
     known_args, unknown_args = parser.parse_known_args()
@@ -48,28 +58,47 @@ def main():
     input_dir = os.path.dirname(input_path)
 
     if not os.path.isfile(input_path):
-        logging.error(f"YAML configuration file not found: {input_path}")
+        logging.error(
+            tr(
+                f"YAML configuration file not found: {input_path}",
+                f"找不到 YAML 配置文件：{input_path}",
+            )
+        )
         sys.exit(1)
 
     if not is_stm32_project(input_dir):
         logging.info(
-            "Skipped: This is not an STM32 project (no .ioc file found in input file directory)."
+            tr(
+                "Skipped: This is not an STM32 project (no .ioc file found in input file "
+                "directory).",
+                "已跳过：不是 STM32 工程（输入文件所在目录中没有 .ioc 文件）。",
+            )
         )
         sys.exit(0)
 
     # Forward all original arguments (not just known) to the generator
     cmd: list[str] = [sys.executable, "-m", "libxr.generator_code_stm32", *sys.argv[1:]]
 
-    logging.info("STM32 project detected (found .ioc file in input path).")
+    logging.info(
+        tr(
+            "STM32 project detected (found .ioc file in input path).",
+            "检测到 STM32 工程（输入路径中有 .ioc 文件）。",
+        )
+    )
     logging.debug(f"CMD: {' '.join(cmd)}")
 
     try:
         subprocess.run(cmd, check=True)
     except subprocess.CalledProcessError as e:
-        logging.error(f"Code generation failed with exit code {e.returncode}")
+        logging.error(
+            tr(
+                f"Code generation failed with exit code {e.returncode}",
+                f"代码生成失败，退出码 {e.returncode}",
+            )
+        )
         sys.exit(e.returncode)
     except Exception as e:
-        logging.error(f"Unexpected error: {e}")
+        logging.error(tr(f"Unexpected error: {e}", f"意外错误：{e}"))
         sys.exit(1)
 
 
