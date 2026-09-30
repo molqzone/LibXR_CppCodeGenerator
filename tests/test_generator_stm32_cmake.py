@@ -1,39 +1,48 @@
-"""CMake integration written by xr_stm32_cmake."""
+"""xr_stm32_cmake 写入的 CMake 集成（libxr.generator_stm32_cmake）。
+The CMake integration written by xr_stm32_cmake (libxr.generator_stm32_cmake).
+"""
 
-import importlib
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from libxr import generator_code_stm32 as generator
+from fixtures import GeneratorTestCase
+
 from libxr import generator_stm32_cmake as stm32_cmake
 
-PROJECT = {"Mcu": {"Type": "STM32F407IGH6", "Family": "STM32F4"}, "GPIO": {}, "Peripherals": {}}
 
+class ModulesDirectory(GeneratorTestCase):
+    """app_main 使用 XRobot 时 LibXR.CMake 设置 XROBOT_MODULES_DIR。
+    LibXR.CMake sets XROBOT_MODULES_DIR when app_main uses XRobot.
+    """
 
-class ModulesDirectory(unittest.TestCase):
     def setUp(self):
+        super().setUp()
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
-        self.project = Path(self.temporary.name)
-        (self.project / "User").mkdir()
-        (self.project / "CMakeLists.txt").write_text("project(demo)\n", encoding="utf-8")
+        self.root = Path(self.temporary.name)
+        (self.root / "User").mkdir()
+        (self.root / "CMakeLists.txt").write_text("project(demo)\n", encoding="utf-8")
 
     def write_app_main(self, use_xrobot):
-        importlib.reload(generator)
-        generator.initialize_registry(use_xrobot)
-        code = generator.generate_full_code(PROJECT, use_xrobot, "")
-        (self.project / "User" / "app_main.cpp").write_text(code, encoding="utf-8")
+        """生成并写入 User/app_main.cpp，返回其文本。
+        Generate and write User/app_main.cpp; return its text.
+        """
+        code = self.generate(use_xrobot=use_xrobot)
+        (self.root / "User" / "app_main.cpp").write_text(code, encoding="utf-8")
         return code
 
     def run_cmake_generator(self):
+        """运行 xr_stm32_cmake，返回 cmake/LibXR.CMake 的文本。
+        Run xr_stm32_cmake and return the text of cmake/LibXR.CMake.
+        """
         with (
-            patch("sys.argv", ["xr_stm32_cmake", str(self.project)]),
+            patch("sys.argv", ["xr_stm32_cmake", str(self.root)]),
             patch("libxr.package_info.LibXRPackageInfo.check_and_print"),
         ):
             stm32_cmake.main()
-        return (self.project / "cmake" / "LibXR.CMake").read_text(encoding="utf-8")
+        return (self.root / "cmake" / "LibXR.CMake").read_text(encoding="utf-8")
 
     def test_xrobot_project_sets_modules_directory(self):
         self.write_app_main(True)
@@ -56,12 +65,12 @@ class ModulesDirectory(unittest.TestCase):
         code = self.write_app_main(False).replace(
             "/* User Code Begin 1 */", '/* User Code Begin 1 */\n#include "xrobot_main.hpp"', 1
         )
-        (self.project / "User" / "app_main.cpp").write_text(code, encoding="utf-8")
-        self.assertFalse(stm32_cmake.project_uses_xrobot(str(self.project)))
+        (self.root / "User" / "app_main.cpp").write_text(code, encoding="utf-8")
+        self.assertFalse(stm32_cmake.project_uses_xrobot(str(self.root)))
 
     def test_existing_file_is_kept_and_mismatch_reported(self):
         self.write_app_main(False)
-        (self.project / "cmake").mkdir()
+        (self.root / "cmake").mkdir()
         existing = (
             "set(CMAKE_CXX_STANDARD 20)\nset(CMAKE_CXX_STANDARD_REQUIRED ON)\n\n"
             "set(LIBXR_SYSTEM None)\nset(LIBXR_DRIVER st)\n"
@@ -69,10 +78,19 @@ class ModulesDirectory(unittest.TestCase):
             "target_compile_features(xr PUBLIC cxx_std_20)\n"
             "set_target_properties(${CMAKE_PROJECT_NAME} PROPERTIES\n)\n"
         )
-        (self.project / "cmake" / "LibXR.CMake").write_text(existing, encoding="utf-8")
+        (self.root / "cmake" / "LibXR.CMake").write_text(existing, encoding="utf-8")
         with self.assertLogs(level="WARNING") as logs:
             self.assertEqual(self.run_cmake_generator(), existing)
         self.assertIn("remove that line", "\n".join(logs.output))
+
+    def test_a_directory_without_cmakelists_is_left_untouched(self):
+        (self.root / "CMakeLists.txt").unlink()
+        (self.root / "build").mkdir()
+        with self.assertLogs(level="ERROR") as logs, self.assertRaises(SystemExit) as exit:
+            self.run_cmake_generator()
+        self.assertEqual(exit.exception.code, 1)
+        self.assertEqual(logs.output, ["ERROR:root:CMakeLists.txt not found."])
+        self.assertEqual(sorted(p.name for p in self.root.iterdir()), ["User", "build"])
 
 
 if __name__ == "__main__":

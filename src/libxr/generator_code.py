@@ -35,10 +35,10 @@ def main():
     with status 0 when the project is not an STM32 project.
     """
     from libxr.output import configure_logging
-    from libxr.package_info import LibXRPackageInfo
 
+    # 版本检查由子进程 xr_gen_code_stm32 完成，这里不再重复。
+    # The xr_gen_code_stm32 subprocess checks the version; it is not repeated here.
     configure_logging()
-    LibXRPackageInfo.check_and_print()
 
     localize_argparse()
     parser = argparse.ArgumentParser(

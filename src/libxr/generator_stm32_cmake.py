@@ -13,6 +13,7 @@ import logging
 import os
 import re
 import shutil
+import sys
 from pathlib import Path
 
 from xr_syntax.cpp import CppDocument
@@ -342,8 +343,8 @@ def normalize_starm_clang_toolchain(file_path: str | Path) -> None:
                 new_content = new_content[:first_endif] + guard + new_content[first_endif:]
 
     if new_content != content:
-        # Path.write_text(newline=...) is only available on newer Python. Keep
-        # the package's Python 3.8 support while still emitting deterministic LF.
+        # 以 LF 写出，生成结果与平台无关。
+        # Write LF line endings so the result does not depend on the platform.
         with path.open("w", encoding="utf-8", newline="\n") as stream:
             stream.write(new_content)
         logging.info(
@@ -424,7 +425,13 @@ def main():
 
     if not os.path.isdir(input_directory):
         logging.error(tr("Input directory does not exist.", "输入目录不存在。"))
-        exit(1)
+        sys.exit(1)
+    main_cmake_path = os.path.join(input_directory, "CMakeLists.txt")
+    # 先检查 CMakeLists.txt，再删除构建目录和写文件。
+    # Check CMakeLists.txt before deleting build directories or writing anything.
+    if not os.path.exists(main_cmake_path):
+        logging.error(tr("CMakeLists.txt not found.", "找不到 CMakeLists.txt。"))
+        sys.exit(1)
 
     clean_cmake_build_dirs(input_directory)
 
@@ -450,26 +457,24 @@ def main():
 
     normalize_starm_clang_toolchain(os.path.join(cmake_dir, "starm-clang.cmake"))
 
-    main_cmake_path = os.path.join(input_directory, "CMakeLists.txt")
-    if os.path.exists(main_cmake_path):
-        cmake_content = read_text_with_fallback(main_cmake_path)
-
-        if include_cmake_cmd not in cmake_content:
-            with open(main_cmake_path, "a", encoding="utf-8", newline="\n") as f:
-                f.write("\n# Add LibXR\n" + include_cmake_cmd)
-            logging.info(
-                tr(
-                    "LibXR.CMake included in CMakeLists.txt.",
-                    "已在 CMakeLists.txt 中 include LibXR.CMake。",
-                )
+    cmake_content = read_text_with_fallback(main_cmake_path)
+    if include_cmake_cmd not in cmake_content:
+        with open(main_cmake_path, "a", encoding="utf-8", newline="\n") as f:
+            f.write("\n# Add LibXR\n" + include_cmake_cmd)
+        logging.info(
+            tr(
+                "LibXR.CMake included in CMakeLists.txt.",
+                "已在 CMakeLists.txt 中 include LibXR.CMake。",
             )
-        else:
-            logging.info(
-                tr(
-                    "LibXR.CMake already included in CMakeLists.txt.",
-                    "CMakeLists.txt 已经 include LibXR.CMake。",
-                )
-            )
+        )
     else:
-        logging.error(tr("CMakeLists.txt not found.", "找不到 CMakeLists.txt。"))
-        exit(1)
+        logging.info(
+            tr(
+                "LibXR.CMake already included in CMakeLists.txt.",
+                "CMakeLists.txt 已经 include LibXR.CMake。",
+            )
+        )
+
+
+if __name__ == "__main__":
+    main()

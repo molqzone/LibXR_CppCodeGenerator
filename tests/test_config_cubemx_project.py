@@ -1,4 +1,7 @@
-"""xr_cubemx_cfg options that feed the code generator."""
+"""xr_cubemx_cfg 的选项（libxr.config_cubemx_project）：写入 libxr_config.yaml 的终端设备。
+Options of xr_cubemx_cfg (libxr.config_cubemx_project): the terminal device written to
+libxr_config.yaml.
+"""
 
 import contextlib
 import importlib
@@ -7,18 +10,28 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from fixtures import TestCase
+
 from libxr import config_cubemx_project as cubemx_cfg
 from libxr import generator_code_stm32 as generator
 
 
-class TerminalOption(unittest.TestCase):
+class TerminalOption(TestCase):
+    """--terminal 记录的 terminal_source 被生成器使用。
+    The terminal_source that --terminal records is the one the generator uses.
+    """
+
     def setUp(self):
+        super().setUp()
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.user = Path(self.temporary.name)
         self.path = self.user / "libxr_config.yaml"
 
     def effective_terminal(self):
+        """生成器读取 libxr_config.yaml 后使用的 terminal_source。
+        The terminal_source the generator uses after reading libxr_config.yaml.
+        """
         importlib.reload(generator)
         generator.load_libxr_config(str(self.user), "")
         return generator.libxr_settings["terminal_source"]

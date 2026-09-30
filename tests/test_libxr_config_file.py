@@ -1,4 +1,7 @@
-"""libxr_config.yaml keeps user keys and comments and is never reset silently."""
+"""libxr_config.yaml 的读写（libxr.libxr_config_file）：保留用户的键和注释，出错时不改写文件。
+Reading and writing libxr_config.yaml (libxr.libxr_config_file): user keys and comments are
+kept, and a failure never rewrites the file.
+"""
 
 import contextlib
 import importlib
@@ -10,6 +13,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import yaml
+from fixtures import GeneratorTestCase
 
 from libxr import generator_code_stm32 as generator
 from libxr import libxr_config_file as config_file
@@ -21,48 +25,54 @@ PROJECT = {
 }
 
 
-class LibXRConfigFile(unittest.TestCase):
+class LibXRConfigFile(GeneratorTestCase):
+    """生成器每次运行时读取、更新并写回 libxr_config.yaml。
+    Every generator run reads, updates and writes back libxr_config.yaml.
+    """
+
     def setUp(self):
-        importlib.reload(generator)
+        super().setUp()
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.directory = Path(self.temporary.name)
         self.path = self.directory / "libxr_config.yaml"
 
-    def generate(self, use_xrobot=False):
-        """One generator pass as main() runs it, without touching app_main."""
+    def regenerate(self, use_xrobot=False):
+        """像 main() 那样运行一次生成器（不写 app_main），返回写回的 libxr_config.yaml。
+        Run the generator once as main() does, without writing app_main; return the
+        libxr_config.yaml it writes back.
+        """
         importlib.reload(generator)
         generator.load_libxr_config(str(self.directory), "")
-        generator.initialize_registry(use_xrobot)
-        generator.generate_full_code(PROJECT, use_xrobot, "")
+        self.generate(PROJECT, use_xrobot)
         generator.save_libxr_config(str(self.path))
         return self.path.read_text(encoding="utf-8")
 
     def test_new_file_matches_plain_yaml_layout(self):
-        text = self.generate()
+        text = self.regenerate()
         cleaned = {
             k: v for k, v in generator.libxr_settings.items() if not (isinstance(v, dict) and not v)
         }
         self.assertEqual(text, yaml.dump(cleaned, allow_unicode=True, sort_keys=False))
 
     def test_generator_pin_and_comments_survive_regeneration(self):
-        first = self.generate()
+        first = self.regenerate()
         edited = "# Generator pinned for BSP CI\ngenerator: 6.0.0  # release\n" + first.replace(
             "USART:\n", "# UART buffers\nUSART:\n", 1
         ).replace("tx_queue_size: 5", "tx_queue_size: 5  # keep five")
         self.path.write_text(edited, encoding="utf-8")
-        self.assertEqual(self.generate(), edited)
+        self.assertEqual(self.regenerate(), edited)
 
     def test_generator_sha_pin_is_kept_verbatim(self):
-        self.generate()
+        self.regenerate()
         sha = "0123456789abcdef0123456789abcdef01234567"
         text = self.path.read_text(encoding="utf-8") + f"generator: {sha}\n"
         self.path.write_text(text, encoding="utf-8")
-        self.assertEqual(self.generate(), text)
+        self.assertEqual(self.regenerate(), text)
         self.assertEqual(yaml.safe_load(text)["generator"], sha)
 
     def test_changed_values_keep_neighbouring_comments(self):
-        self.generate()
+        self.regenerate()
         text = self.path.read_text(encoding="utf-8").replace(
             "terminal_source: ", "# terminal device\nterminal_source: ", 1
         )
@@ -70,13 +80,13 @@ class LibXRConfigFile(unittest.TestCase):
         self.path.write_text(
             text.replace("max_line_size: 32", "max_line_size: 64  # long lines"), encoding="utf-8"
         )
-        regenerated = self.generate()
+        regenerated = self.regenerate()
         self.assertIn("# terminal device\nterminal_source: ", regenerated)
         self.assertIn("# terminal tuning\nTerminal:\n", regenerated)
         self.assertIn("max_line_size: 64  # long lines", regenerated)
 
     def test_dropped_device_aliases_are_reported_and_comments_kept(self):
-        self.generate()
+        self.regenerate()
         base = self.path.read_text(encoding="utf-8")
         legacy = base.replace(
             "SYSTEM: None\n",
@@ -94,7 +104,7 @@ class LibXRConfigFile(unittest.TestCase):
         )
         self.path.write_text(legacy, encoding="utf-8")
         with self.assertLogs(level="WARNING") as logs:
-            text = self.generate()
+            text = self.regenerate()
         output = "\n".join(logs.output)
         self.assertIn("uart_dr16 -> usart3", output)
         self.assertIn("remote -> usart3", output)

@@ -1,4 +1,7 @@
-"""The ST Arm Clang runtime profile: -D selection and xr_stm32_toolchain_switch."""
+"""ST Arm Clang 运行库配置（libxr.stm32_toolchain_switch）：-D 选择和 xr_stm32_toolchain_switch。
+The ST Arm Clang runtime profile (libxr.stm32_toolchain_switch): -D selection and
+xr_stm32_toolchain_switch.
+"""
 
 import contextlib
 import io
@@ -10,10 +13,13 @@ import textwrap
 import unittest
 from pathlib import Path
 
+from fixtures import TestCase
+
 from libxr import generator_stm32_cmake as stm32_cmake
 from libxr import stm32_toolchain_switch as toolchain_switch
 
-# Profile section of a CubeMX-generated cmake/starm-clang.cmake.
+# CubeMX 生成的 cmake/starm-clang.cmake 中的运行库配置段。
+# The profile section of a CubeMX-generated cmake/starm-clang.cmake.
 CUBEMX_STARM = textwrap.dedent("""\
     set(CMAKE_SYSTEM_NAME               Generic)
     set(CMAKE_SYSTEM_PROCESSOR          arm)
@@ -27,6 +33,7 @@ CUBEMX_STARM = textwrap.dedent("""\
     endif()
     """)
 
+# 早期版本的 xr_stm32_cmake 改写后的同一段。
 # The same section as earlier xr_stm32_cmake versions rewrote it.
 CACHED_STARM = CUBEMX_STARM.replace(
     'set(STARM_TOOLCHAIN_CONFIG "STARM_PICOLIBC")\n\n',
@@ -36,8 +43,14 @@ CACHED_STARM = CUBEMX_STARM.replace(
 )
 
 
-class StarmProfile(unittest.TestCase):
+class StarmProfile(TestCase):
+    """xr_stm32_cmake 规范化运行库配置行，xr_stm32_toolchain_switch 只改写这一行。
+    xr_stm32_cmake normalizes the profile line, and xr_stm32_toolchain_switch rewrites only
+    that line.
+    """
+
     def setUp(self):
+        super().setUp()
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.project = Path(self.temporary.name)
@@ -48,11 +61,17 @@ class StarmProfile(unittest.TestCase):
         self.addCleanup(os.chdir, previous)
 
     def normalize(self, text):
+        """写入工具链文件并规范化，返回结果。
+        Write the toolchain file, normalize it and return the result.
+        """
         self.toolchain.write_text(text, encoding="utf-8")
         stm32_cmake.normalize_starm_clang_toolchain(self.toolchain)
         return self.toolchain.read_text(encoding="utf-8")
 
     def switch(self, profile):
+        """把当前目录工程的运行库配置切换为 profile。
+        Switch the runtime profile of the project in the current directory to profile.
+        """
         with contextlib.redirect_stderr(io.StringIO()):
             toolchain_switch.patch_clang_stdlib(profile)
 
@@ -67,6 +86,12 @@ class StarmProfile(unittest.TestCase):
             self.toolchain.read_text(encoding="utf-8"),
             text.replace('"STARM_PICOLIBC")\n# LibXR:', '"STARM_NEWLIB")\n# LibXR:'),
         )
+
+    def test_the_current_profile_is_not_rewritten(self):
+        self.normalize(CUBEMX_STARM)
+        os.utime(self.toolchain, ns=(10**9, 10**9))
+        self.switch("STARM_PICOLIBC")
+        self.assertEqual(self.toolchain.stat().st_mtime_ns, 10**9)
 
     def test_cached_default_from_earlier_versions_is_converted(self):
         def lines(text):

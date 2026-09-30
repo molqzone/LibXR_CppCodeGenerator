@@ -80,7 +80,6 @@ def parse_arguments():
         description=tr(
             "Generate STM32 Peripheral Initialization Code", "生成 STM32 外设初始化代码"
         ),
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
         "-i",
@@ -205,22 +204,30 @@ def generate_peripheral_instances(project_data: dict, use_xrobot: bool = False) 
 # --------------------------
 # Configuration Loading
 # --------------------------
-def load_configuration(file_path: str, use_xrobot: bool) -> dict:
+def load_configuration(file_path: str) -> dict:
     """读取工程 YAML，检查必需的 Mcu、GPIO 和 Peripherals 段，并返回其内容。
     Read the project YAML, check the required Mcu, GPIO and Peripherals sections and return
     its content.
 
     同时按 FreeRTOS 或 ThreadX 段设置 libxr_settings 的 SYSTEM，把 software_timer 和
-    terminal_source 写入 libxr_settings，并删除空的外设条目。文件不存在、YAML 语法错误或缺少
-    必需段时记录错误并以状态 1 退出。
+    terminal_source 写入 libxr_settings，并删除空的外设条目。文件不存在、YAML 语法错误、内容
+    不是映射或缺少必需段时记录错误并以状态 1 退出。
     It also sets SYSTEM in libxr_settings from the FreeRTOS or ThreadX section, copies
     software_timer and terminal_source into libxr_settings, and deletes empty peripheral
-    entries. A missing file, a YAML syntax error or a missing section logs an error and exits
-    with status 1.
+    entries. A missing file, a YAML syntax error, content that is not a mapping or a missing
+    section logs an error and exits with status 1.
     """
     try:
         with open(file_path, encoding="utf-8") as f:
             config = yaml.safe_load(f)
+
+            if not isinstance(config, dict):
+                raise ValueError(
+                    tr(
+                        f"{file_path} must contain a YAML mapping written by xr_parse_ioc",
+                        f"{file_path} 的内容必须是 xr_parse_ioc 写出的 YAML 映射",
+                    )
+                )
 
             # Basic schema validation
             required_sections = ["Mcu", "GPIO", "Peripherals"]
@@ -1569,24 +1576,6 @@ def _generate_extern_declarations(project_data: dict) -> str:
     return "/* External HAL Declarations */\n" + "\n".join(sorted(externs)) + "\n"
 
 
-def preserve_user_blocks(existing_code: str, section: int) -> str:
-    """用结构化 C++ 解析器取出已有代码中编号为 section 的 User Code 区域内容，去掉首尾空白。
-    Return the body of the User Code region numbered section in existing code, parsed with the
-    structured C++ parser and stripped.
-
-    非 1 号区域的非空内容前加两个空格的缩进；没有该区域时返回空字符串。
-    A non-empty body of a region other than 1 gets a two-space indent in front; an absent
-    region gives an empty string.
-    """
-    document = CppDocument.parse(existing_code)
-    target = str(section)
-    for region in document.user_regions():
-        if region.name == target:
-            content = region.body_text.strip()
-            return "  " + content if section != 1 and content else content
-    return ""
-
-
 _USER_MARKER_TEXT = re.compile(r"(?://|/\*)\s*User\s*Code\s*(?:Begin|End)\b", re.IGNORECASE)
 _USER_MARKER_BEGIN = re.compile(r"/\*\s*User Code Begin(?:\s+(.+?))?\s*\*/")
 _USER_MARKER_END = re.compile(r"/\*\s*User Code End(?:\s+(.+?))?\s*\*/")
@@ -2214,7 +2203,7 @@ def main():
         output_dir = os.path.dirname(args.output) or os.curdir
 
         # Load configurations
-        project_data = load_configuration(args.input, use_xrobot)
+        project_data = load_configuration(args.input)
         load_libxr_config(output_dir, args.libxr_config)
         initialize_registry(use_xrobot)
 

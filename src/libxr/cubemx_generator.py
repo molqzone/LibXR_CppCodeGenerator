@@ -289,7 +289,12 @@ def _resolve_existing_path(path_or_cmd: str) -> str:
     found = shutil.which(expanded)
     if found:
         return os.path.abspath(found)
-    raise FileNotFoundError(path_or_cmd)
+    raise FileNotFoundError(
+        tr(
+            f"{path_or_cmd} does not exist and is not a command on PATH",
+            f"{path_or_cmd} 不存在，PATH 中也没有这个命令",
+        )
+    )
 
 
 def _iter_cubemx_candidates() -> Iterable[str]:
@@ -1513,13 +1518,9 @@ def generate_cubemx_project(
     actual_script_path, should_cleanup_script = _prepare_script_path(
         project_dir, script_path, keep_script
     )
-    script_text = build_cubemx_script(ioc_path, generate_code_dir)
-    _write_text_file(actual_script_path, script_text)
-
-    if log_dir:
-        os.makedirs(log_dir, exist_ok=True)
-        _write_text_file(os.path.join(log_dir, "cubemx_generate.txt"), script_text)
-
+    # 先组成命令行（它会检查启动方式和 Java），再写临时脚本，出错时不留下脚本。
+    # Build the command line first (it checks the launch mode and Java), then write the
+    # temporary script, so a failure leaves no script behind.
     command = build_cubemx_command(
         resolved_cubemx_cmd,
         actual_script_path,
@@ -1527,6 +1528,12 @@ def generate_cubemx_project(
         java_cmd=java_cmd,
         silent=silent,
     )
+    script_text = build_cubemx_script(ioc_path, generate_code_dir)
+    _write_text_file(actual_script_path, script_text)
+
+    if log_dir:
+        os.makedirs(log_dir, exist_ok=True)
+        _write_text_file(os.path.join(log_dir, "cubemx_generate.txt"), script_text)
     command_line = _shell_join(command)
     LOGGER.info(tr(f"Running CubeMX command: {command_line}", f"运行 CubeMX 命令：{command_line}"))
 

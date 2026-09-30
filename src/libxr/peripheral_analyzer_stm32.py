@@ -129,13 +129,14 @@ class ConfigurationManager:
         ).startswith("GPXTI")
 
     def _clean_peripherals(self) -> dict[str, dict]:
-        """Peripherals 段：按外设类型和实例名组织，每个实例去掉空值字段。
+        """Peripherals 段：按外设类型和实例名组织，每个实例去掉空值字段，没有实例的类型不写出。
         The Peripherals section, by peripheral type and instance name, with empty fields
-        removed from each instance.
+        removed from each instance and types without instances left out.
         """
         return {
             p_type: {p: self._clean_peripheral_config(cfg) for p, cfg in p_group.items()}
             for p_type, p_group in self.peripherals.items()
+            if p_group
         }
 
     def _clean_peripheral_config(self, config: dict) -> dict:
@@ -1135,12 +1136,12 @@ class CANParser(PeripheralParser):
                     "Mode": None,
                     "TimeSeg1": None,
                     "TimeSeg2": None,
-                    "AutoRetransmission": False,
+                    "AutoRetransmission": True,
+                    "AutoBusOff": False,
                     "AutoWakeup": False,
                 },
                 "FDCAN": {
                     "NominalPrescaler": None,
-                    "BaudRateNominal": None,
                     "FrameFormat": None,
                     "StdFilters": 0,
                     "ExtFilters": 0,
@@ -1150,15 +1151,17 @@ class CANParser(PeripheralParser):
 
     def _handle_legacy_can_params(self, can_name: str, prop: str, value: str) -> None:
         """读取 CAN 2.0 参数：BS1、BS2 原样存为 TimeSeg1、TimeSeg2；ABOM、AWUM 转为布尔值存为
-        AutoRetransmission、AutoWakeup。
+        AutoBusOff、AutoWakeup；NART（禁止自动重传）取反后存为 AutoRetransmission。
         Read CAN 2.0 parameters: BS1 and BS2 are stored as is in TimeSeg1 and TimeSeg2; ABOM
-        and AWUM become the booleans AutoRetransmission and AutoWakeup.
+        and AWUM become the booleans AutoBusOff and AutoWakeup; NART (no automatic
+        retransmission) is inverted into AutoRetransmission.
         """
         param_map = {
             "BS1": "TimeSeg1",
             "BS2": "TimeSeg2",
-            "ABOM": ("AutoRetransmission", lambda v: v == "ENABLE"),
+            "ABOM": ("AutoBusOff", lambda v: v == "ENABLE"),
             "AWUM": ("AutoWakeup", lambda v: v == "ENABLE"),
+            "NART": ("AutoRetransmission", lambda v: v != "ENABLE"),
         }
 
         if mapping := param_map.get(prop):
@@ -1172,15 +1175,14 @@ class CANParser(PeripheralParser):
         """读取 FDCAN 参数并转换类型；转换失败时记录警告。
         Read FDCAN parameters with type conversion; a failed conversion is logged as a warning.
 
-        NominalPrescaler 转为浮点数；BaudRateNominal 转为浮点数，存为 CalculateBaudRateNominal；
-        FrameFormat 为字符串；StdFiltersNbr、ExtFiltersNbr 转为整数，存为 StdFilters、ExtFilters。
-        NominalPrescaler becomes a float; BaudRateNominal a float stored as
-        CalculateBaudRateNominal; FrameFormat a string; StdFiltersNbr and ExtFiltersNbr
-        integers stored as StdFilters and ExtFilters.
+        NominalPrescaler 转为浮点数；FrameFormat 为字符串；StdFiltersNbr、ExtFiltersNbr 转为
+        整数，存为 StdFilters、ExtFilters。波特率由 CalculateBaudRate* 的通用处理读取。
+        NominalPrescaler becomes a float; FrameFormat a string; StdFiltersNbr and ExtFiltersNbr
+        integers stored as StdFilters and ExtFilters. The baud rate is read by the common
+        CalculateBaudRate* handling.
         """
         param_map = {
             "NominalPrescaler": ("NominalPrescaler", float),
-            "BaudRateNominal": ("CalculateBaudRateNominal", float),
             "FrameFormat": ("FrameFormat", str),
             "StdFiltersNbr": ("StdFilters", int),
             "ExtFiltersNbr": ("ExtFilters", int),
@@ -1564,10 +1566,11 @@ class FreeRTOSParser(PeripheralParser):
     """
 
     def parse(self, p_type: str) -> None:
-        """读取 FREERTOS.* 条目：Tasks* 为任务定义，key 含 HeapSize 时为堆大小（带 B 后缀），
-        key 含 INCLUDE_ 时为功能开关。
-        Read FREERTOS.* entries: Tasks* holds task definitions, a key containing HeapSize the
-        heap size with a B suffix, and a key containing INCLUDE_ a feature flag.
+        """读取 FREERTOS.* 条目：Tasks* 为任务定义，configTOTAL_HEAP_SIZE（或含 HeapSize 的
+        key）为堆大小（带 B 后缀），key 含 INCLUDE_ 时为功能开关；有任何条目时 Enabled 为真。
+        Read FREERTOS.* entries: Tasks* holds task definitions, configTOTAL_HEAP_SIZE (or a
+        key containing HeapSize) the heap size with a B suffix, and a key containing INCLUDE_ a
+        feature flag; any entry makes Enabled true.
         """
         for key, value in self.raw_map.items():
             if not self._ioc_root_startswith(key, "FREERTOS"):
@@ -1576,37 +1579,39 @@ class FreeRTOSParser(PeripheralParser):
             parts = self._split_ioc_key(key)
             if len(parts) < 2:
                 continue
+            self.config.freertos_config["Enabled"] = True
             if parts[1].startswith("Tasks"):
                 self._process_task_configuration(value)
-            elif "HeapSize" in key:
+            elif parts[1] == "configTOTAL_HEAP_SIZE" or "HeapSize" in key:
                 self.config.freertos_config["Heap"] = f"{sanitize_numeric(value)}B"
             elif "INCLUDE_" in key:
                 self._process_feature_flag(parts[1], value)
 
     def _process_task_configuration(self, task_data: str) -> None:
-        """按逗号拆分任务定义，去掉空项和 NULL；至少五项时记录一个任务。
-        Split a task definition at commas and drop empty and NULL items; with at least five
-        items one task is recorded.
+        """读取任务定义：任务之间用分号分隔，每个任务按逗号拆分并去掉空项和 NULL，至少五项时
+        记录。
+        Read task definitions: tasks are separated by semicolons, each is split at commas with
+        empty and NULL items dropped, and recorded when at least five items remain.
 
         前五项依次为任务名、优先级、栈大小（带 B 后缀）、入口函数和类型。
         The first five items are the task name, priority, stack size with a B suffix, entry
         function and type.
         """
-        elements = [x for x in task_data.split(",") if x and x != "NULL"]
-        if len(elements) >= 5:
-            task_name = elements[0]
-            self.config.freertos_config["Tasks"][task_name] = {
-                "Priority": elements[1],
-                "StackSize": f"{elements[2]}B",
-                "EntryFunction": elements[3],
-                "Type": elements[4],
-            }
+        for task in task_data.split(";"):
+            elements = [x for x in task.split(",") if x and x != "NULL"]
+            if len(elements) >= 5:
+                self.config.freertos_config["Tasks"][elements[0]] = {
+                    "Priority": elements[1],
+                    "StackSize": f"{elements[2]}B",
+                    "EntryFunction": elements[3],
+                    "Type": elements[4],
+                }
 
     def _process_feature_flag(self, feature: str, state: str) -> None:
-        """记录一个 FreeRTOS 功能开关，state 为 ENABLE 时为 True。
-        Record one FreeRTOS feature flag; True when state is ENABLE.
+        """记录一个 FreeRTOS 功能开关；CubeMX 写 1 或 ENABLE 时为 True。
+        Record one FreeRTOS feature flag; True when CubeMX writes 1 or ENABLE.
         """
-        self.config.freertos_config["Features"][feature] = state == "ENABLE"
+        self.config.freertos_config["Features"][feature] = state in ("1", "ENABLE")
 
 
 # --------------------------
@@ -1762,7 +1767,7 @@ def print_summary(data: dict[str, Any]) -> None:
 
     # MCU Info
     mcu = data.get("Mcu", {})
-    family = mcu.get("Family", tr("Unknown", "未知"))
+    family = mcu.get("Family") or tr("Unknown", "未知")
     print(tr(f"\nMCU: {family} {mcu.get('Type', '')}", f"\nMCU：{family} {mcu.get('Type', '')}"))
 
     # GPIO Summary
@@ -1839,7 +1844,6 @@ def main() -> None:
         description=tr(
             "STM32CubeMX IOC Configuration Parser v2.0", "STM32CubeMX .ioc 配置解析器 v2.0"
         ),
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
         "-d",
@@ -1890,17 +1894,13 @@ def main() -> None:
         )
         sys.exit(1)
 
-    for ioc_file in ioc_files:
-        input_path = os.path.join(args.directory, ioc_file)
-        logging.info(tr(f"Processing {ioc_file}...", f"正在处理 {ioc_file}……"))
-
-        config_data = parse_ioc_file(input_path)
-        if not config_data:
-            continue
-
-        output_path = args.output or os.path.join(args.directory, ".config.yaml")
-        if save_to_yaml(config_data, output_path):
-            print_summary(config_data)
+    ioc_file = ioc_files[0]
+    logging.info(tr(f"Processing {ioc_file}...", f"正在处理 {ioc_file}……"))
+    config_data = parse_ioc_file(os.path.join(args.directory, ioc_file))
+    output_path = args.output or os.path.join(args.directory, ".config.yaml")
+    if not config_data or not save_to_yaml(config_data, output_path):
+        sys.exit(1)
+    print_summary(config_data)
 
 
 if __name__ == "__main__":

@@ -16,6 +16,9 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_DIR = REPO_ROOT / "src"
 sys.path.insert(0, str(SRC_DIR))
+# 检查比较英文输出，与运行机器的语言无关。
+# The checks compare English output whatever the language of the machine.
+os.environ["XR_LANG"] = "en"
 
 from libxr.config_cubemx_project import add_libxr  # noqa: E402
 

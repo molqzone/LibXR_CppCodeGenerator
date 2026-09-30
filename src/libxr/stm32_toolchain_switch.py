@@ -86,7 +86,8 @@ def patch_cmakepresets(compiler):
                 f"default preset 的工具链已经是 {new_toolchain}",
             )
         )
-    with open(CMAKE_PRESETS_PATH, "w", encoding="utf-8") as f:
+        return
+    with open(CMAKE_PRESETS_PATH, "w", encoding="utf-8", newline="\n") as f:
         json.dump(presets, f, indent=4)
         f.write("\n")
     logging.info(tr("CMakePresets.json updated.", "已更新 CMakePresets.json。"))
@@ -119,8 +120,7 @@ def patch_clang_stdlib(starm_config):
                         f'STARM_TOOLCHAIN_CONFIG 已经是 "{starm_config}"。',
                     )
                 )
-                found = True
-                break
+                return
             else:
                 lines[i] = pat.sub(rf"\1{starm_config}\3", line)
                 found = True
@@ -157,10 +157,10 @@ def main():
     configure_logging()
     localize_argparse()
     examples = (
-        "  python switch_toolchain.py gcc\n"
-        "  python switch_toolchain.py clang -g\n"
-        "  python switch_toolchain.py clang --newlib\n"
-        "  python switch_toolchain.py clang --picolibc"
+        "  xr_stm32_toolchain_switch gcc\n"
+        "  xr_stm32_toolchain_switch clang -g\n"
+        "  xr_stm32_toolchain_switch clang --newlib\n"
+        "  xr_stm32_toolchain_switch clang --picolibc"
     )
     parser = argparse.ArgumentParser(
         description=tr(

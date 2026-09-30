@@ -8,7 +8,6 @@ rule in STM32FlashLayoutRules.xml.
 
 import re
 import sys
-import traceback
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from functools import lru_cache
@@ -150,8 +149,12 @@ def get_flash_kb(model: str) -> int:
             return 1024
         return 512
     if model.startswith("STM32U5"):
-        code = model[10]
-        return U5_FLASH_SIZE_CODES.get(code)
+        try:
+            return U5_FLASH_SIZE_CODES[model[10]]
+        except (KeyError, IndexError):
+            raise ValueError(
+                tr(f"Unrecognized capacity code for {model}", f"无法识别 {model} 的容量代码")
+            ) from None
 
     try:
         return FLASH_SIZE_CODES[model[10]]
@@ -579,39 +582,47 @@ def main():
         """
         return "-" not in model and model.upper().startswith("STM32") and len(model) > 8
 
+    usage = "\n".join(
+        [
+            tr("STM32 Flash Information Tool", "STM32 Flash 信息工具"),
+            tr("Usage:", "用法："),
+            "  xr_stm32_flash <STM32_MODEL>",
+            tr("\nExamples:", "\n示例："),
+            "  xr_stm32_flash STM32F103C8T6",
+            "  xr_stm32_flash STM32L476RG",
+        ]
+    )
+    if sys.argv[1:] in (["-h"], ["--help"]):
+        print(usage)
+        return
     if len(sys.argv) != 2:
-        print(tr("STM32 Flash Information Tool", "STM32 Flash 信息工具"))
-        print(tr("Usage:", "用法："))
-        print("  xr_stm32_flash <STM32_MODEL>")
-        print(tr("\nExamples:", "\n示例："))
-        print("  xr_stm32_flash STM32F103C8T6")
-        print("  xr_stm32_flash STM32L476RG")
+        print(usage, file=sys.stderr)
         sys.exit(1)
 
     model = sys.argv[1].strip().upper()
 
+    # YAML 写到标准输出；报错写到标准错误，不会混进 YAML。
+    # The YAML goes to stdout and errors go to stderr, so they never mix.
     try:
         if not validate_model(model):
             raise ValueError(
                 tr(f"Invalid STM32 model format: {model}", f"STM32 型号格式无效：{model}")
             )
-
         info = layout_flash(model)
+    except ValueError as error:
         print(
-            yaml.safe_dump(
-                flash_info_to_dict(info),
-                sort_keys=False,
-                allow_unicode=True,
-                default_flow_style=False,
-            )
+            tr(f"Failed to process model {model}: {error}", f"无法处理型号 {model}：{error}"),
+            file=sys.stderr,
         )
-
-    except Exception as error:
-        print(tr(f"\nERROR: Failed to process model {model}", f"\n错误：无法处理型号 {model}"))
-        print(tr(f"Reason: {str(error)}", f"原因：{str(error)}"))
-        print(tr("\nStack trace:", "\n调用栈："))
-        traceback.print_exc()
         sys.exit(2)
+    print(
+        yaml.safe_dump(
+            flash_info_to_dict(info),
+            sort_keys=False,
+            allow_unicode=True,
+            default_flow_style=False,
+        )
+    )
 
 
 if __name__ == "__main__":

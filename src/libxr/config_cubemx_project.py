@@ -299,10 +299,10 @@ def add_libxr(
         return False
 
     if not os.path.exists(midware_path):
-        logging.info(tr("Creating Middleware folder...", "正在创建 Middlewares 目录……"))
+        logging.info(tr("Creating the Middlewares folder...", "正在创建 Middlewares 目录……"))
         os.makedirs(midware_path)
     if not os.path.exists(third_party_path):
-        logging.info(tr("Creating Third Party folder...", "正在创建 Third_Party 目录……"))
+        logging.info(tr("Creating the Third_Party folder...", "正在创建 Third_Party 目录……"))
         os.makedirs(third_party_path)
 
     if not is_git_repo(project_dir):
@@ -493,7 +493,17 @@ def process_ioc_file(project_dir, yaml_output):
     yaml_output.
     """
     logging.info(tr("Parsing .ioc file...", "正在解析 .ioc 文件……"))
-    run_command(f"xr_parse_ioc -d {project_dir} -o {yaml_output}")
+    run_command(
+        [
+            sys.executable,
+            "-m",
+            "libxr.peripheral_analyzer_stm32",
+            "-d",
+            project_dir,
+            "-o",
+            yaml_output,
+        ]
+    )
 
 
 def generate_cpp_code(yaml_output, cpp_output, xrobot_enable=False):
@@ -503,9 +513,9 @@ def generate_cpp_code(yaml_output, cpp_output, xrobot_enable=False):
     --xrobot when xrobot_enable is set.
     """
     logging.info(tr("Generating C++ code...", "正在生成 C++ 代码……"))
-    cmd = f"xr_gen_code_stm32 -i {yaml_output} -o {cpp_output}"
+    cmd = [sys.executable, "-m", "libxr.generator_code_stm32", "-i", yaml_output, "-o", cpp_output]
     if xrobot_enable:
-        cmd += " --xrobot"
+        cmd.append("--xrobot")
     run_command(cmd)
 
 
@@ -513,7 +523,7 @@ def generate_cmake_file(project_dir):
     """调用 xr_stm32_cmake 为工程生成 CMakeLists.txt。
     Run xr_stm32_cmake to generate the CMakeLists.txt of the project.
     """
-    run_command(f"xr_stm32_cmake {project_dir}")
+    run_command([sys.executable, "-m", "libxr.generator_stm32_cmake", project_dir])
 
 
 def _friendly_path_name(path: str) -> str:
@@ -615,11 +625,10 @@ def main():
     default_libxr_commit = ""
     if not libxr_commit:
         try:
-            sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "src")))
             from libxr.libxr_version import LibXRInfo
 
             default_libxr_commit = LibXRInfo.COMMIT
-        except Exception as e:
+        except ImportError as e:
             logging.info(
                 tr(
                     f"No lock commit found in src/libxr/libxr_version.py: {e}",
