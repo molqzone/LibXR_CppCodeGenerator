@@ -51,6 +51,7 @@ def main():
         help=tr("Input YAML configuration file path", "输入的 YAML 配置文件路径"),
     )
 
+    # 只解析已知参数，未知参数稍后原样转发
     # We don't parse all args because we want to forward unknown ones later
     known_args, unknown_args = parser.parse_known_args()
 
@@ -76,6 +77,7 @@ def main():
         )
         sys.exit(0)
 
+    # 把全部原始参数（不只是已知参数）转发给生成器
     # Forward all original arguments (not just known) to the generator
     cmd: list[str] = [sys.executable, "-m", "libxr.generator_code_stm32", *sys.argv[1:]]
 

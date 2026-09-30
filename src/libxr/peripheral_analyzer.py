@@ -55,6 +55,7 @@ def main():
         )
         sys.exit(1)
 
+    # 在指定目录中查找 .ioc 文件。
     # Search for .ioc files in the specified directory
     ioc_files = [f for f in os.listdir(target_dir) if f.endswith(".ioc")]
     if not ioc_files:
@@ -66,6 +67,7 @@ def main():
         )
         sys.exit(1)
 
+    # 组成运行解析器的命令。
     # Construct the command to run the parser
     cmd = [
         sys.executable,
@@ -73,7 +75,7 @@ def main():
         "libxr.peripheral_analyzer_stm32",
         "-d",
         target_dir,
-        *extra_args,  # Forward other arguments
+        *extra_args,  # 转发其余参数 / Forward other arguments
     ]
 
     logging.info(

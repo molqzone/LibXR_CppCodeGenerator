@@ -25,10 +25,12 @@ from libxr.libxr_config_file import LibXRConfigError
 from libxr.output import configure_logging
 
 # --------------------------
-# Global Configuration
+# 全局配置 / Global Configuration
 # --------------------------
+# 生成的设备对象及其 LibXR 接口，用 XR_REGISTER 登记。
 # Generated device objects and their LibXR interface, registered with XR_REGISTER.
 registered_devices = {"power_manager": "PowerManager"}
+# 每个登记的名字由什么产生，用于冲突诊断。
 # What produced each registered name, for collision diagnostics.
 registered_origins = {}
 libxr_settings = {
@@ -50,12 +52,13 @@ libxr_settings = {
     },
     "SYSTEM": "None",
 }
+# 已加载的 libxr_config.yaml 的往返文档（含注释和用户的键）。
 # Round-trip document of the loaded libxr_config.yaml (comments, user keys).
 libxr_config_document = None
 
 
 # --------------------------
-# Configuration Initialization
+# 配置初始化 / Configuration Initialization
 # --------------------------
 def initialize_registry(use_xrobot: bool) -> None:
     """清空生成对象的登记表；use_xrobot 为真时先登记 power_manager（PowerManager）。
@@ -69,7 +72,7 @@ def initialize_registry(use_xrobot: bool) -> None:
 
 
 # --------------------------
-# CLI Arguments
+# 命令行参数 / CLI Arguments
 # --------------------------
 def parse_arguments():
     """解析命令行参数：-i/--input、-o/--output、--xrobot 和 --libxr-config。
@@ -107,7 +110,7 @@ def parse_arguments():
 
 
 # --------------------------
-# Device Registration
+# 设备登记 / Device Registration
 # --------------------------
 def _register_device(name: str, dev_type: str, origin: str = ""):
     """登记一个生成的对象及其 LibXR 接口类型；每个名字只登记一种类型。
@@ -170,7 +173,7 @@ def _generate_fdcan_can_alias(instance: str) -> str:
 
 
 # --------------------------
-# Peripheral Instance Generation
+# 外设实例生成 / Peripheral Instance Generation
 # --------------------------
 def generate_peripheral_instances(project_data: dict, use_xrobot: bool = False) -> str:
     """生成所有外设对象的构造代码，按 ADC、PWM、其他外设的顺序拼接。
@@ -191,6 +194,7 @@ def generate_peripheral_instances(project_data: dict, use_xrobot: bool = False) 
             if section in code_sections:
                 code_sections[section].append(code)
 
+    # 按正确的顺序拼接代码：ADC 配置 -> PWM -> 其他外设（main 段）
     # Assemble code in correct order: ADC config -> PWM -> Main peripherals
     return "\n".join(
         [
@@ -202,7 +206,7 @@ def generate_peripheral_instances(project_data: dict, use_xrobot: bool = False) 
 
 
 # --------------------------
-# Configuration Loading
+# 配置加载 / Configuration Loading
 # --------------------------
 def load_configuration(file_path: str) -> dict:
     """读取工程 YAML，检查必需的 Mcu、GPIO 和 Peripherals 段，并返回其内容。
@@ -229,6 +233,7 @@ def load_configuration(file_path: str) -> dict:
                     )
                 )
 
+            # 基本的结构检查
             # Basic schema validation
             required_sections = ["Mcu", "GPIO", "Peripherals"]
             for section in required_sections:
@@ -240,6 +245,7 @@ def load_configuration(file_path: str) -> dict:
                         )
                     )
 
+            # 检测 RTOS
             # Detect RTOS
             if "FreeRTOS" in config:
                 libxr_settings["SYSTEM"] = "FreeRTOS"
@@ -249,10 +255,12 @@ def load_configuration(file_path: str) -> dict:
             else:
                 libxr_settings["SYSTEM"] = "None"
 
+            # 软件定时器配置
             # Software timer config
             if "software_timer" in config:
                 libxr_settings["software_timer"].update(config["software_timer"])
 
+            # 终端来源
             # Terminal source
             if "terminal_source" in config:
                 libxr_settings["terminal_source"] = config["terminal_source"]
@@ -283,7 +291,7 @@ def load_configuration(file_path: str) -> dict:
 
 
 # --------------------------
-# Library Configuration
+# 库配置 / Library Configuration
 # --------------------------
 def load_libxr_config(output_dir: str, config_source: str) -> None:
     """把 output_dir 中的 libxr_config.yaml（或 --libxr-config 给出的路径或 URL）合并进生效的设置。
@@ -394,6 +402,7 @@ def save_libxr_config(config_path: str) -> None:
     Keys the generator does not interpret (such as the ``generator`` pin) and
     comments are kept; the aliases of device_aliases are listed in a warning.
     """
+    # device_aliases 是旧的运行时别名表，已不再使用。
     # device_aliases was the legacy runtime alias table; it is no longer used.
     if "device_aliases" in libxr_settings:
         _report_dropped_device_aliases(libxr_settings["device_aliases"])
@@ -437,7 +446,7 @@ def _deep_merge(base: dict, update: dict) -> dict:
 
 
 # --------------------------
-# GPIO Configuration
+# GPIO 配置 / GPIO Configuration
 # --------------------------
 def _sanitize_cpp_identifier(name: str) -> str:
     """把名字转换为 C++ 标识符：非单词字符替换为下划线，以数字开头时在前面加下划线。
@@ -544,6 +553,7 @@ CPP_KEYWORDS = frozenset(
     ]
 )
 
+# CMSIS/HAL 的对象式宏；与之同名的 GPIO 对象名会被预处理器展开。
 # Object-like CMSIS/HAL macros a GPIO object name would be expanded into.
 _CMSIS_INSTANCE_MACRO = re.compile(
     r"GPIO[A-Z]|(?:ADC|DAC|TIM|LPTIM|HRTIM|SPI|I2S|I2C|I3C|USART|UART|LPUART|"
@@ -592,6 +602,7 @@ def check_gpio_names(project_data: dict, generated_code: str, use_xrobot: bool) 
     counts = {}
     for occurrence in identifier_occurrences(generated_code):
         counts[occurrence.text] = counts.get(occurrence.text, 0) + 1
+    # 声明处出现一次，启用 --xrobot 时 XR_REGISTER 行再出现一次。
     # Declaration, plus the XR_REGISTER line with --xrobot.
     expected_uses = 2 if use_xrobot else 1
     problems = []
@@ -675,9 +686,13 @@ def generate_gpio_alias(port: str, gpio_data: dict, project_data: dict) -> str:
     return f"{var_name}({port_define}, {pin_define}{irq_str})"
 
 
+# 各 CubeMX 系列（Mcu.Family）的 EXTI 中断向量，取自器件的向量表。
+# 以下系列共用 EXTI0_1/EXTI2_3/EXTI4_15：
 # EXTI interrupt vectors per CubeMX family (Mcu.Family), from the device
 # vector tables. These families share EXTI0_1/EXTI2_3/EXTI4_15:
 _EXTI_SHARED_LINE_FAMILIES = frozenset({"STM32F0", "STM32G0", "STM32L0", "STM32C0", "STM32U0"})
+# 以下系列每条线一个向量，即 EXTI0_IRQn..EXTI15_IRQn（STM32H7 系列中的 STM32H7R/S 器件
+# 也是如此）；其余系列共用 EXTI9_5 和 EXTI15_10。
 # These have one vector per line, EXTI0_IRQn..EXTI15_IRQn (as do the STM32H7R/S
 # parts of the STM32H7 family); the others share EXTI9_5 and EXTI15_10.
 _EXTI_PER_LINE_FAMILIES = frozenset(
@@ -726,7 +741,7 @@ def _get_exti_irq(
 
 
 # --------------------------
-# DMA Configuration
+# DMA 配置 / DMA Configuration
 # --------------------------
 DMA_DEFAULT_SIZES = {
     "SPI": {"tx": 32, "rx": 32},
@@ -761,6 +776,7 @@ def generate_dma_resources(project_data: dict) -> str:
             An enabled USB instance sets cdc_count.
     """
     dma_code = []
+    # 默认的段设置
     # Default section settings
     DEFAULT_SECTIONS = {
         "DMA": "",
@@ -772,7 +788,7 @@ def generate_dma_resources(project_data: dict) -> str:
         The section name of a buffer: the user setting when there is one, otherwise the default
         section of dma_type (empty for both DMA and BDMA).
         """
-        if user_section:  # User configuration takes priority
+        if user_section:  # 用户配置优先 / User configuration takes priority
             return user_section
         return DEFAULT_SECTIONS.get(dma_type, "")
 
@@ -791,6 +807,8 @@ def generate_dma_resources(project_data: dict) -> str:
             section: 加在声明上的段属性文本，可为空字符串。
                 The section attribute text added to the declaration; may be empty.
         """
+        # 对齐的是存储类型而不只是其对象，这样 sizeof 包含尾部填充。保留数组长度，
+        # 使 RawData 和拆分后的缓冲区不变。
         # Align the storage type, not only its object: sizeof then includes tail
         # padding. Keep the array extent so RawData and split buffers are unchanged.
         return "\n".join(
@@ -807,24 +825,31 @@ def generate_dma_resources(project_data: dict) -> str:
             ]
         )
 
+    # 遍历所有外设
     # Iterate all peripherals
     for p_type_raw, instances in project_data.get("Peripherals", {}).items():
+        # 规范化外设类型（例如 "spi1" -> "SPI"）
         # Normalize peripheral type (e.g. "spi1" -> "SPI")
         match = re.match(r"([A-Za-z0-9]+?)(\d*)$", p_type_raw)
         p_type_base = match.group(1).upper() if match else p_type_raw.upper()
 
+        # 确保该外设的设置字典存在
         # Ensure settings dict exists for this peripheral
         if p_type_base not in libxr_settings:
             libxr_settings[p_type_base] = {}
 
+        # SPI/USART/UART/LPUART 外设
         # SPI/USART/UART/LPUART
         if p_type_base in ["SPI", "USART", "UART", "LPUART"]:
             for instance, config in instances.items():
+                # 检查 DMA 使能标志
                 # Check DMA enable flags
                 tx_dma = config.get("DMA_TX", "DISABLE") == "ENABLE"
                 rx_dma = config.get("DMA_RX", "DISABLE") == "ENABLE"
+                # 使用配置的 DMA 类型，没有时回退为 "DMA"
                 # Use configured DMA type if available, fallback to "DMA"
                 dma_type = config.get("DMA_TX_TYPE", config.get("DMA_RX_TYPE", "DMA"))
+                # 用于变量名的实例名
                 # Instance name for variable
                 instance_lower = instance.lower()
                 instance_config = libxr_settings[p_type_base].setdefault(instance_lower, {})
@@ -834,6 +859,7 @@ def generate_dma_resources(project_data: dict) -> str:
                 rx_size = instance_config.setdefault(
                     "rx_buffer_size", DMA_DEFAULT_SIZES.get(p_type_base, {}).get("rx", 32)
                 )
+                # 读取 dma_section 配置，没有时设为默认值
                 # Get dma_section config or assign default
                 dma_section = instance_config.get("dma_section", None)
                 if not dma_section:
@@ -853,10 +879,13 @@ def generate_dma_resources(project_data: dict) -> str:
                 if buf_code:
                     dma_code.append("\n".join(buf_code))
 
+        # I2C/ADC 外设
         # I2C/ADC
         elif p_type_base in ["I2C", "ADC"]:
             for instance, config in instances.items():
-                dma_type = config.get("DMA_RX_TYPE", "DMA")  # type tag for section picking
+                # 选段用的类型标签
+                # type tag for section picking
+                dma_type = config.get("DMA_RX_TYPE", "DMA")
                 instance_lower = instance.lower()
                 instance_config = libxr_settings[p_type_base].setdefault(instance_lower, {})
                 buf_size = instance_config.setdefault(
@@ -868,17 +897,25 @@ def generate_dma_resources(project_data: dict) -> str:
                     instance_config["dma_section"] = dma_section
                 sec_str = f' __attribute__((section("{dma_section}")))' if dma_section else ""
 
+                # ADC 缓冲区为 uint16_t，I2C 为 uint8_t
                 # ADC buffer is uint16_t, I2C is uint8_t
                 if p_type_base == "ADC":
                     # 通道选择规则：DMA 开启→RegularConversions，否则→Channels
+                    # Channel selection: RegularConversions with DMA enabled, otherwise Channels
                     active_channels = (
                         config.get("RegularConversions", [])
                         if config.get("DMA") == "ENABLE"
                         else config.get("Channels", [])
                     )
-                    ch_cnt = max(1, len(active_channels))  # 至少保留 1 份缓冲
-                    elems_per_channel = max(1, int(buf_size // 2))  # 每通道的 uint16_t 元素数
-                    total_elems = ch_cnt * elems_per_channel  # 总元素数 = 通道数 × 每通道元素数
+                    # 至少保留 1 份缓冲
+                    # Keep at least one channel's share of the buffer
+                    ch_cnt = max(1, len(active_channels))
+                    # 每通道的 uint16_t 元素数
+                    # uint16_t elements per channel
+                    elems_per_channel = max(1, int(buf_size // 2))
+                    # 总元素数 = 通道数 × 每通道元素数
+                    # Total elements = channel count × elements per channel
+                    total_elems = ch_cnt * elems_per_channel
                     dma_code.append(
                         buffer_declaration(
                             "uint16_t", f"{instance_lower}_buf", total_elems, sec_str
@@ -890,8 +927,10 @@ def generate_dma_resources(project_data: dict) -> str:
                     )
 
         elif p_type_base == "USB":
+            # 为每个 USB 端点生成缓冲区变量（所在段由 dma_section 决定）
             # Generate buffer variables for each USB EP (controlled by dma_section)
             for instance, cfg in instances.items():
+                # 规范化实例名
                 # Normalize instance name
                 inst_u = (instance or "USB_FS").upper()
                 inst_u = (
@@ -904,6 +943,7 @@ def generate_dma_resources(project_data: dict) -> str:
                 is_otg = inst_u.startswith("USB_OTG_")
                 inst_lower = inst_u.lower()
 
+                # 从 libxr_settings 读取 USB 配置，缺少时设为默认值（与 _generate_usb 一致）
                 # Read or set default USB config from libxr_settings (consistent with _generate_usb)
                 usb_cfg = libxr_settings.setdefault("USB", {}).setdefault(inst_lower, {})
 
@@ -936,6 +976,7 @@ def generate_dma_resources(project_data: dict) -> str:
                         )
                     )
 
+                # EP0 包大小，必要时回退为默认值
                 # EP0 packet size, fallback to defaults if needed
                 ep0 = _as_int(
                     usb_cfg.get(
@@ -961,12 +1002,14 @@ def generate_dma_resources(project_data: dict) -> str:
                 )
                 usb_cfg.setdefault("tx_fifo_size", _as_int(cfg.get("tx_fifo_size", 128), 128))
 
+                # 段名（与 UART 相同）
                 # Section name (same as UART)
                 dma_section = usb_cfg.get("dma_section", cfg.get("dma_section", ""))
                 if "dma_section" not in usb_cfg:
                     usb_cfg["dma_section"] = dma_section
                 sec_str = f' __attribute__((section("{dma_section}")))' if dma_section else ""
 
+                # 每个变量单独声明，避免属性只作用于最后一个变量
                 # One line per variable to avoid attribute only on the last one
                 dma_code.append(
                     buffer_declaration("uint8_t", f"{inst_lower}_ep0_in_buf", ep0, sec_str)
@@ -984,8 +1027,11 @@ def generate_dma_resources(project_data: dict) -> str:
                     buffer_declaration("uint8_t", f"{inst_lower}_ep2_in_buf", 16, sec_str)
                 )
 
+    # 最终输出；生成了代码时加上本段的头部
     # Final output with section header if any code generated
     if dma_code:
+        # 较旧的 CMSIS core_cm7.h（例如 STM32F7 的 Cube 包）没有 cache 行长度的宏；
+        # Cortex-M7 的数据 cache 行固定为 32 字节。
         # Older CMSIS core_cm7.h (e.g. STM32F7 Cube packs) lacks the line-size
         # macro; the Cortex-M7 data cache line is fixed at 32 bytes.
         output = (
@@ -1010,7 +1056,7 @@ def generate_dma_resources(project_data: dict) -> str:
 
 
 # --------------------------
-# Peripheral Generation
+# 外设生成 / Peripheral Generation
 # --------------------------
 class PeripheralFactory:
     """按外设类型生成 LibXR 外设对象的构造代码，并登记生成的对象。
@@ -1286,6 +1332,7 @@ class PeripheralFactory:
         """
         cfg_in = config or {}
 
+        # 规范化实例名（与 extern 声明一致）
         # Normalize instance name (consistent with extern declarations)
         inst_u = (instance or "USB_FS").upper()
         inst_u = (
@@ -1300,9 +1347,10 @@ class PeripheralFactory:
 
         is_otg = inst_u.startswith("USB_OTG_")
         speed = "HS" if inst_u.endswith("_HS") else "FS"
-        inst_lower = inst_u.lower()  # Example: usb_fs / usb_otg_fs
-        obj = f"usb_{speed.lower()}"  # Example: usb_fs / usb_hs
+        inst_lower = inst_u.lower()  # 例如 usb_fs、usb_otg_fs / Example: usb_fs / usb_otg_fs
+        obj = f"usb_{speed.lower()}"  # 例如 usb_fs、usb_hs / Example: usb_fs / usb_hs
 
+        # 更新设置（与其他模块一致）
         # Update settings (consistent with other modules)
         usb_root = libxr_settings.setdefault("USB", {})
         inst_cfg = usb_root.setdefault(inst_lower, {})
@@ -1313,10 +1361,11 @@ class PeripheralFactory:
             d when that fails.
             """
             try:
-                return int(str(v), 0)  # Support 0x (hex) style
+                return int(str(v), 0)  # 支持 0x（十六进制）写法 / Support 0x (hex) style
             except Exception:
                 return d
 
+        # 启用开关
         # Enable switch
         inst_cfg.setdefault("enable", cfg_in.get("enable", False))
         if not inst_cfg["enable"]:
@@ -1328,6 +1377,7 @@ class PeripheralFactory:
             )
             return "", ""
 
+        # 包大小和 FIFO 设置
         # Packet size and FIFO setup
         ep0 = _as_int(
             cfg_in.get(
@@ -1339,6 +1389,7 @@ class PeripheralFactory:
             ep0 = 8
         inst_cfg.setdefault("ep0_packet_size", ep0)
 
+        # DMA 缓冲区大小
         # DMA buffer sizes
         inst_cfg.setdefault(
             "tx_buffer_size",
@@ -1349,6 +1400,7 @@ class PeripheralFactory:
             _as_int(cfg_in.get("rx_buffer_size", inst_cfg.get("rx_buffer_size", 128)), 128),
         )
 
+        # USB 硬件 FIFO 大小
         # USB HW FIFO sizes
         inst_cfg.setdefault(
             "tx_fifo_size",
@@ -1361,6 +1413,7 @@ class PeripheralFactory:
                 256 if is_otg else 128,
             ),
         )
+        # CDC 的 FIFO
         # CDC FIFO
         inst_cfg.setdefault(
             "cdc_tx_fifo_size",
@@ -1382,13 +1435,15 @@ class PeripheralFactory:
                     "USB 的 cdc_count 不是生成器选项；复合 USB 设备请在 BSP 用户代码中定义",
                 )
             )
+        # DMA 段名
         # DMA section name
         inst_cfg.setdefault(
             "dma_section", cfg_in.get("dma_section", inst_cfg.get("dma_section", ""))
         )
 
+        # 描述符信息，默认为 1d50:6199 / 0x0100 / "XRUSB-DEMO-"；1d50:6199 的分配记录：
+        # Descriptor information, defaults 1d50:6199 / 0x0100 / "XRUSB-DEMO-"; 1d50:6199 allocation:
         # https://github.com/openmoko/openmoko-usb-oui/commit/27f3846d77e0d0d10271b809b831f70040c6197a
-        # Descriptor information — 默认 1d50:6199 / 0x0100 / "XRUSB-DEMO-"
         inst_cfg.setdefault("vid", _as_int(cfg_in.get("vid", inst_cfg.get("vid", 0x1D50)), 0x1D50))
         inst_cfg.setdefault("pid", _as_int(cfg_in.get("pid", inst_cfg.get("pid", 0x6199)), 0x6199))
         inst_cfg.setdefault("bcd", _as_int(cfg_in.get("bcd", inst_cfg.get("bcd", 0x0100)), 0x0100))
@@ -1401,11 +1456,12 @@ class PeripheralFactory:
         )
         inst_cfg.setdefault("serial", cfg_in.get("serial", inst_cfg.get("serial", "XRUSB-DEMO-")))
 
+        # 从设置中取最终值，用于生成代码
         # Get the final value from settings for code generation
         ep0_sz = int(inst_cfg["ep0_packet_size"])
-        rx_buf_sz = int(inst_cfg["rx_buffer_size"])  # USB DMA
-        tx_fifo_size = int(inst_cfg["tx_fifo_size"])  # EP1 HW FIFO
-        rx_fifo_size = int(inst_cfg["rx_fifo_size"])  # EP1 HW FIFO
+        rx_buf_sz = int(inst_cfg["rx_buffer_size"])  # USB DMA 缓冲区 / USB DMA
+        tx_fifo_size = int(inst_cfg["tx_fifo_size"])  # EP1 硬件 FIFO / EP1 HW FIFO
+        rx_fifo_size = int(inst_cfg["rx_fifo_size"])  # OTG 共享的接收 FIFO / OTG shared RX FIFO
         cdc_tx_fifo_size = int(inst_cfg["cdc_tx_fifo_size"])
         cdc_rx_fifo_size = int(inst_cfg["cdc_rx_fifo_size"])
         cdc_queue_size = int(inst_cfg["cdc_queue_size"])
@@ -1416,6 +1472,7 @@ class PeripheralFactory:
         product = str(inst_cfg["product"]).replace('"', '\\"')
         serial = str(inst_cfg["serial"]).replace('"', '\\"')
 
+        # EP0 包大小的枚举值
         # Size enum for EP0
         size_enum = {8: "SIZE_8", 16: "SIZE_16", 32: "SIZE_32", 64: "SIZE_64"}[ep0_sz]
         lang_var = f"{inst_lower}_lang_pack".upper()
@@ -1429,6 +1486,7 @@ class PeripheralFactory:
             else "STM32USBDeviceDevFs"
         )
 
+        # 生成设备的构造代码（缓冲区变量在别处定义）
         # Generate device construction code (buffer variables are defined elsewhere)
         code = []
         code.append(
@@ -1437,6 +1495,8 @@ class PeripheralFactory:
             "LibXR::USB::DescriptorStrings::Language::EN_US, "
             f'"{manufacturer}", "{product}", "{serial}");'
         )
+        # 以显式的端点号构造 CDC。
+        # CDC1：EP1 IN/OUT 传数据，EP2 IN 传通知。
         # CDC construction with explicit endpoint numbers.
         # CDC1: EP1 IN/OUT data, EP2 IN notification.
         code.append(
@@ -1538,6 +1598,7 @@ def _generate_extern_declarations(project_data: dict) -> str:
     """
     externs = set()
 
+    # 时基来源的声明
     # Timebase source declaration
     timebase_cfg = project_data.get("Timebase", {})
     if timebase_cfg.get("Source", "SysTick") != "SysTick":
@@ -1549,11 +1610,13 @@ def _generate_extern_declarations(project_data: dict) -> str:
         elif src.startswith("HRTIM"):
             externs.add(f"extern HRTIM_HandleTypeDef h{src.lower()};")
 
+    # 外设的声明
     # Peripheral declarations
     peripherals = project_data.get("Peripherals", {})
     for p_type, instances in peripherals.items():
         for instance in instances:
             if p_type == "USB":
+                # 新的 USB 协议栈使用 PCD 句柄（例如 hpcd_USB_FS / hpcd_USB_HS）
                 # New USB stack uses PCD handle (e.g., hpcd_USB_FS / hpcd_USB_HS)
                 if instance == "USB":
                     instance = "USB_FS"
@@ -1769,7 +1832,7 @@ def _generate_core_system(project_data: dict) -> str:
     timebase_cfg = project_data.get("Timebase", {"Source": "SysTick"})
     source = timebase_cfg.get("Source", "SysTick")
 
-    timebase_init = "  static STM32Timebase timebase;"  # Default to SysTick
+    timebase_init = "  static STM32Timebase timebase;"  # 默认使用 SysTick / Default to SysTick
 
     if source != "SysTick":
         handler = f"h{source.lower()}"
@@ -1779,7 +1842,7 @@ def _generate_core_system(project_data: dict) -> str:
     timer_cfg = libxr_settings["software_timer"]
 
     init_args = ""
-    if system_type == "None":  # Bare-metal
+    if system_type == "None":  # 裸机 / Bare-metal
         init_args = ""
     elif system_type == "FreeRTOS" or system_type == "ThreadX":
         init_args = f"{timer_cfg['priority']}, {timer_cfg['stack_depth']}"
@@ -1806,6 +1869,7 @@ def generate_gpio_config(project_data: dict) -> str:
     return code
 
 
+# 看门狗
 # Watchdog
 def configure_watchdog(project_data: dict) -> str:
     """为每个已启用的 IWDG 生成首次喂狗和周期喂狗的代码；没有已启用的 IWDG 时为空字符串。
@@ -1848,7 +1912,7 @@ def configure_watchdog(project_data: dict) -> str:
 
 
 # --------------------------
-# Terminal Configuration
+# 终端配置 / Terminal Configuration
 # --------------------------
 def configure_terminal(project_data: dict) -> str:
     """把 terminal_source 指定的串口设为标准输入输出，并生成 RamFS、Terminal 对象及运行终端的代码。
@@ -1865,9 +1929,11 @@ def configure_terminal(project_data: dict) -> str:
     code = "  /* Terminal Configuration */\n"
     terminal_source = libxr_settings.get("terminal_source", "").lower()
 
+    # 用户指定的终端来源
     # User-specified terminal source
     if terminal_source != "":
         dev = terminal_source.lower()
+        # 设备必须已登记且类型为 UART，否则记录警告并跳过
         # Device must be registered and of type UART, otherwise log a warning and skip
         if registered_devices.get(dev) != "UART":
             logging.warning(
@@ -1921,7 +1987,7 @@ def configure_terminal(project_data: dict) -> str:
 
 
 # --------------------------
-# XRobot Integration
+# XRobot 集成 / XRobot Integration
 # --------------------------
 def generate_xrobot_registrations() -> str:
     """为每个登记的对象生成一行 XR_REGISTER，使静态入口无需运行时容器即可按名字取得 BSP 对象。
@@ -1960,7 +2026,7 @@ def generate_xrobot_registrations() -> str:
 
 
 # --------------------------
-# Main Generator
+# 主生成流程 / Main Generator
 # --------------------------
 def reject_user_xrobot_main(existing_code: str) -> None:
     """拒绝在 User Code 区域中调用 XROBOT_MAIN() 的已有代码；该调用属于生成器，区域中的副本是遗留。
@@ -2194,19 +2260,23 @@ def main():
     LibXRPackageInfo.check_and_print()
 
     try:
+        # 解析参数
         # Parse arguments
         args = parse_arguments()
 
         use_xrobot = args.xrobot
 
+        # 只给出文件名时写入当前目录。
         # A bare file name writes into the current directory.
         output_dir = os.path.dirname(args.output) or os.curdir
 
+        # 加载配置
         # Load configurations
         project_data = load_configuration(args.input)
         load_libxr_config(output_dir, args.libxr_config)
         initialize_registry(use_xrobot)
 
+        # 生成代码
         # Generate code
         existing_code = ""
         if os.path.exists(args.output):
@@ -2215,6 +2285,7 @@ def main():
 
         output_code = generate_full_code(project_data, use_xrobot, existing_code)
 
+        # 写出输出文件
         # Write output
         os.makedirs(output_dir, exist_ok=True)
         with open(args.output, "w", encoding="utf-8", newline="\n") as f:

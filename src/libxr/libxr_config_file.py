@@ -35,6 +35,7 @@ def _loader() -> YAML:
     and quoting is kept.
     """
     loader = YAML()
+    # PyYAML 实现的是 YAML 1.1；标量（yes/no、八进制数）按同样的规则解析。
     # PyYAML implements YAML 1.1; resolve scalars (yes/no, octal) the same way.
     loader.version = (1, 1)
     loader.preserve_quotes = True
@@ -48,6 +49,7 @@ def _dumper() -> YAML:
     """
     dumper = YAML()
     dumper.preserve_quotes = True
+    # 块布局与 yaml.dump() 相同：序列不缩进。
     # Same block layout as yaml.dump(): sequences are not indented.
     dumper.indent(mapping=2, sequence=2, offset=0)
     return dumper

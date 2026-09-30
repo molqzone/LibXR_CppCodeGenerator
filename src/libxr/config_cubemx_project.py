@@ -166,6 +166,7 @@ def make_repo_url(base_or_repo: str, owner="Jiu-Xiao", repo="libxr"):
     The full repository URL: base_or_repo as is when it ends in .git or the repository name,
     else <base_or_repo>/<owner>/<repo>.git.
     """
+    # 已是完整仓库地址（以 .git 或仓库名结尾）时原样返回。
     # If a full repository URL is provided (.git or ends with repo name), return it as-is
     if (
         base_or_repo.endswith(".git")
@@ -319,6 +320,7 @@ def add_libxr(
     existing_checkout = checkout_path_present and is_git_worktree_root(libxr_path)
     added_submodule = False
 
+    # 已有的 LibXR 目录可能含有用户自己的提交或源码，不会被删除、移动或重新克隆。
     # An existing LibXR directory may hold the user's own commits or sources;
     # it is never deleted, moved or re-cloned.
     if checkout_path_present and not existing_checkout and not is_empty_directory(libxr_path):
@@ -390,6 +392,8 @@ def add_libxr(
         current_commit = get_git_head(libxr_path)
         target_commit = ""
 
+        # LibXR 由工程的 gitlink 锁定。只有显式的 --commit 或本次新加入的子模块才会切换检出；
+        # 其他情况下检出保持不变，与包内默认提交不同时只报告。
         # The project's gitlink pins LibXR. Only an explicit --commit or a
         # submodule added by this run moves the checkout; otherwise the
         # checkout stays where it is and a different package default is only
@@ -654,9 +658,11 @@ def main():
         logging.error(tr(f"Directory {display_name} does not exist", f"目录 {display_name} 不存在"))
         sys.exit(1)
 
+    # 检查 STM32CubeMX 工程结构（必须有 Core/ 目录）。
     # Validate STM32CubeMX project structure (must have Core/ directory)
     ensure_valid_cubemx_project(project_dir)
 
+    # 选择 Git 源（auto 时对默认源和镜像测速）。
     # Select Git source (auto benchmarks default and mirrors)
     env_mirrors = os.environ.get("XR_GIT_MIRRORS", "")
     cli_mirrors = [m for m in args.git_mirrors.split(",") if m.strip()]
@@ -676,6 +682,7 @@ def main():
         git_base = args.git_source
     logging.info(tr(f"Selected Git base/repo: {git_base}", f"选用的 Git 源：{git_base}"))
 
+    # 需要时加入 Git 子模块。
     # Add Git submodule if necessary
     add_libxr(
         project_dir,
@@ -684,6 +691,7 @@ def main():
         default_libxr_commit=default_libxr_commit if default_libxr_commit else None,
     )
 
+    # 查找 .ioc 文件。
     # Find .ioc file
     ioc_file = find_ioc_file(project_dir)
     if not ioc_file:
@@ -694,24 +702,30 @@ def main():
 
     create_gitignore_file(project_dir)
 
+    # 创建 User 目录。
     # Create user directory
     user_path = create_user_directory(project_dir)
 
+    # 确定输出路径。
     # Define paths
     yaml_output = os.path.join(project_dir, ".config.yaml")
     cpp_output = os.path.join(user_path, "app_main.cpp")
 
+    # 为代码生成器记录终端设备。
     # Record the terminal device for the code generator
     if terminal_source:
         set_terminal_source(user_path, terminal_source)
 
+    # 处理 .ioc 文件。
     # Process .ioc file
     process_ioc_file(project_dir, yaml_output)
 
+    # 生成 C++ 代码。
     # Generate C++ code
     generate_cpp_code(yaml_output, cpp_output, xrobot_enable)
 
-    # Generate CMakeLists.txt with selected compiler
+    # 生成 CMakeLists.txt。
+    # Generate CMakeLists.txt
     generate_cmake_file(project_dir)
 
     logging.info(tr("[Pass] All tasks completed successfully!", "[通过] 全部任务已完成！"))

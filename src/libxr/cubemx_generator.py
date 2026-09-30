@@ -888,6 +888,8 @@ class _WindowsDialogController(_BaseDialogController):
         self.user32.ShowWindow(hwnd, self.SW_RESTORE)
         self.user32.SetForegroundWindow(hwnd)
         time.sleep(0.1)
+        # Swing 对话框常常不暴露原生 Button 子控件。空格用于初始焦点在许可协议复选框上的情况，
+        # 随后 Tab 和回车在迁移、下载、许可协议提示中触发默认的确认操作。
         # Swing dialogs often expose no native Button children. Space handles an
         # initial license checkbox focus; Tab/Enter then activates the default
         # positive action on migration/download/license prompts.
@@ -1168,6 +1170,7 @@ class _LinuxX11DialogController(_BaseDialogController):
         if width < 80 or height < 60:
             return False
 
+        # Swing/AWT 对话框常常不通过 X11 暴露原生按钮文字；确认操作按惯例位于底部按钮行的中间。
         # Swing/AWT dialogs often do not expose native button text through X11.
         # The positive action is conventionally centered in the bottom button row.
         click_x = x + width // 2
@@ -1518,16 +1521,22 @@ def generate_cubemx_project(
     actual_script_path, should_cleanup_script = _prepare_script_path(
         project_dir, script_path, keep_script
     )
-    # 先组成命令行（它会检查启动方式和 Java），再写临时脚本，出错时不留下脚本。
-    # Build the command line first (it checks the launch mode and Java), then write the
-    # temporary script, so a failure leaves no script behind.
-    command = build_cubemx_command(
-        resolved_cubemx_cmd,
-        actual_script_path,
-        launch_mode=launch_mode,
-        java_cmd=java_cmd,
-        silent=silent,
-    )
+    # 组成命令行时会检查启动方式和 Java；失败时删除已建的临时脚本再抛出。
+    # Building the command line checks the launch mode and Java; on failure the temporary
+    # script already created is removed before the error propagates.
+    try:
+        command = build_cubemx_command(
+            resolved_cubemx_cmd,
+            actual_script_path,
+            launch_mode=launch_mode,
+            java_cmd=java_cmd,
+            silent=silent,
+        )
+    except Exception:
+        if should_cleanup_script:
+            with contextlib.suppress(OSError):
+                os.remove(actual_script_path)
+        raise
     script_text = build_cubemx_script(ioc_path, generate_code_dir)
     _write_text_file(actual_script_path, script_text)
 
@@ -1573,6 +1582,7 @@ def generate_cubemx_project(
                 stream.close()
 
         try:
+            # CubeMX 路径在此之前已解析，参数以列表传入且不经过 shell，工程路径不会被 shell 展开。
             # CubeMX path is resolved before this point and arguments are passed as
             # a list with shell disabled, so project paths cannot be shell-expanded.
             popen_kwargs = {}

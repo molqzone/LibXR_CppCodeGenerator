@@ -74,6 +74,7 @@ class LibXRPackageInfo:
                 if vparse(local_ver) < vparse(remote_ver):
                     cls._print_upgrade_notice(local_ver, remote_ver)
             except Exception:
+                # 回退：两个版本不同时才提示
                 # fallback: only show if different
                 if local_ver != remote_ver:
                     cls._print_upgrade_notice(local_ver, remote_ver)

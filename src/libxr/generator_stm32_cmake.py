@@ -211,6 +211,7 @@ def update_or_create_libxr_cmake(file_path: str, system: str, use_xrobot: bool) 
                     "LibXR.CMake 已是最新，无需修改。",
                 )
             )
+        # 这里的已有文件属于用户，不一致时只报告。
         # The existing file is user-owned here; report a mismatch only.
         declares_modules = (
             re.search(r"^\s*set\s*\(\s*XROBOT_MODULES_DIR\b", new_content, flags=re.MULTILINE)
@@ -236,6 +237,7 @@ def update_or_create_libxr_cmake(file_path: str, system: str, use_xrobot: bool) 
                 + XROBOT_MODULES_DIR_LINE.strip()
             )
     else:
+        # XRobot 工程通过 LibXR 构建其 Modules；纯 LibXR 工程不得指定 Modules 目录。
         # XRobot projects build their Modules through LibXR; plain LibXR
         # projects must not name a Modules directory.
         cmake_path.write_text(
@@ -249,6 +251,8 @@ def update_or_create_libxr_cmake(file_path: str, system: str, use_xrobot: bool) 
         )
 
 
+# 插在 CubeMX 的 set(STARM_TOOLCHAIN_CONFIG "<default>") 行之后；该行仍是唯一写出
+# 默认配置的地方。
 # Inserted after CubeMX's set(STARM_TOOLCHAIN_CONFIG "<default>") line, which
 # stays the only place that names the default profile.
 STARM_PROFILE_SELECTION = """
@@ -302,6 +306,7 @@ def normalize_starm_clang_toolchain(file_path: str | Path) -> None:
     line_pattern = re.compile(
         r'^(\s*set\s*\(\s*STARM_TOOLCHAIN_CONFIG\s+")([^"]+)'
         r'"(?:\s+CACHE\s+STRING\s+"[^"]*")?\s*\)[ \t]*$'
+        # 旧版本在 CACHE 默认值之后写出的属性列表。
         # Property list written by earlier versions after a CACHE default.
         r"(?:\nset_property\s*\(\s*CACHE\s+STARM_TOOLCHAIN_CONFIG\s+PROPERTY\s+STRINGS"
         r"\s+STARM_HYBRID\s+STARM_NEWLIB\s+STARM_PICOLIBC\s*\))?",
@@ -322,6 +327,8 @@ def normalize_starm_clang_toolchain(file_path: str | Path) -> None:
         replacement += STARM_PROFILE_SELECTION
     new_content = content[: match.start()] + replacement + content[match.end() :]
 
+    # CubeMX 生成计算 multilib 参数的 if/elseif 块。显式初始化该变量，并拒绝拼错的运行时
+    # 配置名。
     # CubeMX emits an if/elseif block that computes multilib flags. Initialize the
     # variable explicitly and reject misspelled runtime profiles.
     if 'set(TOOLCHAIN_MULTILIBS "")' not in new_content:

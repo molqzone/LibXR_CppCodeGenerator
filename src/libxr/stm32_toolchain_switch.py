@@ -18,11 +18,13 @@ from xr_syntax.i18n import localize_argparse, tr
 
 from libxr.output import configure_logging
 
+# 路径和常量
 # Paths and constants
 CMAKE_PRESETS_PATH = "CMakePresets.json"
 CLANG_TOOLCHAIN = "cmake/starm-clang.cmake"
 GCC_TOOLCHAIN = "cmake/gcc-arm-none-eabi.cmake"
 
+# 命令行选项到 STARM 配置的映射
 # Mapping between command-line options and STARM configs
 STD_MAP = {
     "g": "STARM_HYBRID",
