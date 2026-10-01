@@ -51,11 +51,8 @@ jobs:
       - name: Write libxr_version.py
         id: pin
         run: |
-          python ./scripts/gen_libxr_version.py
-          python - <<'PY' >> "$GITHUB_OUTPUT"
-          import runpy
-          print("commit=" + runpy.run_path("src/libxr/libxr_version.py")["LibXRInfo"].COMMIT)
-          PY
+          commit=$(python ./scripts/gen_libxr_version.py)
+          echo "commit=${commit}" >> "$GITHUB_OUTPUT"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -242,12 +239,10 @@ jobs:
             pip install $pkg.FullName
           }
 
+      # The tests import every module of the installed package (src layout), so a module
+      # missing from the wheel fails them.
       - name: Candidate source regression tests
         run: python -m unittest discover -s tests -p "test_*.py" -v
-
-      - name: Import smoke check (all top-level modules)
-        run: |
-          python ./scripts/ci_import_smoke.py
 
       - name: Checkout BSP Compatibility Test Repo
         uses: actions/checkout@v4

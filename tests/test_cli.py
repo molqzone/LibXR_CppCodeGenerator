@@ -145,6 +145,21 @@ class Options(TestCase):
         root = logging.getLogger()
         self.addCleanup(root.setLevel, root.level)
 
+    def test_python_m_libxr_is_the_libxr_command(self):
+        # 以前只有 CI 的 import smoke 脚本碰过 __main__，而且是把它当模块导入。
+        # Only the CI import smoke script used to touch __main__, importing it as a module.
+        result = subprocess.run(
+            [sys.executable, "-m", "libxr", "--version"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+        self.assertEqual(
+            (result.returncode, result.stdout),
+            (0, f"libxr {update_notice.installed_version()}\n"),
+        )
+
     def test_every_subcommand_takes_verbose(self):
         parser = cli.build_parser()
         for argv in (
