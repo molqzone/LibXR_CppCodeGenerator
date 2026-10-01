@@ -16,6 +16,7 @@ same values.
 """
 
 import io
+import re
 
 import yaml
 from ruamel.yaml import YAML
@@ -90,9 +91,7 @@ def parse(text: str, origin: str):
         settings = yaml.safe_load(text)
         document = _loader().load(text)
     except (yaml.YAMLError, RoundTripYAMLError) as error:
-        raise LibXRConfigError(
-            tr(f"Cannot parse {origin}: {error}", f"无法解析 {origin}：{error}")
-        ) from error
+        raise _syntax_error(error, origin, text) from error
     if settings is None:
         return _comment_document(text), {}
     if not isinstance(settings, dict) or not isinstance(document, CommentedMap):
@@ -103,6 +102,65 @@ def parse(text: str, origin: str):
             )
         )
     return document, settings
+
+
+def _syntax_error(error, origin: str, text: str) -> LibXRConfigError:
+    """把 PyYAML 或 ruamel.yaml 的解析错误写成“<来源> 第 N 行第 M 列：<原因>”。
+    Phrase a PyYAML or ruamel.yaml parse error as "<origin> line N, column M: <problem>".
+
+    重复的键写成“第 N 行：键 'K' 重复（第 L 行已有）”。库的原文指向 "<unicode string>"，并建议
+    关闭重复键检查，用户无法照做。
+    A duplicated key is reported as "line N: key 'K' is duplicated (already on line L)". The
+    library's own text points at "<unicode string>" and suggests turning the duplicate check
+    off, which the user cannot do.
+    """
+    mark = getattr(error, "problem_mark", None) or getattr(error, "context_mark", None)
+    problem = getattr(error, "problem", None) or str(error)
+    if mark is None:
+        return LibXRConfigError(
+            tr(f"Cannot parse {origin}: {problem}", f"无法解析 {origin}：{problem}")
+        )
+    line, column = mark.line + 1, mark.column + 1
+    duplicate = re.match(r'found duplicate key "(.*?)"', problem)
+    if duplicate is None:
+        return LibXRConfigError(
+            tr(
+                f"{origin} line {line}, column {column}: {problem}",
+                f"{origin} 第 {line} 行第 {column} 列：{problem}",
+            )
+        )
+    key = duplicate.group(1)
+    first = _first_key_line(text, key, mark.line, mark.column)
+    return LibXRConfigError(
+        tr(
+            f"{origin} line {line}: key '{key}' is duplicated"
+            + (f" (already on line {first})" if first else ""),
+            f"{origin} 第 {line} 行：键 '{key}' 重复" + (f"（第 {first} 行已有）" if first else ""),
+        )
+    )
+
+
+def _first_key_line(text: str, key: str, line: int, column: int) -> int | None:
+    """从 0 起算的第 line 行往上，找同一映射中键 key 先出现的行号（从 1 起算）；找不到时为 None。
+    The 1-based line where key appears first in the same mapping, searching up from the 0-based
+    line line; None when it is not found.
+
+    块映射的键都从 column 列开始；遇到缩进更少的非空、非注释行就离开了这个映射。
+    The keys of a block mapping all start at column; a non-blank, non-comment line indented
+    less than that leaves the mapping.
+    """
+    lines = text.splitlines()
+    for index in range(min(line, len(lines)) - 1, -1, -1):
+        current = lines[index]
+        stripped = current.lstrip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        indent = len(current) - len(stripped)
+        if indent < column:
+            return None
+        if indent == column and re.match(rf"{re.escape(key)}\s*:", stripped):
+            return index + 1
+    return None
 
 
 def _comment_document(text: str) -> CommentedMap:
@@ -132,14 +190,24 @@ def read(path: str):
     """以 UTF-8 读取 libxr_config.yaml 文件，返回 (往返文档, 普通设置)。
     Read a libxr_config.yaml file as UTF-8 and return (round-trip document, plain settings).
 
+    文件开头的 UTF-8 BOM 被忽略，写回时不再带 BOM。
+    A UTF-8 byte order mark at the start is ignored and not written back.
+
     Raises:
-        LibXRConfigError: 文件无法读取或解码，或 parse() 拒绝其内容。
-            The file cannot be read or decoded, or parse() rejects its content.
+        LibXRConfigError: 文件无法读取、不是 UTF-8 编码，或 parse() 拒绝其内容。
+            The file cannot be read, is not UTF-8, or parse() rejects its content.
     """
     try:
-        with open(path, encoding="utf-8") as stream:
+        with open(path, encoding="utf-8-sig") as stream:
             text = stream.read()
-    except (OSError, UnicodeDecodeError) as error:
+    except UnicodeDecodeError as error:
+        raise LibXRConfigError(
+            tr(
+                f"{path} is not UTF-8 text (byte {error.start + 1}); save it as UTF-8",
+                f"{path} 不是 UTF-8 编码（第 {error.start + 1} 个字节）；请以 UTF-8 保存",
+            )
+        ) from error
+    except OSError as error:
         raise LibXRConfigError(
             tr(f"Cannot read {path}: {error}", f"无法读取 {path}：{error}")
         ) from error

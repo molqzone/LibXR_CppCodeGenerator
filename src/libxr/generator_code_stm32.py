@@ -403,27 +403,36 @@ def _write_if_changed(path: str, text: str) -> bool:
 
 
 def libxr_config_text() -> str:
-    """libxr_config.yaml 的新内容：生效的设置，去掉空的段和旧的 device_aliases 表。
-    The new content of libxr_config.yaml: the effective settings without empty sections and
-    without the legacy device_aliases table.
+    """libxr_config.yaml 的新内容：生效的设置，去掉生成器补出来的空段和旧的 device_aliases 表。
+    The new content of libxr_config.yaml: the effective settings without the empty sections the
+    generator added and without the legacy device_aliases table.
 
-    生成器不解释的键（例如 ``generator`` 版本固定项）和注释被保留；device_aliases 中的别名以警告
-    列出。
-    Keys the generator does not interpret (such as the ``generator`` pin) and
-    comments are kept; the aliases of device_aliases are listed in a warning.
+    生成器不解释的键（例如 ``generator`` 版本固定项）、文件里原有的键（包括空映射）和注释被保留；
+    device_aliases 中的别名以警告列出。
+    Keys the generator does not interpret (such as the ``generator`` pin), keys already in the
+    file, empty mappings included, and comments are kept; the aliases of device_aliases are
+    listed in a warning.
     """
     # device_aliases 是旧的运行时别名表，已不再使用。
     # device_aliases was the legacy runtime alias table; it is no longer used.
     if "device_aliases" in libxr_settings:
         _report_dropped_device_aliases(libxr_settings["device_aliases"])
-    cleaned_config = {
-        k: v
-        for k, v in libxr_settings.items()
-        if not (isinstance(v, dict) and len(v) == 0) and k != "device_aliases"
-    }
     document = libxr_config_document
     if document is None:
         document = libxr_config_file.new_document()
+    cleaned_config = {}
+    for key, value in libxr_settings.items():
+        if key == "device_aliases":
+            continue
+        if isinstance(value, dict) and not value:
+            # 生成器补出来的空段不写；文件里原有的键保留，只写了 "KEY:" 的仍写成 null。
+            # Empty sections the generator added are left out; keys already in the file
+            # stay, and a bare "KEY:" stays null.
+            if key not in document:
+                continue
+            if document[key] is None:
+                value = None
+        cleaned_config[key] = value
     libxr_config_file.update(document, cleaned_config)
     return libxr_config_file.dump(document)
 

@@ -131,9 +131,49 @@ class LibXRConfigFile(GeneratorTestCase):
     def test_unparsable_file_is_an_error_and_is_not_rewritten(self):
         broken = "terminal_source: usart1\nTerminal: [unclosed\n"
         self.path.write_text(broken, encoding="utf-8")
-        with self.assertRaisesRegex(config_file.LibXRConfigError, "Cannot parse"):
+        with self.assertRaises(config_file.LibXRConfigError) as error:
             generator.load_libxr_config(str(self.directory), "")
+        self.assertEqual(
+            str(error.exception),
+            f"{self.path} line 3, column 1: expected ',' or ']', but got '<stream end>'",
+        )
         self.assertEqual(self.path.read_text(encoding="utf-8"), broken)
+
+    def test_read_errors_name_the_file_line_and_problem(self):
+        for text, message in (
+            ("USART: {}\nUSART: {}\n", "line 2: key 'USART' is duplicated (already on line 1)"),
+            (
+                "SPI:\n  spi1:\n    tx_buffer_size: 32\n  spi1:\n    tx_buffer_size: 64\n",
+                "line 4: key 'spi1' is duplicated (already on line 2)",
+            ),
+        ):
+            with self.subTest(text=text):
+                self.path.write_text(text, encoding="utf-8")
+                with self.assertRaises(config_file.LibXRConfigError) as error:
+                    generator.load_libxr_config(str(self.directory), "")
+                self.assertEqual(str(error.exception), f"{self.path} {message}")
+        self.path.write_bytes("# 中文注释\nterminal_source: usart1\n".encode("gbk"))
+        with self.assertRaises(config_file.LibXRConfigError) as error:
+            generator.load_libxr_config(str(self.directory), "")
+        self.assertEqual(
+            str(error.exception), f"{self.path} is not UTF-8 text (byte 3); save it as UTF-8"
+        )
+
+    def test_a_byte_order_mark_is_read_and_dropped(self):
+        self.path.write_bytes(b"\xef\xbb\xbfterminal_source: usart1\n")
+        generator.load_libxr_config(str(self.directory), "")
+        self.assertEqual(generator.libxr_settings["terminal_source"], "usart1")
+        self.assertTrue(generator.libxr_config_text().startswith("terminal_source: usart1\n"))
+
+    def test_empty_mappings_in_the_file_are_kept(self):
+        # 以前所有值为空映射的顶层键都会被删掉，用户写的也不例外。
+        # Every top-level key holding an empty mapping used to be dropped, the user's too.
+        self.path.write_text("board_notes: {}\nI2C:\nterminal_source: ''\n", encoding="utf-8")
+        text = self.regenerate()
+        self.assertIn("board_notes: {}\n", text)
+        self.assertIn("I2C:\n", text)
+        self.assertNotIn("I2C: {}", text)
+        self.assertNotIn("CAN:", text)
 
     def test_non_mapping_file_is_an_error(self):
         self.path.write_text("- usart1\n", encoding="utf-8")
