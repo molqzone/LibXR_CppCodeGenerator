@@ -1,7 +1,8 @@
-"""用 Python 写的假 STM32CubeMX 运行 cubemx_generator（libxr.cubemx_generator）：命令组装、
-成功生成、缺少输出、非零退出码和超时。
-Running cubemx_generator (libxr.cubemx_generator) with a fake STM32CubeMX written in Python:
-command building, a successful generation, missing output, a non-zero exit code and a timeout.
+"""libxr stm32 cubemx-gen（libxr.cubemx_generator）：命令组装，用 Python 写的假 STM32CubeMX
+运行（成功、失败的脚本命令、缺少输出、非零退出码、超时），以及对话框的回答规则。
+libxr stm32 cubemx-gen (libxr.cubemx_generator): command building, runs with a fake STM32CubeMX
+written in Python (success, a failed script command, missing output, a non-zero exit code, a
+timeout), and the rules that answer dialogs.
 """
 
 import os
@@ -16,13 +17,25 @@ from unittest import mock
 
 from fixtures import TestCase
 
-from libxr.cubemx_generator import build_cubemx_command, generate_cubemx_project
+from libxr.cubemx_generator import (
+    ACCESS_BRIDGE_OPTION,
+    FIRMWARE_TITLE,
+    LICENSE_AGREE,
+    Dialog,
+    DialogAnswer,
+    DialogStopped,
+    answer_dialog,
+    build_cubemx_command,
+    generate_cubemx_project,
+)
 
-# 假 CubeMX 按 FAKE_CUBEMX_MODE 行为：ok（默认）为 project generate 脚本创建 Core/Inc 和 Drivers，
+# 假 CubeMX 像真的一样回显每条脚本命令并打印 OK（exit 打印 Bye bye），按 FAKE_CUBEMX_MODE 行为：
+# ok（默认）为 project generate 脚本创建 Core/Inc 和 Drivers，ko 对 project generate 打印 KO，
 # fail 以 23 退出，no-output 什么都不生成，timeout 启动一个持续写心跳文件的子进程后等待。
-# The fake CubeMX acts on FAKE_CUBEMX_MODE: ok, the default, creates Core/Inc and Drivers for a
-# project generate script, fail exits with 23, no-output creates nothing, and timeout starts a
-# child that keeps writing a heartbeat file, then waits.
+# Like the real one, the fake CubeMX echoes each script command and prints OK (Bye bye for exit),
+# and acts on FAKE_CUBEMX_MODE: ok, the default, creates Core/Inc and Drivers for a project
+# generate script, ko prints KO for project generate, fail exits with 23, no-output creates
+# nothing, and timeout starts a child that keeps writing a heartbeat file, then waits.
 FAKE_CUBEMX = r"""
 import os
 import subprocess
@@ -61,15 +74,20 @@ def main() -> int:
         time.sleep(30)
         return 0
 
-    if mode == "no-output":
-        return 0
-
     if "project generate" not in script_text:
         print("unexpected script body", file=sys.stderr)
         return 3
-    os.makedirs(os.path.join(os.getcwd(), "Core", "Inc"), exist_ok=True)
-    os.makedirs(os.path.join(os.getcwd(), "Drivers"), exist_ok=True)
-    print("fake CubeMX generated project")
+    for line in script_text.splitlines():
+        print(line)
+        if line == "exit":
+            print("Bye bye")
+        elif line == "project generate" and mode == "ko":
+            print("KO")
+        else:
+            print("OK")
+    if mode in ("ok", "ko"):
+        os.makedirs(os.path.join(os.getcwd(), "Core", "Inc"), exist_ok=True)
+        os.makedirs(os.path.join(os.getcwd(), "Drivers"), exist_ok=True)
     return 0
 
 
@@ -121,7 +139,11 @@ class CommandLine(CubeMXTestCase):
         jar = str(self.tmp / "STM32CubeMX.jar")
         Path(exe).write_text("", encoding="utf-8")
         Path(jar).write_text("", encoding="utf-8")
-        self.assertEqual(build_cubemx_command(exe, script, launch_mode="auto"), [exe, "-q", script])
+        with self.assertLogs(level="WARNING") as logs:
+            self.assertEqual(
+                build_cubemx_command(exe, script, launch_mode="auto"), [exe, "-q", script]
+            )
+        self.assertIn("STM32CubeMX.exe starts CubeMX and returns at once", logs.output[0])
         java = build_cubemx_command(jar, script, launch_mode="auto", java_cmd=sys.executable)
         index = java.index("-jar")
         self.assertEqual(java[index + 1 : index + 4], [jar, "-q", script])
@@ -131,10 +153,43 @@ class CommandLine(CubeMXTestCase):
         )
         with self.assertRaisesMessage(
             ValueError,
-            "Java launch mode requires an STM32CubeMX .jar path. Use --launch-mode direct for "
-            "STM32CubeMX.exe.",
+            "Java launch mode requires an STM32CubeMX .jar path, or an installation with "
+            "STM32CubeMX.jar and its jre folder next to the executable.",
         ):
             build_cubemx_command(exe, script, launch_mode="java", java_cmd=sys.executable)
+
+    def test_an_installation_is_started_through_its_own_java(self):
+        install = self.tmp / "STM32CubeMX"
+        java = install / "jre" / "bin" / ("java.exe" if os.name == "nt" else "java")
+        java.parent.mkdir(parents=True)
+        java.write_text("", encoding="utf-8")
+        exe = install / "STM32CubeMX.exe"
+        exe.write_text("", encoding="utf-8")
+        (install / "STM32CubeMX.jar").write_text("", encoding="utf-8")
+        (install / "STM32CubeMX.l4j.ini").write_text(
+            "-Dfile.encoding=UTF8\n--add-opens java.desktop/java.awt=ALL-UNNAMED\n",
+            encoding="utf-8",
+        )
+        command = build_cubemx_command(str(exe), "script.txt")
+        self.assertEqual(command[0], str(java))
+        jvm = command[command.index("-Dfile.encoding=UTF8") : command.index("-jar")]
+        expected = ["-Dfile.encoding=UTF8", "--add-opens", "java.desktop/java.awt=ALL-UNNAMED"]
+        if os.name == "nt":
+            expected.append(ACCESS_BRIDGE_OPTION)
+        self.assertEqual(jvm, expected)
+        self.assertEqual(
+            command[command.index("-jar") :],
+            ["-jar", str(install / "STM32CubeMX.jar"), "-q", "script.txt"],
+        )
+
+    def test_several_ioc_files_need_an_explicit_one(self):
+        (self.project / "other.ioc").write_text("", encoding="utf-8")
+        with self.assertRaisesMessage(
+            ValueError,
+            f"{self.project} holds several .ioc files (demo.ioc, other.ioc); pass --ioc",
+        ):
+            self.generate()
+        self.assertEqual(self.generate(ioc_file=str(self.project / "demo.ioc")).returncode, 0)
 
     def test_a_command_that_cannot_be_built_leaves_no_script(self):
         exe = self.tmp / "STM32CubeMX.exe"
@@ -167,6 +222,20 @@ class Generation(CubeMXTestCase):
         self.assertIn(str(self.fake), (logs / "cubemx_command.txt").read_text(encoding="utf-8"))
         self.assertTrue((self.project / "Core" / "Inc").is_dir())
         self.assertTrue((self.project / "Drivers").is_dir())
+
+    def test_a_failed_script_command_fails_the_run(self):
+        with self.assertRaises(RuntimeError) as failure:
+            self.generate("ko")
+        self.assertEqual(
+            str(failure.exception).splitlines()[:5],
+            [
+                "STM32CubeMX did not complete the script command: project generate",
+                f"config load {(self.project / 'demo.ioc').as_posix()}",
+                "OK",
+                "project generate",
+                "KO",
+            ],
+        )
 
     def test_missing_expected_paths_fail_the_run(self):
         missing = ", ".join(
@@ -201,6 +270,99 @@ class Generation(CubeMXTestCase):
             if heartbeat.read_text(encoding="utf-8") == before:
                 return
         self.fail("the child of the fake CubeMX kept running after the timeout")
+
+
+class DialogAnswers(TestCase):
+    """CubeMX 对话框按 --firmware 和 --download 回答，其他对话框停止运行。
+    CubeMX dialogs are answered by --firmware and --download; any other dialog stops the run.
+    """
+
+    MIGRATION = Dialog(
+        FIRMWARE_TITLE,
+        "This project was setup with STM32CubeMX V6.16.0 using STM32Cube FW_F1 V1.8.6.\n"
+        "There are three options to proceed: ",
+        ("Continue", "Migrate", "Cancel"),
+    )
+    NEED_MIGRATION = Dialog(
+        "Project Manager Settings",
+        "You need to migrate the project and work with the latest version of the Firmware Package.",
+        ("Migrate", "Cancel"),
+    )
+    DOWNLOAD_OR_MIGRATE = Dialog(
+        FIRMWARE_TITLE, "Download now or Migrate Project ?", ("Download", "Migrate", "Cancel")
+    )
+    CONFIRM = Dialog("Project Manager Settings", "Do you confirm this migration ?", ("Yes", "No"))
+    DOWNLOAD = Dialog(
+        "Project Manager Settings", "Download now or Continue ?", ("Download", "Continue")
+    )
+    LICENSE = Dialog(
+        "License Agreement",
+        "Please read and accept the following agreement",
+        ("Finish", "Cancel"),
+        (LICENSE_AGREE, "I do not accept the terms of this license agreement"),
+    )
+    LOGIN = Dialog(
+        "User Login",
+        "Downloading software components from st.com requires myST login information.",
+        ("OK",),
+    )
+
+    def answer(self, dialog, **options):
+        """回答 dialog；停止时返回 DialogStopped 的信息。
+        Answer dialog; when it stops, return the DialogStopped message.
+        """
+        try:
+            return answer_dialog(dialog, **options)
+        except DialogStopped as error:
+            return str(error)
+
+    def test_the_firmware_dialog_follows_the_firmware_option(self):
+        self.assertEqual(self.answer(self.MIGRATION, firmware="keep"), DialogAnswer("Continue"))
+        self.assertEqual(self.answer(self.MIGRATION, firmware="migrate"), DialogAnswer("Migrate"))
+        stopped = self.answer(self.MIGRATION, download=True)
+        self.assertIn("Pass --firmware keep to stay on its firmware package", stopped)
+        self.assertIn("Buttons: Continue / Migrate / Cancel", stopped)
+
+    def test_keeping_a_missing_package_needs_download(self):
+        self.assertIn(
+            "Keeping the project's firmware package needs it installed",
+            self.answer(self.DOWNLOAD_OR_MIGRATE, firmware="keep"),
+        )
+        self.assertEqual(
+            self.answer(self.DOWNLOAD_OR_MIGRATE, firmware="keep", download=True),
+            DialogAnswer("Download"),
+        )
+        self.assertEqual(
+            self.answer(self.DOWNLOAD_OR_MIGRATE, firmware="migrate"), DialogAnswer("Migrate")
+        )
+        self.assertIn("needs it installed", self.answer(self.NEED_MIGRATION, firmware="keep"))
+        self.assertEqual(
+            self.answer(self.NEED_MIGRATION, firmware="migrate"), DialogAnswer("Migrate")
+        )
+
+    def test_only_a_requested_migration_is_confirmed(self):
+        self.assertEqual(self.answer(self.CONFIRM, firmware="migrate"), DialogAnswer("Yes"))
+        self.assertIn("--firmware migrate", self.answer(self.CONFIRM, firmware="keep"))
+
+    def test_downloads_and_licenses_need_download(self):
+        self.assertEqual(self.answer(self.DOWNLOAD, download=True), DialogAnswer("Download"))
+        self.assertIn("Pass --download to download it", self.answer(self.DOWNLOAD, firmware="keep"))
+        self.assertEqual(
+            self.answer(self.LICENSE, download=True), DialogAnswer("Finish", select=LICENSE_AGREE)
+        )
+        self.assertIn("Pass --download to accept it", self.answer(self.LICENSE))
+
+    def test_a_login_or_an_unknown_dialog_always_stops(self):
+        self.assertIn(
+            "Sign in once in STM32CubeMX",
+            self.answer(self.LOGIN, firmware="keep", download=True),
+        )
+        stopped = self.answer(Dialog("Warning", "Something else", ("OK",)), download=True)
+        self.assertEqual(
+            stopped,
+            "STM32CubeMX shows a dialog that libxr does not answer:\n"
+            '"Warning"\nSomething else\nButtons: OK',
+        )
 
 
 if __name__ == "__main__":

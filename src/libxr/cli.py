@@ -171,7 +171,8 @@ def cmd_stm32_cubemx_gen(args: argparse.Namespace) -> None:
             script_path=args.script_path,
             keep_script=args.keep_script,
             silent=args.silent,
-            auto_confirm=args.auto_confirm,
+            firmware=args.firmware,
+            download=args.download,
             timeout=args.timeout,
         )
     except Exception as error:
@@ -393,8 +394,8 @@ def _add_stm32_cubemx_gen(commands) -> None:
         "--ioc",
         default="",
         help=tr(
-            "Explicit .ioc file path (defaults to the first .ioc in --directory)",
-            ".ioc 文件路径（默认：--directory 中的第一个 .ioc 文件）",
+            "Explicit .ioc file path (default: the only .ioc in --directory)",
+            ".ioc 文件路径（默认：--directory 中唯一的 .ioc 文件）",
         ),
     )
     parser.add_argument(
@@ -415,8 +416,10 @@ def _add_stm32_cubemx_gen(commands) -> None:
         choices=("auto", "direct", "java"),
         default="auto",
         help=tr(
-            "CubeMX launch mode (default: auto; .jar uses java -jar, executables launch directly)",
-            "CubeMX 启动方式（默认：auto；.jar 用 java -jar 启动，可执行文件直接启动）",
+            "CubeMX launch mode (default: auto: java -jar for a .jar or an installation with "
+            "STM32CubeMX.jar and its jre, else direct)",
+            "CubeMX 启动方式（默认 auto：.jar 或带 STM32CubeMX.jar 和 jre 的安装用 java -jar 启动，"
+            "其余直接启动）",
         ),
     )
     parser.add_argument(
@@ -466,11 +469,23 @@ def _add_stm32_cubemx_gen(commands) -> None:
         help=tr("Pass -s to STM32CubeMX", "向 STM32CubeMX 传入 -s"),
     )
     parser.add_argument(
-        "--auto-confirm",
+        "--firmware",
+        choices=("keep", "migrate"),
+        default=None,
+        help=tr(
+            "answer when the project was saved by another STM32CubeMX version: keep its "
+            "firmware package (Continue) or migrate the project (default: stop)",
+            "工程由另一版本的 STM32CubeMX 保存时的回答：keep 沿用它的固件包（Continue），"
+            "migrate 迁移工程（默认：停止）",
+        ),
+    )
+    parser.add_argument(
+        "--download",
         action="store_true",
         help=tr(
-            "Attempt to auto-confirm migration/license/download dialogs",
-            "尝试自动确认迁移、许可和下载对话框",
+            "let STM32CubeMX download a missing firmware package and accept its license "
+            "(default: stop)",
+            "允许 STM32CubeMX 下载缺少的固件包并接受其许可协议（默认：停止）",
         ),
     )
     parser.add_argument(

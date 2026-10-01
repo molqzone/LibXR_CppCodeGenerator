@@ -266,24 +266,38 @@ default commit, its gitlink is staged and ready to commit.
 最小脚本模式命令示例 / Minimal example:
 
 ```bash
-libxr stm32 cubemx-gen -d . --cubemx-cmd /path/to/STM32CubeMX
+libxr stm32 cubemx-gen -d .
 ```
 
-Windows 上推荐直接启动 STM32CubeMX.exe / Windows example:
+Windows 示例：指定 CubeMX，沿用工程原来的固件包，并保存日志 / Windows example: name CubeMX, keep the project's firmware package and save the logs:
 
 ```powershell
 libxr stm32 cubemx-gen -d . `
   --cubemx-cmd "$env:LOCALAPPDATA\Programs\STM32CubeMX\STM32CubeMX.exe" `
-  --launch-mode direct `
-  --auto-confirm `
+  --firmware keep `
   --log-dir .cubemx-logs
 ```
 
-如果显式传入 STM32CubeMX `.jar`，才使用 `--launch-mode java` 和 `--java-cmd`。
-Use `--launch-mode java` and `--java-cmd` only when `--cubemx-cmd` points to an STM32CubeMX `.jar` file.
+STM32CubeMX 依次从 `--cubemx-cmd`、环境变量 `STM32CUBEMX_CMD`（或 `CUBEMX_CMD`、`STM32CUBEMX`）和默认安装位置查找。安装目录中有 `STM32CubeMX.jar` 和 `jre` 时，默认的 `--launch-mode auto` 用这份 JRE 以 `java -jar` 启动 CubeMX 并等待它结束。Windows 上的 `STM32CubeMX.exe` 只是启动器，启动 Java 后立即返回，所以 `--launch-mode direct` 只适合其他 CubeMX 启动脚本。`--launch-mode java` 要求 `--cubemx-cmd` 是 STM32CubeMX `.jar`，或是旁边有 `STM32CubeMX.jar` 和 `jre` 的可执行文件；`--java-cmd` 可以替换所用的 Java。
+STM32CubeMX is looked up in `--cubemx-cmd`, the environment variable `STM32CUBEMX_CMD` (or `CUBEMX_CMD`, `STM32CUBEMX`) and the default install locations, in that order. When the installation holds `STM32CubeMX.jar` and `jre`, the default `--launch-mode auto` starts CubeMX through `java -jar` with that JRE and waits for it to finish. On Windows, `STM32CubeMX.exe` is only a launcher that returns as soon as Java has started, so `--launch-mode direct` suits other CubeMX start scripts only. `--launch-mode java` needs `--cubemx-cmd` to be an STM32CubeMX `.jar`, or an executable with `STM32CubeMX.jar` and `jre` next to it; `--java-cmd` replaces the Java used.
 
-注意：CubeMX 脚本模式仍可能启动 GUI。`--auto-confirm` 是对 GUI 弹窗的 best-effort 兜底，不是可靠的官方 headless CI 模式。
-Note: CubeMX script mode may still launch the GUI. `--auto-confirm` is a best-effort fallback for GUI dialogs, not a reliable official headless CI mode.
+#### 💬 CubeMX 对话框 (CubeMX Dialogs)
+
+脚本模式下 CubeMX 仍会弹出对话框。libxr 认出其中常见的几种，按命令行参数回答：
+CubeMX still shows dialogs in script mode. libxr recognizes the common ones and answers them as the command line says:
+
+| 对话框 / Dialog | 回答 / Answer |
+| --- | --- |
+| 工程由另一版本的 CubeMX 保存（`New STM32Cube firmware version available`）<br>Project saved by another CubeMX version | `--firmware keep`：Continue，沿用工程原来的固件包 / keep the project's firmware package<br>`--firmware migrate`：Migrate，迁移到当前 CubeMX 和固件包 / migrate to the current CubeMX and firmware package<br>未给出时停止 / stop when not given |
+| 缺少固件包、下载确认、固件包许可协议<br>Missing firmware package, download confirmation, package license | `--download`：下载并接受许可协议 / download and accept the license<br>未给出时停止 / stop when not given |
+| ST 账号登录 / ST account login | 停止 / stop |
+| 其他对话框 / Any other dialog | 停止 / stop |
+
+停止时 libxr 结束 CubeMX，输出对话框的标题、正文和按钮，并以状态 1 退出。每条脚本命令都返回 OK、期望的路径都存在时，生成才算成功。
+On a stop, libxr ends CubeMX, prints the title, text and buttons of the dialog, and exits with status 1. The generation succeeds only when every script command returns OK and the expected paths exist.
+
+Windows 上 libxr 通过 CubeMX 自带 JRE 中的 Java Access Bridge 读取对话框并点击按钮，因此需要以 `java -jar` 启动（`--launch-mode auto` 或 `java`）；以 `direct` 启动时，任何对话框都会停止运行。Linux 上 libxr 在 X11 显示（`DISPLAY`）中发现 CubeMX 的对话框后停止运行，并报出对话框标题；这时在 CubeMX 中打开工程，处理对话框并保存，再重新运行。
+On Windows, libxr reads dialogs and clicks their buttons through the Java Access Bridge of CubeMX's bundled JRE, so CubeMX has to be started through `java -jar` (`--launch-mode auto` or `java`); with `direct`, any dialog stops the run. On Linux, libxr stops the run when a CubeMX dialog appears on the X11 display (`DISPLAY`) and reports its title; open the project in CubeMX, handle the dialog, save, and run again.
 
 #### 📦 输出内容 (Outputs)
 
@@ -314,7 +328,7 @@ Run STM32CubeMX script-mode generation as a standalone step.
 usage: libxr stm32 cubemx-gen [-h] -d DIRECTORY [--ioc IOC] [--cubemx-cmd CUBEMX_CMD] [--java-cmd JAVA_CMD]
                               [--launch-mode {auto,direct,java}] [--generate-code-dir GENERATE_CODE_DIR]
                               [--expect-path EXPECT_PATH] [--log-dir LOG_DIR] [--script-path SCRIPT_PATH]
-                              [--keep-script] [--silent] [--auto-confirm] [--timeout TIMEOUT]
+                              [--keep-script] [--silent] [--firmware {keep,migrate}] [--download] [--timeout TIMEOUT]
 ```
 
 用途 / Purpose:
@@ -331,11 +345,11 @@ By default, the runner verifies that `Core/Inc` and `Drivers` were generated; pa
 
 #### CubeMX 前置条件 / CubeMX Prerequisites
 
-该工具不登录 ST 账号，也不恢复 CubeMX 用户状态或固件缓存。运行前必须确保当前电脑上的 CubeMX 已经能手动打开并生成目标 `.ioc`：已登录、已安装对应 `STM32Cube_FW_*` 包、已接受协议、旧工程迁移已保存。
-This tool does not sign in to ST accounts and does not restore CubeMX user state or firmware caches. Before running it, make sure CubeMX on this same machine can manually open and generate the target `.ioc`: signed in, required `STM32Cube_FW_*` packages installed, licenses accepted, and old-project migration saved.
+`cubemx-gen` 使用本机 CubeMX 的用户状态和固件包仓库。需要登录 ST 账号时运行会停止，登录需要先在 CubeMX 中完成；缺少的 `STM32Cube_FW_*` 包可以预先在 CubeMX 中安装，也可以用 `--download` 在生成时下载。工程由另一版本的 CubeMX 保存时，用 `--firmware` 选择沿用或迁移（见上文“CubeMX 对话框”）。
+`cubemx-gen` uses the user state and the firmware repository of the local CubeMX. A run that needs an ST account login stops, so the login has to be done in CubeMX first; a missing `STM32Cube_FW_*` package can be installed in CubeMX beforehand or downloaded during generation with `--download`. For a project saved by another CubeMX version, `--firmware` chooses between keeping and migrating (see "CubeMX Dialogs" above).
 
-CI 如果要运行 CubeMX，也必须运行在这样的已配置桌面环境中。
-If CI runs CubeMX, it must run in such an already configured desktop environment.
+CI 运行 CubeMX 时，同样需要这样准备好的桌面环境。
+CI that runs CubeMX needs a desktop environment prepared the same way.
 
 #### 📦 输出内容 (Outputs)
 

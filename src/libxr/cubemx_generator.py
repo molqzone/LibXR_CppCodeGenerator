@@ -1,11 +1,15 @@
 #!/usr/bin/env python
 
-"""以脚本模式运行 STM32CubeMX 生成工程代码，可选自动确认迁移、许可和下载对话框。
-Run STM32CubeMX in script mode to generate project code, optionally auto-confirming migration,
-license and download dialogs.
+"""以脚本模式运行 STM32CubeMX 生成工程代码，按命令行参数回答 CubeMX 弹出的对话框。
+Run STM32CubeMX in script mode to generate project code, answering the dialogs CubeMX shows as the
+command line says.
 
-出现 ST 账号登录对话框时停止生成并报错，不自动登录。
-An ST account login dialog stops the generation with an error; login is not automated.
+Windows 上 CubeMX 以 Java Access Bridge 启动，从外部读出对话框的标题、正文和按钮，按名称点击
+按钮；认不出或参数没有覆盖的对话框使运行停止并报出它的内容。Linux 上只认出对话框并停止。
+On Windows CubeMX is started with the Java Access Bridge, so the title, text and buttons of a
+dialog are read from outside and a button is clicked by name; a dialog that is not recognized or
+not covered by the options stops the run and reports its content. On Linux a dialog is only
+recognized and stops the run.
 """
 
 from __future__ import annotations
@@ -21,244 +25,656 @@ import sys
 import tempfile
 import threading
 import time
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 
 from xr_syntax.i18n import tr
 
 LOGGER = logging.getLogger(__name__)
 
-POSITIVE_BUTTON_LABELS = (
-    "i agree",
-    "accept",
-    "yes",
-    "ok",
-    "continue",
-    "download",
-    "install",
-    "migrate",
-    "convert",
-    "finish",
-    "close",
-    "同意",
-    "接受",
-    "是",
-    "确定",
-    "继续",
-    "下载",
-    "安装",
-    "迁移",
-    "转换",
-    "完成",
-    "关闭",
-)
-
-AGREEMENT_LABELS = (
-    "i agree",
-    "i accept",
-    "accept",
-    "agree",
-    "同意",
-    "接受",
-)
-
-DIALOG_KEYWORDS = (
-    "migrat",
-    "compat",
-    "convert",
-    "license",
-    "agreement",
-    "accept",
-    "download",
-    "install",
-    "package",
-    "software",
-    "firmware",
-    "repository",
-    "协议",
-    "许可",
-    "同意",
-    "接受",
-    "下载",
-    "安装",
-    "迁移",
-    "兼容",
-    "转换",
-)
-
-STARTUP_DIALOG_KEYWORDS = (
-    "user preferences",
-    "project manager settings",
-    "load project",
-    "software packs loading failed",
-)
-
-DIALOG_CLASS_KEYWORDS = (
-    "sunawtdialog",
-    "dialog",
-)
-
-PROGRESS_KEYWORDS = (
-    "progress",
-    "downloading",
-    "extracting",
-    "unzipping",
-    "download file",
-    "download paused",
-    "download resumed",
-    "user cancelled unzip",
-    "pause",
-    "resume",
-    "cancel",
-    "解压",
-    "下载中",
-    "下载暂停",
-    "下载恢复",
-    "取消",
-)
-
-PROGRESS_BUTTON_LABELS = (
-    "pause",
-    "resume",
-    "cancel",
-    "暂停",
-    "恢复",
-    "取消",
-)
-
-ACCOUNT_LOGIN_KEYWORDS = (
-    "login",
-    "log in",
-    "sign in",
-    "sign-in",
-    "st account",
-    "my st",
-    "myst",
-    "username",
-    "password",
-    "e-mail",
-    "email",
-    "authentication",
-    "登录",
-    "登入",
-    "账号",
-    "帐号",
-    "账户",
-    "密码",
-    "邮箱",
-)
-
 DEFAULT_EXPECT_PATHS = ("Core/Inc", "Drivers")
-GENERIC_DIALOG_CONFIRM_LIMIT = 2
+
+# 让 CubeMX 的 JVM 加载 Java Access Bridge，对话框的内容才能从外部读取。
+# Makes CubeMX's JVM load the Java Access Bridge, so dialogs can be read from outside.
+ACCESS_BRIDGE_OPTION = (
+    "-Djavax.accessibility.assistive_technologies=com.sun.java.accessibility.AccessBridge"
+)
+
+# CubeMX 6.17 中对话框的文字（plugins/projectmanager.jar 和 plugins/updater.jar）。
+# Dialog texts of CubeMX 6.17 (plugins/projectmanager.jar and plugins/updater.jar).
+FIRMWARE_TITLE = "New STM32Cube firmware version available"
+FIRMWARE_TEXTS = (
+    "Continue now or Migrate Project ?",
+    "Download now or Migrate Project ?",
+    "You need to migrate the project",
+    "Set this connection (and download) now or Migrate Project ?",
+    "You can continue with this Firmware Package",
+)
+CONFIRM_MIGRATION_TEXT = "Do you confirm this migration ?"
+DOWNLOAD_TEXTS = ("Download now or Continue ?", "Do you want to download this now ?")
+LICENSE_TITLES = ("License Agreement", "Licensing Agreement")
+LICENSE_AGREE = "I have read, and I agree to the terms of this license agreement"
+LOGIN_TEXTS = ("myST login", "User Login", "User Authentication Manager")
 
 
-class DialogBlockedError(RuntimeError):
-    """CubeMX 显示无法安全确认的对话框（ST 账号登录对话框）时抛出。
-    Raised when CubeMX shows a dialog that cannot be accepted safely, the ST account login
-    dialog.
+@dataclass(frozen=True)
+class Dialog:
+    """从 CubeMX 读出的一个对话框：标题、正文（各行文字）、按钮和单选框/复选框的名称。
+    A dialog read from CubeMX: its title, its text (one line per label), and the names of its
+    buttons and of its radio buttons and check boxes.
+    """
+
+    title: str
+    text: str = ""
+    buttons: tuple[str, ...] = ()
+    choices: tuple[str, ...] = ()
+
+    def describe(self) -> str:
+        """对话框的标题、正文和按钮，用于报错。
+        The title, text and buttons of the dialog, for error messages.
+        """
+        lines = [f'"{self.title}"', *self.text.splitlines()[:12]]
+        if self.buttons:
+            lines.append(tr("Buttons: ", "按钮：") + " / ".join(self.buttons))
+        return "\n".join(line for line in lines if line.strip())
+
+
+@dataclass(frozen=True)
+class DialogAnswer:
+    """对一个对话框的回答：先选中 select（单选框或复选框，可为空），再点击 click 按钮。
+    The answer to a dialog: select (a radio button or check box, may be empty), then click.
+    """
+
+    click: str
+    select: str = ""
+
+
+class DialogStopped(RuntimeError):
+    """CubeMX 显示了不按参数回答的对话框；运行停止，信息说明对话框内容和处理办法。
+    CubeMX showed a dialog that the options do not answer; the run stops and the message gives
+    the dialog content and what to do.
     """
 
 
-def _contains_any(text: str, keywords: Sequence[str]) -> bool:
-    """text 含有 keywords 中任一子串时为 True。
-    True when text contains any of the keywords as a substring.
+def _first(buttons: Sequence[str], *names: str) -> str:
+    """names 中第一个出现在 buttons 里的名称；都没有时为空字符串。
+    The first of names that is among buttons; an empty string when none is.
     """
-    return any(keyword in text for keyword in keywords)
+    return next((name for name in names if name in buttons), "")
 
 
-def _is_account_login_text(flat_text: str) -> bool:
-    """文本含有账号登录关键词（login、password、登录等）时为 True，不区分大小写。
-    True when the text contains an account login keyword such as login, password or 登录,
-    ignoring case.
+def answer_dialog(
+    dialog: Dialog, firmware: str | None = None, download: bool = False
+) -> DialogAnswer:
+    """按命令行参数回答一个 CubeMX 对话框。
+    Answer a CubeMX dialog as the command line options say.
+
+    固件版本对话框（工程由另一版本的 CubeMX 保存）：firmware 为 keep 时选 Continue（缺少原固件包
+    时，download 为真则选 Download），为 migrate 时选 Migrate 并确认迁移。缺少固件包的下载对话框：
+    download 为真时选 Download。许可协议：download 为真时勾选同意并完成。ST 账号登录和其他对话框
+    一律停止。
+    The firmware version dialog (a project saved by another CubeMX version): with firmware keep,
+    Continue (Download instead when the original package is missing and download is set); with
+    firmware migrate, Migrate and the migration confirmation. The download dialog of a missing
+    firmware package: Download when download is set. A license agreement: agree and finish when
+    download is set. An ST account login and any other dialog always stop.
+
+    Raises:
+        DialogStopped: 这个对话框不按参数回答。
+            The options do not answer this dialog.
     """
-    return _contains_any(flat_text.lower(), ACCOUNT_LOGIN_KEYWORDS)
+    content = f"{dialog.title}\n{dialog.text}"
+    if any(text in content for text in LOGIN_TEXTS):
+        raise DialogStopped(
+            tr(
+                "STM32CubeMX asks for a myST login to download software. Sign in once in "
+                "STM32CubeMX, then run again.",
+                "STM32CubeMX 要求登录 myST 账号才能下载软件。请先在 STM32CubeMX 中登录一次，"
+                "然后重新运行。",
+            )
+            + "\n"
+            + dialog.describe()
+        )
+
+    if dialog.title in LICENSE_TITLES or LICENSE_AGREE in dialog.choices:
+        button = _first(dialog.buttons, "Finish", "OK", "Accept", "Next", "Install")
+        if download and LICENSE_AGREE in dialog.choices and button:
+            return DialogAnswer(click=button, select=LICENSE_AGREE)
+        raise DialogStopped(
+            tr(
+                "STM32CubeMX asks to accept the license of a package it downloads. Pass "
+                "--download to accept it, or install the package in STM32CubeMX first.",
+                "STM32CubeMX 要求接受它下载的软件包的许可协议。传入 --download 表示接受，"
+                "或先在 STM32CubeMX 中安装该软件包。",
+            )
+            + "\n"
+            + dialog.describe()
+        )
+
+    if CONFIRM_MIGRATION_TEXT in dialog.text:
+        button = _first(dialog.buttons, "Yes", "OK", "Migrate")
+        if firmware == "migrate" and button:
+            return DialogAnswer(click=button)
+        raise DialogStopped(_firmware_message(dialog))
+
+    if dialog.title == FIRMWARE_TITLE or any(text in dialog.text for text in FIRMWARE_TEXTS):
+        if firmware == "keep":
+            if "Continue" in dialog.buttons:
+                return DialogAnswer(click="Continue")
+            if download and "Download" in dialog.buttons:
+                return DialogAnswer(click="Download")
+            raise DialogStopped(
+                tr(
+                    "Keeping the project's firmware package needs it installed. Pass --download "
+                    "to download it, or --firmware migrate.",
+                    "沿用工程原来的固件包需要先安装它。传入 --download 下载它，"
+                    "或改用 --firmware migrate。",
+                )
+                + "\n"
+                + dialog.describe()
+            )
+        if firmware == "migrate" and "Migrate" in dialog.buttons:
+            return DialogAnswer(click="Migrate")
+        raise DialogStopped(_firmware_message(dialog))
+
+    if any(text in dialog.text for text in DOWNLOAD_TEXTS):
+        button = _first(dialog.buttons, "Download", "Yes")
+        if download and button:
+            return DialogAnswer(click=button)
+        raise DialogStopped(
+            tr(
+                "STM32CubeMX needs a firmware package that is not installed. Pass --download to "
+                "download it.",
+                "STM32CubeMX 需要一个尚未安装的固件包。传入 --download 下载它。",
+            )
+            + "\n"
+            + dialog.describe()
+        )
+
+    raise DialogStopped(
+        tr(
+            "STM32CubeMX shows a dialog that libxr does not answer:",
+            "STM32CubeMX 显示了 libxr 不回答的对话框：",
+        )
+        + "\n"
+        + dialog.describe()
+    )
 
 
-def _is_progress_text(flat_text: str) -> bool:
-    """文本含有下载、解压等进度关键词时为 True，不区分大小写。
-    True when the text contains a progress keyword such as downloading or extracting, ignoring
-    case.
+def _firmware_message(dialog: Dialog) -> str:
+    """固件版本对话框没有对应参数时的报错：说明 --firmware 的两种选择。
+    The error for a firmware version dialog without a matching option: names both --firmware
+    choices.
     """
-    return _contains_any(flat_text.lower(), PROGRESS_KEYWORDS)
+    return (
+        tr(
+            "The project was saved by another STM32CubeMX version. Pass --firmware keep to stay "
+            "on its firmware package, or --firmware migrate to migrate it.",
+            "工程由另一版本的 STM32CubeMX 保存。传入 --firmware keep 沿用它的固件包，"
+            "或 --firmware migrate 迁移工程。",
+        )
+        + "\n"
+        + dialog.describe()
+    )
 
 
-def _is_explicit_dialog_text(flat_text: str) -> bool:
-    """文本含有迁移、许可、下载等对话框关键词或启动对话框关键词时为 True，不区分大小写。
-    True when the text contains a dialog keyword such as migration, license or download, or a
-    startup dialog keyword, ignoring case.
+class _AccessibleContextInfo(ctypes.Structure):
+    """Java Access Bridge 的 AccessibleContextInfo 结构。
+    The AccessibleContextInfo structure of the Java Access Bridge.
     """
-    lowered = flat_text.lower()
-    return _contains_any(lowered, DIALOG_KEYWORDS) or _is_startup_dialog_text(lowered)
 
-
-def _is_startup_dialog_text(flat_text: str) -> bool:
-    """文本含有 CubeMX 启动阶段对话框的关键词（如 user preferences、load project）时为 True，
-    不区分大小写。
-    True when the text contains a keyword of a CubeMX startup dialog, such as user preferences
-    or load project, ignoring case.
-    """
-    return _contains_any(flat_text.lower(), STARTUP_DIALOG_KEYWORDS)
-
-
-def _is_dialog_class(class_name: str) -> bool:
-    """窗口类名含有 dialog（包括 Java AWT 的 SunAwtDialog）时为 True，不区分大小写。
-    True when the window class name contains dialog, including the Java AWT SunAwtDialog,
-    ignoring case.
-    """
-    lowered_class = class_name.lower()
-    return any(keyword in lowered_class for keyword in DIALOG_CLASS_KEYWORDS)
-
-
-def _java_user_state_options() -> list[str]:
-    """以 java -jar 启动 CubeMX 时附加的 JVM 参数：user.home 设为当前用户主目录，Java 首选项
-    根目录设为其中的 .java。
-    JVM options added when CubeMX is started through java -jar: user.home set to the current
-    user's home directory and the Java preferences root to .java inside it.
-    """
-    java_home = os.path.abspath(os.path.expanduser("~"))
-    prefs_root = os.path.join(java_home, ".java")
-    return [
-        f"-Duser.home={java_home}",
-        f"-Djava.util.prefs.userRoot={prefs_root}",
+    _fields_ = [
+        ("name", ctypes.c_wchar * 1024),
+        ("description", ctypes.c_wchar * 1024),
+        ("role", ctypes.c_wchar * 256),
+        ("role_en_US", ctypes.c_wchar * 256),
+        ("states", ctypes.c_wchar * 256),
+        ("states_en_US", ctypes.c_wchar * 256),
+        ("indexInParent", ctypes.c_int32),
+        ("childrenCount", ctypes.c_int32),
+        ("x", ctypes.c_int32),
+        ("y", ctypes.c_int32),
+        ("width", ctypes.c_int32),
+        ("height", ctypes.c_int32),
+        ("accessibleComponent", ctypes.c_int),
+        ("accessibleAction", ctypes.c_int),
+        ("accessibleSelection", ctypes.c_int),
+        ("accessibleText", ctypes.c_int),
+        ("accessibleInterfaces", ctypes.c_int),
     ]
 
 
-def _can_use_generic_dialog_fallback(
-    confirm_counts: dict[int, int],
-    window_id: int,
-    flat_text: str,
-    class_name: str,
-) -> bool:
-    """窗口能否使用通用的键盘确认：文本或类名须像对话框，且该窗口的尝试次数未达到
-    GENERIC_DIALOG_CONFIRM_LIMIT；允许时计入一次尝试。
-    Whether a window may get the generic keyboard confirmation: its text or class name must look
-    like a dialog and it must have fewer than GENERIC_DIALOG_CONFIRM_LIMIT attempts; an allowed
-    attempt is counted.
+class _AccessibleActionInfo(ctypes.Structure):
+    """Java Access Bridge 的 AccessibleActionInfo 结构（动作名称）。
+    The AccessibleActionInfo structure of the Java Access Bridge, an action name.
     """
-    if _is_explicit_dialog_text(flat_text) or _is_dialog_class(class_name):
-        return _consume_generic_dialog_fallback(confirm_counts, window_id)
-    return False
+
+    _fields_ = [("name", ctypes.c_wchar * 256)]
 
 
-def _consume_generic_dialog_fallback(confirm_counts: dict[int, int], window_id: int) -> bool:
-    """为窗口计入一次通用确认尝试；达到 GENERIC_DIALOG_CONFIRM_LIMIT 后返回 False，
-    放弃日志只记录一次。
-    Count one generic confirmation attempt for a window; once GENERIC_DIALOG_CONFIRM_LIMIT is
-    reached, return False and log the give-up message only once.
+class _AccessibleActionsToDo(ctypes.Structure):
+    """Java Access Bridge 的 AccessibleActionsToDo 结构（要执行的动作）。
+    The AccessibleActionsToDo structure of the Java Access Bridge, the actions to perform.
     """
-    count = confirm_counts.get(window_id, 0)
-    if count >= GENERIC_DIALOG_CONFIRM_LIMIT:
-        if count == GENERIC_DIALOG_CONFIRM_LIMIT:
-            LOGGER.info(
+
+    _fields_ = [("actionsCount", ctypes.c_int32), ("actions", _AccessibleActionInfo * 32)]
+
+
+class _AccessBridge:
+    """windowsaccessbridge-64.dll 的封装：读出 Java 对话框的内容，按名称执行动作。
+    A wrapper of windowsaccessbridge-64.dll: read the content of a Java dialog and perform an
+    action by name.
+
+    必须在创建它的线程中持续处理 Windows 消息（pump），桥才能与 JVM 通信；CubeMX 退出时也要
+    继续处理，否则 JVM 会等待桥而不结束。
+    The thread that creates it must keep pumping Windows messages so that the bridge can talk to
+    the JVM; that includes CubeMX's exit, or the JVM waits for the bridge and never ends.
+    """
+
+    def __init__(self, dll_path: str):
+        """加载 dll 并启动桥。
+        Load the dll and start the bridge.
+
+        Raises:
+            OSError: dll 无法加载。
+                The dll cannot be loaded.
+        """
+        from ctypes import wintypes
+
+        self.wintypes = wintypes
+        self.user32 = ctypes.windll.user32
+        bridge = ctypes.CDLL(dll_path)
+        context = ctypes.c_int64
+        bridge.Windows_run.restype = None
+        bridge.isJavaWindow.argtypes = [wintypes.HWND]
+        bridge.isJavaWindow.restype = wintypes.BOOL
+        bridge.getAccessibleContextFromHWND.argtypes = [
+            wintypes.HWND,
+            ctypes.POINTER(ctypes.c_int32),
+            ctypes.POINTER(context),
+        ]
+        bridge.getAccessibleContextFromHWND.restype = wintypes.BOOL
+        bridge.getAccessibleContextInfo.argtypes = [
+            ctypes.c_int32,
+            context,
+            ctypes.POINTER(_AccessibleContextInfo),
+        ]
+        bridge.getAccessibleContextInfo.restype = wintypes.BOOL
+        bridge.getAccessibleChildFromContext.argtypes = [ctypes.c_int32, context, ctypes.c_int32]
+        bridge.getAccessibleChildFromContext.restype = context
+        bridge.doAccessibleActions.argtypes = [
+            ctypes.c_int32,
+            context,
+            ctypes.POINTER(_AccessibleActionsToDo),
+            ctypes.POINTER(ctypes.c_int32),
+        ]
+        bridge.doAccessibleActions.restype = wintypes.BOOL
+        bridge.releaseJavaObject.argtypes = [ctypes.c_int32, context]
+        bridge.releaseJavaObject.restype = None
+        self.bridge = bridge
+        bridge.Windows_run()
+
+    def pump(self, seconds: float) -> None:
+        """在 seconds 秒内处理本线程的 Windows 消息。
+        Pump the Windows messages of this thread for seconds.
+        """
+        message = self.wintypes.MSG()
+        end = time.monotonic() + seconds
+        while True:
+            while self.user32.PeekMessageW(ctypes.byref(message), None, 0, 0, 1):
+                self.user32.TranslateMessage(ctypes.byref(message))
+                self.user32.DispatchMessageW(ctypes.byref(message))
+            if time.monotonic() >= end:
+                return
+            time.sleep(0.02)
+
+    def read(self, hwnd: int) -> tuple[Dialog, dict[str, tuple[int, int]]] | None:
+        """读出 Java 窗口 hwnd 中的对话框，以及各按钮和选择项的 (vm, context)；不是 Java 对话框
+        或读不到时为 None。
+        Read the dialog of the Java window hwnd, with the (vm, context) of each button and choice;
+        None when it is not a Java dialog or cannot be read.
+        """
+        if not self.bridge.isJavaWindow(hwnd):
+            return None
+        vm = ctypes.c_int32()
+        root = ctypes.c_int64()
+        if not self.bridge.getAccessibleContextFromHWND(hwnd, ctypes.byref(vm), ctypes.byref(root)):
+            return None
+        nodes: list[tuple[str, str, int]] = []
+        self._walk(vm.value, root.value, nodes, depth=0)
+        if not nodes or nodes[0][0] != "dialog":
+            return None
+        labels = [name for role, name, _ in nodes if role in ("label", "text") and name]
+        buttons = {name: (vm.value, ctx) for role, name, ctx in nodes if role == "push button"}
+        choices = {
+            name: (vm.value, ctx)
+            for role, name, ctx in nodes
+            if role in ("radio button", "check box") and name
+        }
+        dialog = Dialog(
+            title=nodes[0][1],
+            text="\n".join(labels),
+            buttons=tuple(buttons),
+            choices=tuple(choices),
+        )
+        return dialog, {**choices, **buttons}
+
+    def _walk(self, vm: int, context: int, nodes: list, depth: int) -> None:
+        """深度优先收集 (角色, 名称, context)，最多 12 层、每层 64 个子项。
+        Collect (role, name, context) depth-first, at most 12 levels and 64 children each.
+        """
+        info = _AccessibleContextInfo()
+        if not self.bridge.getAccessibleContextInfo(vm, context, ctypes.byref(info)):
+            return
+        nodes.append((info.role_en_US, info.name.strip(), context))
+        if depth >= 12:
+            return
+        for index in range(min(info.childrenCount, 64)):
+            child = self.bridge.getAccessibleChildFromContext(vm, context, index)
+            if child:
+                self._walk(vm, child, nodes, depth + 1)
+
+    def click(self, target: tuple[int, int]) -> bool:
+        """对 (vm, context) 执行 click 动作（按钮、单选框和复选框都适用）。
+        Perform the click action on (vm, context); it works for buttons, radio buttons and check
+        boxes.
+        """
+        todo = _AccessibleActionsToDo()
+        todo.actionsCount = 1
+        todo.actions[0].name = "click"
+        failure = ctypes.c_int32()
+        return bool(
+            self.bridge.doAccessibleActions(
+                target[0], target[1], ctypes.byref(todo), ctypes.byref(failure)
+            )
+        )
+
+
+def _windows_process_tree(process_id: int) -> set[int]:
+    """Windows 上 process_id 及其全部子孙进程的进程号；快照失败时只含 process_id。
+    On Windows, the ids of process_id and all its descendants; only process_id when the process
+    snapshot fails.
+    """
+    from ctypes import wintypes
+
+    class ProcessEntry(ctypes.Structure):
+        """Toolhelp32 的 PROCESSENTRY32W 结构。
+        The Toolhelp32 PROCESSENTRY32W structure.
+        """
+
+        _fields_ = [
+            ("dwSize", wintypes.DWORD),
+            ("cntUsage", wintypes.DWORD),
+            ("th32ProcessID", wintypes.DWORD),
+            ("th32DefaultHeapID", ctypes.c_void_p),
+            ("th32ModuleID", wintypes.DWORD),
+            ("cntThreads", wintypes.DWORD),
+            ("th32ParentProcessID", wintypes.DWORD),
+            ("pcPriClassBase", wintypes.LONG),
+            ("dwFlags", wintypes.DWORD),
+            ("szExeFile", wintypes.WCHAR * 260),
+        ]
+
+    kernel32 = ctypes.windll.kernel32
+    kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    snapshot = kernel32.CreateToolhelp32Snapshot(0x00000002, 0)
+    ids = {process_id}
+    if snapshot in (-1, wintypes.HANDLE(-1).value):
+        return ids
+    parents: dict[int, int] = {}
+    try:
+        entry = ProcessEntry()
+        entry.dwSize = ctypes.sizeof(entry)
+        ok = kernel32.Process32FirstW(snapshot, ctypes.byref(entry))
+        while ok:
+            parents[int(entry.th32ProcessID)] = int(entry.th32ParentProcessID)
+            ok = kernel32.Process32NextW(snapshot, ctypes.byref(entry))
+    finally:
+        kernel32.CloseHandle(snapshot)
+    queue = [process_id]
+    while queue:
+        parent = queue.pop()
+        for pid, ppid in parents.items():
+            if ppid == parent and pid not in ids:
+                ids.add(pid)
+                queue.append(pid)
+    return ids
+
+
+def _windows_dialog_windows(process_id: int) -> list[tuple[int, str]]:
+    """Windows 上 CubeMX 进程树中可见的 Java 对话框窗口（类名 SunAwtDialog）及其标题。
+    On Windows, the visible Java dialog windows (class SunAwtDialog) of the CubeMX process tree,
+    with their titles.
+    """
+    from ctypes import wintypes
+
+    user32 = ctypes.windll.user32
+    process_ids = _windows_process_tree(process_id)
+    found: list[tuple[int, str]] = []
+    callback_type = ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
+
+    def callback(hwnd: int, _lparam: int) -> bool:
+        """EnumWindows 回调：收集属于这些进程的可见对话框窗口。
+        EnumWindows callback: collect the visible dialog windows of these processes.
+        """
+        pid = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        if pid.value in process_ids and user32.IsWindowVisible(hwnd):
+            class_name = ctypes.create_unicode_buffer(256)
+            user32.GetClassNameW(hwnd, class_name, 256)
+            if class_name.value == "SunAwtDialog":
+                title = ctypes.create_unicode_buffer(512)
+                user32.GetWindowTextW(hwnd, title, 512)
+                found.append((hwnd, title.value))
+        return True
+
+    user32.EnumWindows(callback_type(callback), 0)
+    return found
+
+
+def _x11_dialog_titles(display, root, process_ids: set[int]) -> list[str]:
+    """X11 上 CubeMX 进程树中已映射的对话框窗口（带 WM_TRANSIENT_FOR）的标题。
+    On X11, the titles of the mapped dialog windows (those with WM_TRANSIENT_FOR) of the CubeMX
+    process tree.
+    """
+    from Xlib import X  # type: ignore
+
+    pid_atom = display.intern_atom("_NET_WM_PID")
+    name_atom = display.intern_atom("_NET_WM_NAME")
+    utf8_atom = display.intern_atom("UTF8_STRING")
+    titles = []
+    stack = [root]
+    while stack:
+        window = stack.pop()
+        try:
+            stack.extend(window.query_tree().children)
+            if window.get_attributes().map_state != X.IsViewable:
+                continue
+            pid = window.get_full_property(pid_atom, X.AnyPropertyType)
+            if not pid or int(pid.value[0]) not in process_ids:
+                continue
+            if window.get_wm_transient_for() is None:
+                continue
+            name = window.get_full_property(name_atom, utf8_atom)
+            title = name.value.decode("utf-8", "replace") if name else window.get_wm_name()
+            titles.append(str(title or ""))
+        except Exception:
+            continue
+    return titles
+
+
+def _linux_process_tree(process_id: int) -> set[int]:
+    """Linux 上 process_id 及其全部子孙进程的进程号，父子关系从 /proc/<pid>/stat 读取。
+    On Linux, the ids of process_id and all its descendants, with the parent ids read from
+    /proc/<pid>/stat.
+    """
+    parents: dict[int, int] = {}
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
+            continue
+        try:
+            with open(os.path.join("/proc", entry, "stat"), encoding="utf-8") as stream:
+                fields = stream.read().rsplit(")", 1)[1].split()
+            parents[int(entry)] = int(fields[1])
+        except (OSError, IndexError, ValueError):
+            continue
+    ids = {process_id}
+    queue = [process_id]
+    while queue:
+        parent = queue.pop()
+        for pid, ppid in parents.items():
+            if ppid == parent and pid not in ids:
+                ids.add(pid)
+                queue.append(pid)
+    return ids
+
+
+class _DialogWatchThread(threading.Thread):
+    """CubeMX 运行期间监视它的对话框：按 answer 回答，回答不了时记录 error 并置位 stop_event。
+    Watch CubeMX's dialogs while it runs: answer them with answer, and when that is not possible
+    record error and set stop_event.
+
+    Windows 上用 bridge_dll（Java Access Bridge）读取和点击；没有它时只按窗口标题停止。Linux 上
+    需要 DISPLAY 和 python-xlib，只认出对话框并停止。线程一直运行到 done 置位（CubeMX 已退出）。
+    On Windows, bridge_dll (the Java Access Bridge) reads and clicks; without it the run stops on
+    the window title alone. On Linux, DISPLAY and python-xlib are needed, and a dialog is only
+    recognized and stops the run. The thread runs until done is set (CubeMX has exited).
+    """
+
+    def __init__(
+        self,
+        process_id: int,
+        answer: Callable[[Dialog], DialogAnswer],
+        bridge_dll: str,
+        stop_event: threading.Event,
+        done: threading.Event,
+    ):
+        """记录要监视的进程、回答方式和 Access Bridge 的 dll 路径（可为空）。
+        Record the process to watch, how to answer and the Access Bridge dll path (may be empty).
+        """
+        super().__init__(daemon=True)
+        self.process_id = process_id
+        self.answer = answer
+        self.bridge_dll = bridge_dll
+        self.stop_event = stop_event
+        self.done = done
+        self.error: DialogStopped | None = None
+        self.answered: dict[int, float] = {}
+
+    def run(self) -> None:
+        """按平台监视对话框，直到 done 置位。
+        Watch the dialogs for the platform until done is set.
+        """
+        try:
+            if os.name == "nt":
+                self._watch_windows()
+            else:
+                self._watch_x11()
+        except DialogStopped as error:
+            self.error = error
+            self.stop_event.set()
+
+    def _fail(self, error: DialogStopped) -> None:
+        """记录 error，通知主线程结束 CubeMX。
+        Record error and tell the main thread to end CubeMX.
+        """
+        self.error = error
+        self.stop_event.set()
+
+    def _watch_windows(self) -> None:
+        """Windows：读出 CubeMX 的对话框，按名称点击 answer 选中的按钮。
+        Windows: read CubeMX's dialogs and click, by name, the button that answer chooses.
+        """
+        bridge = None
+        if self.bridge_dll:
+            try:
+                bridge = _AccessBridge(self.bridge_dll)
+            except OSError as error:
+                LOGGER.warning(
+                    tr(
+                        f"Java Access Bridge unavailable ({error}); dialogs stop the run",
+                        f"Java Access Bridge 不可用（{error}）；出现对话框时停止运行",
+                    )
+                )
+        while not self.done.is_set():
+            if bridge is not None:
+                bridge.pump(0.25)
+            else:
+                self.done.wait(0.25)
+            if self.error is not None:
+                continue
+            for hwnd, title in _windows_dialog_windows(self.process_id):
+                if time.monotonic() - self.answered.get(hwnd, -10.0) < 3.0:
+                    continue
+                if hwnd in self.answered:
+                    self._fail(
+                        DialogStopped(
+                            tr(
+                                f'STM32CubeMX dialog "{title}" stayed open after it was answered',
+                                f"STM32CubeMX 对话框“{title}”在回答之后仍未关闭",
+                            )
+                        )
+                    )
+                    break
+                read = bridge.read(hwnd) if bridge is not None else None
+                if read is None:
+                    self._fail(
+                        DialogStopped(
+                            tr(
+                                "STM32CubeMX shows a dialog that cannot be read:",
+                                "STM32CubeMX 显示了无法读取的对话框：",
+                            )
+                            + f' "{title}"'
+                        )
+                    )
+                    break
+                dialog, targets = read
+                try:
+                    answer = self.answer(dialog)
+                except DialogStopped as error:
+                    self._fail(error)
+                    break
+                if answer.select:
+                    bridge.click(targets[answer.select])
+                bridge.click(targets[answer.click])
+                self.answered[hwnd] = time.monotonic()
+                LOGGER.info(
+                    tr(
+                        f'Answered STM32CubeMX dialog "{dialog.title}": {answer.click}',
+                        f"已回答 STM32CubeMX 对话框“{dialog.title}”：{answer.click}",
+                    )
+                )
+
+    def _watch_x11(self) -> None:
+        """Linux：发现 CubeMX 的对话框就停止，报出它的标题。
+        Linux: stop on a CubeMX dialog and report its title.
+        """
+        if not os.environ.get("DISPLAY"):
+            return
+        try:
+            from Xlib import display as xdisplay  # type: ignore
+        except ImportError:
+            LOGGER.warning(
                 tr(
-                    f"Leaving generic CubeMX dialog untouched after {count} keyboard attempts",
-                    f"已尝试 {count} 次键盘确认，不再处理这个 CubeMX 通用对话框",
+                    "python-xlib is not installed; CubeMX dialogs are not detected on Linux",
+                    "没有安装 python-xlib；Linux 上不会发现 CubeMX 的对话框",
                 )
             )
-            confirm_counts[window_id] = count + 1
-        return False
-    confirm_counts[window_id] = count + 1
-    return True
+            return
+        display = xdisplay.Display()
+        root = display.screen().root
+        while not self.done.wait(0.5):
+            titles = _x11_dialog_titles(display, root, _linux_process_tree(self.process_id))
+            if titles:
+                raise DialogStopped(
+                    tr(
+                        "STM32CubeMX shows a dialog, which libxr answers only on Windows; answer it "
+                        "in STM32CubeMX, then run again:",
+                        "STM32CubeMX 显示了对话框，libxr 只在 Windows 上回答对话框；"
+                        "请在 STM32CubeMX 中处理后重新运行：",
+                    )
+                    + f' "{titles[0]}"'
+                )
 
 
 def _friendly_path_name(path: str) -> str:
@@ -458,6 +874,54 @@ def _shell_join(args: Sequence[str]) -> str:
         return " ".join(args)
 
 
+def _java_user_state_options() -> list[str]:
+    """以 java -jar 启动 CubeMX 时附加的 JVM 参数：user.home 设为当前用户主目录，Java 首选项
+    根目录设为其中的 .java。
+    JVM options added when CubeMX is started through java -jar: user.home set to the current
+    user's home directory and the Java preferences root to .java inside it.
+    """
+    java_home = os.path.abspath(os.path.expanduser("~"))
+    prefs_root = os.path.join(java_home, ".java")
+    return [
+        f"-Duser.home={java_home}",
+        f"-Djava.util.prefs.userRoot={prefs_root}",
+    ]
+
+
+def _bundled_cubemx(cubemx_cmd: str) -> tuple[str, str] | None:
+    """CubeMX 可执行文件同目录中的 (STM32CubeMX.jar, 自带 JRE 的 java)；不全时为 None。
+    The (STM32CubeMX.jar, java of the bundled JRE) next to a CubeMX executable; None when either
+    is missing.
+    """
+    if _is_java_archive(cubemx_cmd):
+        return None
+    folder = os.path.dirname(os.path.abspath(cubemx_cmd))
+    jar = os.path.join(folder, "STM32CubeMX.jar")
+    java = os.path.join(folder, "jre", "bin", "java.exe" if os.name == "nt" else "java")
+    if os.path.isfile(jar) and os.path.isfile(java):
+        return jar, java
+    return None
+
+
+def _launcher_options(cubemx_cmd: str) -> list[str]:
+    """CubeMX 启动器配置（与可执行文件同名的 .l4j.ini）中的 JVM 参数；没有该文件时为空。
+    The JVM options in the CubeMX launcher configuration (the .l4j.ini named like the
+    executable); empty when there is no such file.
+    """
+    ini_path = os.path.splitext(os.path.abspath(cubemx_cmd))[0] + ".l4j.ini"
+    try:
+        with open(ini_path, encoding="utf-8") as stream:
+            lines = stream.read().splitlines()
+    except OSError:
+        return []
+    options = []
+    for line in lines:
+        line = line.strip()
+        if line and not line.startswith("#"):
+            options.extend(line.split())
+    return options
+
+
 def build_cubemx_command(
     cubemx_cmd: str,
     script_path: str,
@@ -468,16 +932,23 @@ def build_cubemx_command(
     """组成让 STM32CubeMX 执行 script_path 脚本的命令行。
     Build the command line that makes STM32CubeMX run the script at script_path.
 
-    launch_mode 为 java，或为 auto 且 cubemx_cmd 是 .jar 时，用 java -jar 启动；否则直接启动，
-    其中 .py 文件用当前 Python 解释器运行。silent 为 True 时追加 -s。
-    With launch_mode java, or auto and a .jar cubemx_cmd, CubeMX is started through java -jar;
-    otherwise it is started directly, a .py file with the current Python interpreter. silent
-    appends -s.
+    launch_mode 为 java，或为 auto 且能找到 .jar（cubemx_cmd 本身，或安装目录中的
+    STM32CubeMX.jar 和自带 JRE）时，用 java -jar 启动，并带上启动器配置中的 JVM 参数；Windows 上
+    同时打开 Java Access Bridge，以便读取和回答对话框。否则直接启动，其中 .py 文件用当前 Python
+    解释器运行。silent 为 True 时追加 -s。
+    With launch_mode java, or auto when a .jar is found (cubemx_cmd itself, or STM32CubeMX.jar
+    with the bundled JRE in its installation), CubeMX is started through java -jar with the JVM
+    options of its launcher configuration; on Windows the Java Access Bridge is enabled too, so
+    dialogs can be read and answered. Otherwise CubeMX is started directly, a .py file with the
+    current Python interpreter. silent appends -s.
+
+    Windows 上的 STM32CubeMX.exe 只是启动器：它启动 Java 后立即返回，不等待生成结束。
+    On Windows, STM32CubeMX.exe is only a launcher: it starts Java and returns at once, without
+    waiting for the generation.
 
     Raises:
-        ValueError: launch_mode 不是 auto、direct、java 之一，或 java 模式下 cubemx_cmd 不是 .jar。
-            launch_mode is not auto, direct or java, or java mode is given a cubemx_cmd that is
-            not a .jar.
+        ValueError: launch_mode 不是 auto、direct、java 之一，或 java 模式下找不到 CubeMX 的 .jar。
+            launch_mode is not auto, direct or java, or java mode finds no CubeMX .jar.
         FileNotFoundError: 需要 java -jar 启动但找不到 Java。
             java -jar is needed but no Java runtime was found.
     """
@@ -487,32 +958,45 @@ def build_cubemx_command(
             tr(f"Unsupported launch mode: {launch_mode}", f"不支持的启动方式：{launch_mode}")
         )
 
-    use_java = launch_mode == "java" or (launch_mode == "auto" and _is_java_archive(cubemx_cmd))
+    is_jar = _is_java_archive(cubemx_cmd)
+    bundled = _bundled_cubemx(cubemx_cmd)
+    use_java = launch_mode == "java" or (launch_mode == "auto" and (is_jar or bundled is not None))
 
-    if use_java and not _is_java_archive(cubemx_cmd):
+    if use_java and not is_jar and bundled is None:
         raise ValueError(
             tr(
-                "Java launch mode requires an STM32CubeMX .jar path. "
-                "Use --launch-mode direct for STM32CubeMX.exe.",
-                "java 启动方式需要 STM32CubeMX 的 .jar 路径；"
-                "STM32CubeMX.exe 请使用 --launch-mode direct。",
+                "Java launch mode requires an STM32CubeMX .jar path, or an installation with "
+                "STM32CubeMX.jar and its jre folder next to the executable.",
+                "java 启动方式需要 STM32CubeMX 的 .jar 路径，或可执行文件旁边有 STM32CubeMX.jar "
+                "和 jre 目录的安装。",
             )
         )
 
     command: list[str]
     if use_java:
-        resolved_java = resolve_java_command(cubemx_cmd, java_cmd)
-        command = [
-            resolved_java,
-            *_java_user_state_options(),
-            "-jar",
-            cubemx_cmd,
-            "-q",
-            script_path,
-        ]
+        if is_jar:
+            jar = cubemx_cmd
+            java = resolve_java_command(cubemx_cmd, java_cmd)
+            options = []
+        else:
+            jar, bundled_java = bundled
+            java = _resolve_existing_path(java_cmd) if java_cmd else bundled_java
+            options = _launcher_options(cubemx_cmd)
+        if os.name == "nt":
+            options.append(ACCESS_BRIDGE_OPTION)
+        command = [java, *_java_user_state_options(), *options, "-jar", jar, "-q", script_path]
     elif cubemx_cmd.lower().endswith(".py"):
         command = [sys.executable, cubemx_cmd, "-q", script_path]
     else:
+        if os.path.basename(cubemx_cmd).lower() == "stm32cubemx.exe":
+            LOGGER.warning(
+                tr(
+                    "STM32CubeMX.exe starts CubeMX and returns at once, so the generation is not "
+                    "awaited; use --launch-mode auto",
+                    "STM32CubeMX.exe 启动 CubeMX 后立即返回，不会等待生成结束；"
+                    "请使用 --launch-mode auto",
+                )
+            )
         command = [cubemx_cmd, "-q", script_path]
 
     if silent:
@@ -521,13 +1005,22 @@ def build_cubemx_command(
 
 
 def find_ioc_file(directory: str) -> str | None:
-    """目录中按文件名排序的第一个 .ioc 文件的路径；没有时为 None。
-    The path of the first .ioc file in the directory by file name order; None when there is none.
+    """目录中唯一的 .ioc 文件的路径；没有时为 None。
+    The path of the only .ioc file in the directory; None when there is none.
+
+    Raises:
+        ValueError: 目录中有多个 .ioc 文件。
+            The directory holds several .ioc files.
     """
-    for file_name in sorted(os.listdir(directory)):
-        if file_name.endswith(".ioc"):
-            return os.path.join(directory, file_name)
-    return None
+    ioc_files = sorted(name for name in os.listdir(directory) if name.endswith(".ioc"))
+    if len(ioc_files) > 1:
+        raise ValueError(
+            tr(
+                f"{directory} holds several .ioc files ({', '.join(ioc_files)}); pass --ioc",
+                f"{directory} 中有多个 .ioc 文件（{'、'.join(ioc_files)}）；请用 --ioc 指定",
+            )
+        )
+    return os.path.join(directory, ioc_files[0]) if ioc_files else None
 
 
 @dataclass
@@ -546,811 +1039,6 @@ class CubeMXRunResult:
     stderr: str
     returncode: int
     log_dir: str = ""
-
-
-class _BaseDialogController:
-    """对话框自动确认控制器的基类；后台线程反复调用 pump_once。
-    Base class of the dialog auto-confirmation controllers; a background thread calls pump_once
-    repeatedly.
-    """
-
-    def pump_once(self) -> None:
-        """检查一次 CubeMX 进程的窗口并处理需要确认的对话框；由子类实现。
-        Inspect the CubeMX process windows once and handle the dialogs to confirm; implemented by
-        subclasses.
-        """
-        raise NotImplementedError
-
-
-class _NullDialogController(_BaseDialogController):
-    """不做任何处理的控制器，用于无法自动确认对话框的环境。
-    A controller that does nothing, used where dialogs cannot be auto-confirmed.
-    """
-
-    def pump_once(self) -> None:
-        """不做任何处理。
-        Do nothing.
-        """
-        return
-
-
-class _WindowsDialogController(_BaseDialogController):
-    """Windows 上通过 user32 找到 CubeMX 进程树的窗口，勾选同意项并点击肯定按钮或用键盘确认。
-    On Windows, find the windows of the CubeMX process tree through user32, tick agreement boxes
-    and click a positive button or confirm with the keyboard.
-    """
-
-    BM_CLICK = 0x00F5
-    BM_GETCHECK = 0x00F0
-    BST_CHECKED = 0x0001
-    KEYEVENTF_KEYUP = 0x0002
-    SW_RESTORE = 9
-    VK_TAB = 0x09
-    VK_RETURN = 0x0D
-    VK_SPACE = 0x20
-    WM_KEYDOWN = 0x0100
-    WM_KEYUP = 0x0101
-
-    def __init__(self, process_id: int):
-        """绑定 user32 和 kernel32，记录要监视的 CubeMX 进程号。
-        Bind user32 and kernel32 and record the id of the CubeMX process to watch.
-        """
-        from ctypes import wintypes
-
-        self.process_id = process_id
-        self.wintypes = wintypes
-        self.user32 = ctypes.windll.user32
-        self.kernel32 = ctypes.windll.kernel32
-        self.kernel32.CreateToolhelp32Snapshot.restype = self.wintypes.HANDLE
-        self.kernel32.Process32FirstW.restype = self.wintypes.BOOL
-        self.kernel32.Process32NextW.restype = self.wintypes.BOOL
-        self._last_action: dict[int, float] = {}
-        self._generic_confirm_count: dict[int, int] = {}
-
-    def pump_once(self) -> None:
-        """检查一次 CubeMX 进程树的可见顶层窗口并确认相关对话框；刚确认过的窗口 2 秒内跳过。
-        Inspect the visible top-level windows of the CubeMX process tree once and confirm the
-        relevant dialogs; a window confirmed less than 2 seconds ago is skipped.
-
-        Raises:
-            DialogBlockedError: 出现 ST 账号登录对话框。
-                An ST account login dialog is shown.
-        """
-        hwnds = self._enum_windows()
-        for hwnd in hwnds:
-            title = self._window_text(hwnd)
-            class_name = self._class_name(hwnd)
-            child_items = self._child_items(hwnd)
-            flat_text = self._flatten_window_text(title, class_name, child_items)
-            if _is_account_login_text(flat_text):
-                raise DialogBlockedError(_st_login_blocked_message())
-            if not self._looks_relevant(flat_text, class_name):
-                continue
-            if self._acted_recently(hwnd):
-                continue
-            if self._accept_window(hwnd, class_name, child_items):
-                self._last_action[hwnd] = time.time()
-
-    def _enum_windows(self) -> list[int]:
-        """CubeMX 进程树中所有可见顶层窗口的句柄。
-        The handles of all visible top-level windows of the CubeMX process tree.
-        """
-        hwnds: list[int] = []
-        process_ids = self._related_process_ids()
-        enum_proc = ctypes.WINFUNCTYPE(ctypes.c_bool, self.wintypes.HWND, self.wintypes.LPARAM)
-
-        def callback(hwnd: int, _lparam: int) -> bool:
-            """EnumWindows 回调：收集属于这些进程的可见窗口，并继续枚举。
-            EnumWindows callback: collect the visible windows owned by these processes and
-            continue the enumeration.
-            """
-            if not self.user32.IsWindowVisible(hwnd):
-                return True
-            pid = self.wintypes.DWORD()
-            self.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-            if pid.value in process_ids:
-                hwnds.append(hwnd)
-            return True
-
-        self.user32.EnumWindows(enum_proc(callback), 0)
-        return hwnds
-
-    def _related_process_ids(self) -> set:
-        """CubeMX 进程及其全部子孙进程的进程号；进程快照失败时只含 CubeMX 进程本身。
-        The ids of the CubeMX process and all its descendants; only the CubeMX process itself when
-        the process snapshot fails.
-        """
-        ids = {self.process_id}
-
-        class ProcessEntry(ctypes.Structure):
-            """Toolhelp32 的 PROCESSENTRY32W 结构。
-            The Toolhelp32 PROCESSENTRY32W structure.
-            """
-
-            _fields_ = [
-                ("dwSize", self.wintypes.DWORD),
-                ("cntUsage", self.wintypes.DWORD),
-                ("th32ProcessID", self.wintypes.DWORD),
-                ("th32DefaultHeapID", ctypes.c_void_p),
-                ("th32ModuleID", self.wintypes.DWORD),
-                ("cntThreads", self.wintypes.DWORD),
-                ("th32ParentProcessID", self.wintypes.DWORD),
-                ("pcPriClassBase", self.wintypes.LONG),
-                ("dwFlags", self.wintypes.DWORD),
-                ("szExeFile", self.wintypes.WCHAR * 260),
-            ]
-
-        snapshot = self.kernel32.CreateToolhelp32Snapshot(0x00000002, 0)
-        if snapshot in (-1, self.wintypes.HANDLE(-1).value):
-            return ids
-
-        parent_by_pid: dict[int, int] = {}
-        try:
-            entry = ProcessEntry()
-            entry.dwSize = ctypes.sizeof(entry)
-            ok = self.kernel32.Process32FirstW(snapshot, ctypes.byref(entry))
-            while ok:
-                parent_by_pid[int(entry.th32ProcessID)] = int(entry.th32ParentProcessID)
-                ok = self.kernel32.Process32NextW(snapshot, ctypes.byref(entry))
-        except Exception:
-            pass
-        finally:
-            self.kernel32.CloseHandle(snapshot)
-
-        queue = [self.process_id]
-        while queue:
-            parent = queue.pop(0)
-            for pid, ppid in parent_by_pid.items():
-                if ppid == parent and pid not in ids:
-                    ids.add(pid)
-                    queue.append(pid)
-        return ids
-
-    def _child_items(self, hwnd: int) -> list[tuple[int, str, str]]:
-        """窗口全部子窗口（含嵌套的子窗口）的 (句柄, 类名, 文本) 列表。
-        The (handle, class name, text) of every child window of a window, nested ones included.
-        """
-        items: list[tuple[int, str, str]] = []
-        enum_proc = ctypes.WINFUNCTYPE(ctypes.c_bool, self.wintypes.HWND, self.wintypes.LPARAM)
-
-        def callback(child_hwnd: int, _lparam: int) -> bool:
-            """EnumChildWindows 回调：记录子窗口，并继续枚举。
-            EnumChildWindows callback: record the child window and continue the enumeration.
-            """
-            items.append((child_hwnd, self._class_name(child_hwnd), self._window_text(child_hwnd)))
-            return True
-
-        self.user32.EnumChildWindows(hwnd, enum_proc(callback), 0)
-        return items
-
-    def _window_text(self, hwnd: int) -> str:
-        """窗口标题或控件文字，去掉首尾空白；没有文字时为空字符串。
-        The window title or control text, stripped; an empty string when there is none.
-        """
-        length = self.user32.GetWindowTextLengthW(hwnd)
-        if length <= 0:
-            return ""
-        buffer = ctypes.create_unicode_buffer(length + 1)
-        self.user32.GetWindowTextW(hwnd, buffer, length + 1)
-        return buffer.value.strip()
-
-    def _class_name(self, hwnd: int) -> str:
-        """窗口类名（最多 255 个字符）。
-        The window class name, up to 255 characters.
-        """
-        buffer = ctypes.create_unicode_buffer(256)
-        self.user32.GetClassNameW(hwnd, buffer, len(buffer))
-        return buffer.value
-
-    def _flatten_window_text(
-        self, title: str, class_name: str, child_items: Sequence[tuple[int, str, str]]
-    ) -> str:
-        """把标题、类名以及各子窗口的类名和文字按行连成一段小写文本，用于关键词匹配。
-        Join the title, the class name and each child window's class and text line by line
-        into one lowercase text for keyword matching.
-        """
-        parts = [title, class_name]
-        for _, child_class, text in child_items:
-            parts.extend((child_class, text))
-        return "\n".join(parts).lower()
-
-    def _looks_relevant(self, flat_text: str, class_name: str) -> bool:
-        """窗口类名像对话框，或文本含有对话框关键词时为 True。
-        True when the window class looks like a dialog or the text contains a dialog keyword.
-        """
-        if _is_dialog_class(class_name):
-            return True
-        return _is_explicit_dialog_text(flat_text)
-
-    def _can_use_keyboard_fallback(self, hwnd: int, flat_text: str, class_name: str) -> bool:
-        """该窗口能否使用通用的键盘确认；允许时计入一次尝试。
-        Whether the window may get the generic keyboard confirmation; an allowed attempt is
-        counted.
-        """
-        return _can_use_generic_dialog_fallback(
-            self._generic_confirm_count, hwnd, flat_text, class_name
-        )
-
-    def _is_progress_window(
-        self, flat_text: str, child_items: Sequence[tuple[int, str, str]]
-    ) -> bool:
-        """文本含有进度关键词，或某个子窗口的文字含有暂停、恢复、取消等按钮文字时为 True。
-        True when the text contains a progress keyword or a child window's text contains a
-        pause, resume or cancel label.
-        """
-        if any(keyword in flat_text for keyword in PROGRESS_KEYWORDS):
-            return True
-        for _, _, text in child_items:
-            lowered = text.lower()
-            if any(label == lowered or label in lowered for label in PROGRESS_BUTTON_LABELS):
-                return True
-        return False
-
-    def _acted_recently(self, hwnd: int) -> bool:
-        """距上次确认该窗口不到 2 秒时为 True。
-        True when the window was confirmed less than 2 seconds ago.
-        """
-        last = self._last_action.get(hwnd, 0.0)
-        return (time.time() - last) < 2.0
-
-    def _accept_window(
-        self, hwnd: int, class_name: str, child_items: Sequence[tuple[int, str, str]]
-    ) -> bool:
-        """确认一个对话框：勾选未勾选的同意复选框，点击第一个文字含肯定词的子窗口；没有这样的
-        子窗口时，在次数限制内用键盘确认。进度窗口不处理，以免打断下载或解压。
-        Confirm a dialog: tick unticked agreement checkboxes and click the first child window
-        whose text has a positive label; without one, fall back to the keyboard within the
-        attempt limit. Progress windows are left alone so downloads and extraction go on.
-
-        Returns:
-            执行了点击或键盘确认时为 True。
-            True when a click or keyboard confirmation was performed.
-
-        Raises:
-            DialogBlockedError: 窗口是 ST 账号登录对话框。
-                The window is an ST account login dialog.
-        """
-        flat_text = self._flatten_window_text(self._window_text(hwnd), class_name, child_items)
-        if _is_account_login_text(flat_text):
-            raise DialogBlockedError(_st_login_blocked_message())
-        if self._is_progress_window(flat_text, child_items):
-            LOGGER.info(
-                tr(
-                    "Skipping CubeMX progress window to avoid interrupting downloads/extraction",
-                    "跳过 CubeMX 进度窗口，以免打断下载或解压",
-                )
-            )
-            return False
-
-        for child_hwnd, child_class, text in child_items:
-            lowered = text.lower()
-            if not any(label in lowered for label in AGREEMENT_LABELS):
-                continue
-            if child_class != "Button":
-                continue
-            checked = self.user32.SendMessageW(child_hwnd, self.BM_GETCHECK, 0, 0)
-            if checked != self.BST_CHECKED:
-                self.user32.SendMessageW(child_hwnd, self.BM_CLICK, 0, 0)
-                LOGGER.info(
-                    tr(
-                        f"Auto-confirmed agreement checkbox: {text}",
-                        f"已自动勾选同意复选框：{text}",
-                    )
-                )
-
-        for child_hwnd, _, text in child_items:
-            lowered = text.lower()
-            if any(label in lowered for label in POSITIVE_BUTTON_LABELS):
-                self.user32.SendMessageW(child_hwnd, self.BM_CLICK, 0, 0)
-                LOGGER.info(
-                    tr(
-                        f"Auto-confirmed CubeMX dialog button: {text}",
-                        f"已自动点击 CubeMX 对话框按钮：{text}",
-                    )
-                )
-                return True
-
-        if self._can_use_keyboard_fallback(hwnd, flat_text, class_name):
-            self._confirm_awt_dialog(hwnd)
-            LOGGER.info(
-                tr(
-                    "Auto-confirmed CubeMX Java dialog with keyboard fallback",
-                    "已用键盘备用方式自动确认 CubeMX Java 对话框",
-                )
-            )
-            return True
-
-        LOGGER.info(
-            tr(
-                "Relevant CubeMX window detected but no safe positive button was found; "
-                "leaving it untouched",
-                "检测到相关的 CubeMX 窗口，但没有找到可安全点击的确认按钮；不做处理",
-            )
-        )
-        return False
-
-    def _tap_key(self, virtual_key: int) -> None:
-        """用 keybd_event 按下并松开一个虚拟键。
-        Press and release one virtual key with keybd_event.
-        """
-        self.user32.keybd_event(virtual_key, 0, 0, 0)
-        time.sleep(0.03)
-        self.user32.keybd_event(virtual_key, 0, self.KEYEVENTF_KEYUP, 0)
-        time.sleep(0.08)
-
-    def _confirm_awt_dialog(self, hwnd: int) -> None:
-        """恢复窗口并置于前台，再依次按空格、Tab、回车。
-        Restore the window, bring it to the foreground, then press Space, Tab and Enter.
-        """
-        self.user32.ShowWindow(hwnd, self.SW_RESTORE)
-        self.user32.SetForegroundWindow(hwnd)
-        time.sleep(0.1)
-        # Swing 对话框常常不暴露原生 Button 子控件。空格用于初始焦点在许可协议复选框上的情况，
-        # 随后 Tab 和回车在迁移、下载、许可协议提示中触发默认的确认操作。
-        # Swing dialogs often expose no native Button children. Space handles an
-        # initial license checkbox focus; Tab/Enter then activates the default
-        # positive action on migration/download/license prompts.
-        for key in (self.VK_SPACE, self.VK_TAB, self.VK_RETURN):
-            self._tap_key(key)
-
-
-class _LinuxX11DialogController(_BaseDialogController):
-    """Linux 上通过 X11（python-xlib）找到 CubeMX 进程树的窗口，用模拟按键和点击确认对话框。
-    On Linux, find the windows of the CubeMX process tree through X11 (python-xlib) and confirm
-    dialogs with synthetic key presses and clicks.
-    """
-
-    def __init__(self, process_id: int):
-        """连接 X 显示，取得所需的窗口属性 atom，记录要监视的 CubeMX 进程号。
-        Connect to the X display, intern the window property atoms needed and record the id of
-        the CubeMX process to watch.
-
-        Raises:
-            ImportError: 没有安装 python-xlib。
-                python-xlib is not installed.
-        """
-        from Xlib import XK, X, display  # type: ignore
-        from Xlib.ext import xtest  # type: ignore
-
-        self.X = X
-        self.XK = XK
-        self.display_module = display
-        self.xtest = xtest
-        self.process_id = process_id
-        self.display = display.Display()
-        self.root = self.display.screen().root
-        self.pid_atom = self.display.intern_atom("_NET_WM_PID")
-        self.name_atom = self.display.intern_atom("_NET_WM_NAME")
-        self.utf8_atom = self.display.intern_atom("UTF8_STRING")
-        self.class_atom = self.display.intern_atom("WM_CLASS")
-        self._last_action: dict[int, float] = {}
-        self._generic_confirm_count: dict[int, int] = {}
-
-    def pump_once(self) -> None:
-        """检查一次 X11 窗口树中属于 CubeMX 进程树的窗口，用按键序列确认相关对话框。
-        Inspect the X11 windows of the CubeMX process tree once and confirm the relevant dialogs
-        with a key sequence.
-
-        只按窗口标题和类名判断；进度窗口不处理，刚确认过的窗口 3 秒内跳过，每个窗口最多尝试
-        GENERIC_DIALOG_CONFIRM_LIMIT 次。
-        Only the window title and class name are used; progress windows are left alone, a window
-        confirmed less than 3 seconds ago is skipped, and each window gets at most
-        GENERIC_DIALOG_CONFIRM_LIMIT attempts.
-
-        Raises:
-            DialogBlockedError: 出现 ST 账号登录对话框。
-                An ST account login dialog is shown.
-        """
-        process_ids = self._related_process_ids()
-        for window in self._iter_windows(self.root):
-            if self._window_pid(window) not in process_ids:
-                continue
-            title = self._window_title(window)
-            class_name = self._window_class(window)
-            flat_text = "\n".join((title, class_name)).lower()
-            if _is_account_login_text(flat_text):
-                raise DialogBlockedError(_st_login_blocked_message())
-            if not self._looks_relevant(flat_text, class_name):
-                continue
-            if self._is_progress_window(flat_text):
-                LOGGER.info(
-                    tr(
-                        "Skipping CubeMX progress window to avoid interrupting "
-                        "downloads/extraction",
-                        "跳过 CubeMX 进度窗口，以免打断下载或解压",
-                    )
-                )
-                continue
-            if self._acted_recently(window.id):
-                continue
-            if not self._can_use_keyboard_fallback(window.id, flat_text, class_name):
-                continue
-            self._activate_window(window)
-            self._confirm_window(window)
-            self._last_action[window.id] = time.time()
-
-    def _iter_windows(self, window):
-        """深度优先给出窗口本身及其全部子孙窗口；查询不到子窗口的窗口不再向下展开。
-        Yield the window and all its descendants depth-first; a window whose children cannot be
-        queried is not expanded.
-        """
-        yield window
-        try:
-            children = window.query_tree().children
-        except Exception:
-            return
-        for child in children:
-            yield from self._iter_windows(child)
-
-    def _related_process_ids(self) -> set:
-        """CubeMX 进程及其全部子孙进程的进程号，父子关系从 /proc/<pid>/stat 读取。
-        The ids of the CubeMX process and all its descendants, with the parent ids read from
-        /proc/<pid>/stat.
-        """
-        ids = {self.process_id}
-        queue = [self.process_id]
-        while queue:
-            parent = queue.pop(0)
-            try:
-                for entry in os.listdir("/proc"):
-                    if not entry.isdigit():
-                        continue
-                    stat_path = os.path.join("/proc", entry, "stat")
-                    try:
-                        with open(stat_path, encoding="utf-8", errors="ignore") as stat_file:
-                            fields = stat_file.read().split()
-                    except OSError:
-                        continue
-                    if len(fields) < 4:
-                        continue
-                    try:
-                        pid = int(fields[0])
-                        ppid = int(fields[3])
-                    except ValueError:
-                        continue
-                    if ppid == parent and pid not in ids:
-                        ids.add(pid)
-                        queue.append(pid)
-            except OSError:
-                break
-        return ids
-
-    def _window_pid(self, window) -> int:
-        """窗口 _NET_WM_PID 属性中的进程号；没有该属性或读取失败时为 -1。
-        The process id in the window's _NET_WM_PID property; -1 when it is missing or unreadable.
-        """
-        try:
-            prop = window.get_full_property(self.pid_atom, self.X.AnyPropertyType)
-            if prop and prop.value:
-                return int(prop.value[0])
-        except Exception:
-            return -1
-        return -1
-
-    def _window_title(self, window) -> str:
-        """窗口标题：先读 UTF-8 的 _NET_WM_NAME，再读 WM_NAME；都读不到时为空字符串。
-        The window title: the UTF-8 _NET_WM_NAME first, then WM_NAME; an empty string when
-        neither can be read.
-        """
-        try:
-            prop = window.get_full_property(self.name_atom, self.utf8_atom)
-            if prop and prop.value:
-                value = prop.value
-                if isinstance(value, bytes):
-                    return value.decode("utf-8", errors="ignore")
-                return str(value)
-        except Exception:
-            pass
-        try:
-            name = window.get_wm_name()
-            return name or ""
-        except Exception:
-            return ""
-
-    def _window_class(self, window) -> str:
-        """窗口的 WM_CLASS（实例名和类名，以换行分隔）；读不到时为空字符串。
-        The window's WM_CLASS, instance and class name separated by a newline; an empty string
-        when it cannot be read.
-        """
-        try:
-            value = window.get_wm_class()
-            if value:
-                return "\n".join(str(item) for item in value if item)
-        except Exception:
-            pass
-        try:
-            prop = window.get_full_property(self.class_atom, self.X.AnyPropertyType)
-            if prop and prop.value:
-                value = prop.value
-                if isinstance(value, bytes):
-                    return value.replace(b"\x00", b"\n").decode("utf-8", errors="ignore")
-                return str(value)
-        except Exception:
-            pass
-        return ""
-
-    def _looks_relevant(self, flat_text: str, class_name: str) -> bool:
-        """窗口类名像对话框，或文本含有对话框关键词时为 True。
-        True when the window class looks like a dialog or the text contains a dialog keyword.
-        """
-        if _is_dialog_class(class_name):
-            return True
-        return _is_explicit_dialog_text(flat_text)
-
-    def _can_use_keyboard_fallback(self, window_id: int, flat_text: str, class_name: str) -> bool:
-        """该窗口能否使用通用的键盘确认；允许时计入一次尝试。
-        Whether the window may get the generic keyboard confirmation; an allowed attempt is
-        counted.
-        """
-        return _can_use_generic_dialog_fallback(
-            self._generic_confirm_count, window_id, flat_text, class_name
-        )
-
-    def _is_progress_window(self, flat_text: str) -> bool:
-        """文本含有下载、解压等进度关键词时为 True。
-        True when the text contains a progress keyword such as downloading or extracting.
-        """
-        return _is_progress_text(flat_text)
-
-    def _acted_recently(self, window_id: int) -> bool:
-        """距上次确认该窗口不到 3 秒时为 True。
-        True when the window was confirmed less than 3 seconds ago.
-        """
-        last = self._last_action.get(window_id, 0.0)
-        return (time.time() - last) < 3.0
-
-    def _focus_first_viewable_window(self, window) -> bool:
-        """把输入焦点交给窗口树中第一个可见（viewable）的窗口；成功时为 True。
-        Give input focus to the first viewable window in the window's tree; True on success.
-        """
-        for candidate in self._iter_windows(window):
-            try:
-                attributes = candidate.get_attributes()
-                if attributes.map_state != self.X.IsViewable:
-                    continue
-                candidate.set_input_focus(self.X.RevertToParent, self.X.CurrentTime)
-                self.display.sync()
-                return True
-            except Exception:
-                continue
-        return False
-
-    def _activate_window(self, window) -> bool:
-        """把窗口提到最上层并设置输入焦点；无法设置焦点时为 False。
-        Raise the window to the top and give it input focus; False when focus cannot be set.
-        """
-        try:
-            window.configure(stack_mode=self.X.Above)
-            self.display.sync()
-        except Exception:
-            pass
-
-        if self._focus_first_viewable_window(window):
-            return True
-
-        try:
-            window.set_input_focus(self.X.RevertToParent, self.X.CurrentTime)
-            self.display.sync()
-            return True
-        except Exception:
-            return False
-
-    def _window_abs_geometry(self, window) -> tuple[int, int, int, int] | None:
-        """窗口相对根窗口的位置和尺寸 (x, y, 宽, 高)；读取失败时为 None。
-        The window position and size relative to the root window as (x, y, width, height); None
-        when they cannot be read.
-        """
-        try:
-            geometry = window.get_geometry()
-            parent = window.query_tree().parent
-            if parent is None:
-                return int(geometry.x), int(geometry.y), int(geometry.width), int(geometry.height)
-            translated = parent.translate_coords(self.root, geometry.x, geometry.y)
-            return int(translated.x), int(translated.y), int(geometry.width), int(geometry.height)
-        except Exception:
-            return None
-
-    def _click_default_dialog_button(self, window) -> bool:
-        """在窗口底边以上 24 像素的水平中点模拟一次左键点击，即底部按钮行的常见默认按钮位置。
-        Simulate a left click at the horizontal center, 24 pixels above the bottom edge of the
-        window, where the default button of the bottom button row usually is.
-
-        Returns:
-            点击成功时为 True；读不到位置、窗口小于 80×60 像素或点击失败时为 False。
-            True when the click was sent; False when the position cannot be read, the window
-            is smaller than 80×60 pixels or the click fails.
-        """
-        geometry = self._window_abs_geometry(window)
-        if geometry is None:
-            return False
-        x, y, width, height = geometry
-        if width < 80 or height < 60:
-            return False
-
-        # Swing/AWT 对话框常常不通过 X11 暴露原生按钮文字；确认操作按惯例位于底部按钮行的中间。
-        # Swing/AWT dialogs often do not expose native button text through X11.
-        # The positive action is conventionally centered in the bottom button row.
-        click_x = x + width // 2
-        click_y = y + max(1, height - 24)
-        try:
-            self.xtest.fake_input(self.display, self.X.MotionNotify, x=click_x, y=click_y)
-            self.display.sync()
-            time.sleep(0.03)
-            self.xtest.fake_input(self.display, self.X.ButtonPress, 1)
-            self.xtest.fake_input(self.display, self.X.ButtonRelease, 1)
-            self.display.sync()
-            LOGGER.info(
-                tr(
-                    f"Auto-clicked CubeMX dialog default button at {click_x},{click_y}",
-                    f"已自动点击 CubeMX 对话框默认按钮位置 {click_x},{click_y}",
-                )
-            )
-            return True
-        except Exception as error:
-            LOGGER.debug(f"CubeMX X11 default-button click failed: {error}")
-            return False
-
-    def _tap(
-        self, key_name: str, alt: bool = False, shift: bool = False, control: bool = False
-    ) -> None:
-        """用 XTest 按下并松开一个按键，可同时按住 Alt、Shift、Ctrl；按键名没有对应键码时
-        不做任何事。
-        Press and release one key through XTest, optionally holding Alt, Shift or Control;
-        nothing happens when the key name has no keycode.
-        """
-        keycode = self.display.keysym_to_keycode(self.XK.string_to_keysym(key_name))
-        if not keycode:
-            return
-        altcode = self.display.keysym_to_keycode(self.XK.string_to_keysym("Alt_L"))
-        shiftcode = self.display.keysym_to_keycode(self.XK.string_to_keysym("Shift_L"))
-        controlcode = self.display.keysym_to_keycode(self.XK.string_to_keysym("Control_L"))
-        if alt and altcode:
-            self.xtest.fake_input(self.display, self.X.KeyPress, altcode)
-        if shift and shiftcode:
-            self.xtest.fake_input(self.display, self.X.KeyPress, shiftcode)
-        if control and controlcode:
-            self.xtest.fake_input(self.display, self.X.KeyPress, controlcode)
-        self.xtest.fake_input(self.display, self.X.KeyPress, keycode)
-        self.xtest.fake_input(self.display, self.X.KeyRelease, keycode)
-        if control and controlcode:
-            self.xtest.fake_input(self.display, self.X.KeyRelease, controlcode)
-        if shift and shiftcode:
-            self.xtest.fake_input(self.display, self.X.KeyRelease, shiftcode)
-        if alt and altcode:
-            self.xtest.fake_input(self.display, self.X.KeyRelease, altcode)
-        self.display.sync()
-        time.sleep(0.05)
-
-    def _confirm_window(self, window) -> None:
-        """依次发送回车、空格、Tab、回车和 Alt+O、Alt+Y、Alt+I、Alt+A，再点击底部默认按钮位置。
-        Send Return, Space, Tab, Return and Alt+O, Alt+Y, Alt+I, Alt+A in order, then click where
-        the default bottom button usually is.
-        """
-        for key_name, alt in (
-            ("Return", False),
-            ("space", False),
-            ("Tab", False),
-            ("Return", False),
-            ("o", True),
-            ("y", True),
-            ("i", True),
-            ("a", True),
-        ):
-            self._tap(key_name, alt=alt)
-        clicked = self._click_default_dialog_button(window)
-        suffix = tr(" and default-button click", "，并点击了默认按钮位置") if clicked else ""
-        LOGGER.info(
-            tr(
-                f"Auto-confirmed CubeMX dialog with X11 key sequence{suffix}",
-                f"已用 X11 按键序列自动确认 CubeMX 对话框{suffix}",
-            )
-        )
-
-
-def _st_login_blocked_message() -> str:
-    """CubeMX 要求 ST 账号登录时的错误信息：先在本机的 CubeMX 中手动登录并安装所需固件包，
-    再重新生成。
-    The error message for an ST account login request: sign in and install the required firmware
-    packages in CubeMX on this machine by hand, then generate again.
-    """
-    return tr(
-        "STM32CubeMX requested ST account login. This tool does not automate CubeMX login or "
-        "state setup; open CubeMX on this machine, sign in, install required firmware packages, "
-        "then run generation again.",
-        "STM32CubeMX 要求登录 ST 账号。本工具不会自动登录 CubeMX，也不会自动配置它的状态；"
-        "请在本机打开 CubeMX，登录并安装所需的固件包，然后重新生成。",
-    )
-
-
-def create_dialog_controller(
-    process_id: int,
-) -> _BaseDialogController:
-    """为 CubeMX 进程创建当前平台的对话框控制器。
-    Create the dialog controller of the current platform for a CubeMX process.
-
-    Windows 上使用 user32；其他平台需要 DISPLAY 和 python-xlib，缺少其一或 X11 控制器启动失败时
-    记录警告并返回不做任何处理的控制器。
-    Windows uses user32; elsewhere DISPLAY and python-xlib are required, and without either, or
-    when the X11 controller fails to start, a warning is logged and a controller that does nothing
-    is returned.
-    """
-    if os.name == "nt":
-        return _WindowsDialogController(process_id)
-    if not os.environ.get("DISPLAY"):
-        LOGGER.warning(
-            tr(
-                "CubeMX auto-confirm is enabled but DISPLAY is not set; "
-                "dialog automation is disabled.",
-                "已启用 CubeMX 自动确认，但没有设置 DISPLAY；对话框自动处理已关闭。",
-            )
-        )
-        return _NullDialogController()
-    try:
-        return _LinuxX11DialogController(process_id)
-    except ImportError:
-        LOGGER.warning(
-            tr(
-                "CubeMX auto-confirm on Linux requires python-xlib. "
-                "Install it or disable --auto-confirm.",
-                "在 Linux 上自动确认 CubeMX 对话框需要 python-xlib。"
-                "请安装它，或不使用 --auto-confirm。",
-            )
-        )
-        return _NullDialogController()
-    except Exception as error:
-        LOGGER.warning(
-            tr(
-                f"CubeMX auto-confirm could not start on Linux: {error}",
-                f"无法在 Linux 上启动 CubeMX 自动确认：{error}",
-            )
-        )
-        return _NullDialogController()
-
-
-class _DialogWatchThread(threading.Thread):
-    """按固定间隔调用对话框控制器的后台守护线程；遇到无法确认的对话框时记录错误并停止。
-    A background daemon thread that calls the dialog controller at a fixed interval; a dialog
-    that cannot be confirmed is recorded as the error and stops it.
-    """
-
-    def __init__(
-        self,
-        process_id: int,
-        stop_event: threading.Event,
-        poll_interval: float = 0.5,
-    ):
-        """为 process_id 创建对话框控制器；stop_event 置位时线程结束，poll_interval 为
-        轮询间隔（秒）。
-        Create the dialog controller for process_id; the thread ends when stop_event is set, and
-        poll_interval is the polling interval in seconds.
-        """
-        super().__init__(daemon=True)
-        self.controller = create_dialog_controller(process_id)
-        self.stop_event = stop_event
-        self.poll_interval = poll_interval
-        self.error: BaseException | None = None
-
-    def run(self) -> None:
-        """反复调用 pump_once 直到 stop_event 置位；DialogBlockedError 存入 error 并置位
-        stop_event，其他异常只记录警告。
-        Call pump_once until stop_event is set; a DialogBlockedError is stored in error and sets
-        stop_event, other exceptions are only logged as warnings.
-        """
-        while not self.stop_event.is_set():
-            try:
-                self.controller.pump_once()
-            except DialogBlockedError as error:
-                self.error = error
-                self.stop_event.set()
-                break
-            except Exception as error:
-                LOGGER.warning(
-                    tr(
-                        f"CubeMX dialog watcher error: {error}",
-                        f"CubeMX 对话框监视线程出错：{error}",
-                    )
-                )
-            self.stop_event.wait(self.poll_interval)
 
 
 def _terminate_process_tree(process: subprocess.Popen) -> None:
@@ -1445,6 +1133,20 @@ def _normalize_expect_paths(project_dir: str, expect_paths: Sequence[str]) -> li
     return resolved
 
 
+def _script_results(script_text: str, stdout_text: str) -> list[tuple[str, str]]:
+    """把 CubeMX 对脚本各命令的 OK/KO 结果按顺序与命令配对；exit 不计在内，没有结果的命令为空串。
+    Pair, in order, the OK/KO results CubeMX printed with the script commands; exit is not
+    counted, and a command without a result gets an empty string.
+    """
+    commands = [line.strip() for line in script_text.splitlines() if line.strip()]
+    commands = [command for command in commands if command != "exit"]
+    results = [line.strip() for line in stdout_text.splitlines() if line.strip() in ("OK", "KO")]
+    return [
+        (command, results[index] if index < len(results) else "")
+        for index, command in enumerate(commands)
+    ]
+
+
 def generate_cubemx_project(
     project_dir: str,
     ioc_file: str = "",
@@ -1457,18 +1159,20 @@ def generate_cubemx_project(
     script_path: str = "",
     keep_script: bool = False,
     silent: bool = False,
-    auto_confirm: bool = False,
+    firmware: str | None = None,
+    download: bool = False,
     timeout: int = 1200,
 ) -> CubeMXRunResult:
-    """以脚本模式运行 STM32CubeMX 生成工程，再检查期望的输出路径是否存在。
-    Generate a project by running STM32CubeMX in script mode, then check that the expected output
-    paths exist.
+    """以脚本模式运行 STM32CubeMX 生成工程，再检查每条脚本命令都成功、期望的输出路径都存在。
+    Generate a project by running STM32CubeMX in script mode, then check that every script
+    command succeeded and that the expected output paths exist.
 
-    没有 ioc_file 时使用工程目录中按文件名排序的第一个 .ioc。给出 log_dir 时在其中写入脚本、命令行、
-    标准输出和标准错误。auto_confirm 为 True 时由后台线程自动确认对话框。
-    Without ioc_file, the first .ioc in the project directory by file name is used. With log_dir,
-    the script, the command line, stdout and stderr are written there. With auto_confirm, a
-    background thread confirms dialogs.
+    没有 ioc_file 时使用工程目录中唯一的 .ioc。给出 log_dir 时在其中写入脚本、命令行、标准输出和
+    标准错误。CubeMX 弹出的对话框按 firmware 和 download 回答（见 answer_dialog），回答不了时停止
+    运行。
+    Without ioc_file, the only .ioc in the project directory is used. With log_dir, the script,
+    the command line, stdout and stderr are written there. The dialogs CubeMX shows are answered
+    by firmware and download (see answer_dialog); one that cannot be answered stops the run.
 
     Args:
         launch_mode: auto、direct 或 java，含义见 build_cubemx_command。
@@ -1484,19 +1188,26 @@ def generate_cubemx_project(
             run by default.
         silent: 为 True 时向 STM32CubeMX 传入 -s。
             Pass -s to STM32CubeMX when True.
+        firmware: keep、migrate 或 None：工程由另一版本的 CubeMX 保存时的选择。
+            keep, migrate or None: the choice when the project was saved by another CubeMX
+            version.
+        download: 允许 CubeMX 下载缺少的固件包并接受其许可协议。
+            Let CubeMX download a missing firmware package and accept its license.
         timeout: CubeMX 运行的时限（秒），超时后结束整个进程树。
             The CubeMX time limit in seconds; the whole process tree is terminated when it expires.
 
     Raises:
         FileNotFoundError: 找不到工程目录、.ioc 文件、STM32CubeMX 或 Java。
             The project directory, the .ioc file, STM32CubeMX or Java was not found.
-        ValueError: launch_mode 无效，或 java 模式下 CubeMX 路径不是 .jar。
-            launch_mode is invalid, or java mode is given a CubeMX path that is not a .jar.
+        ValueError: 目录中有多个 .ioc，launch_mode 无效，或 java 模式下找不到 CubeMX 的 .jar。
+            The directory holds several .ioc files, launch_mode is invalid, or java mode finds
+            no CubeMX .jar.
         TimeoutError: CubeMX 在 timeout 秒内没有结束。
             CubeMX did not finish within timeout seconds.
-        RuntimeError: 出现 ST 账号登录对话框、CubeMX 以非零退出码结束，或期望路径不存在。
-            An ST account login dialog appeared, CubeMX exited with a non-zero code, or an
-            expected path is missing.
+        RuntimeError: 对话框无法回答（DialogStopped），CubeMX 以非零退出码结束，某条脚本命令
+            失败，或期望路径不存在。
+            A dialog could not be answered (DialogStopped), CubeMX exited with a non-zero code, a
+            script command failed, or an expected path is missing.
     """
     project_dir = os.path.abspath(project_dir)
     if not os.path.isdir(project_dir):
@@ -1536,6 +1247,13 @@ def generate_cubemx_project(
         raise
     script_text = build_cubemx_script(ioc_path, generate_code_dir)
     _write_text_file(actual_script_path, script_text)
+
+    # 以 Java 启动时，同一个 JRE 中的 Access Bridge 用来读取和回答对话框。
+    # When started through Java, the Access Bridge of the same JRE reads and answers dialogs.
+    bridge_dll = ""
+    if os.name == "nt" and ACCESS_BRIDGE_OPTION in command:
+        candidate = os.path.join(os.path.dirname(command[0]), "windowsaccessbridge-64.dll")
+        bridge_dll = candidate if os.path.isfile(candidate) else ""
 
     if log_dir:
         os.makedirs(log_dir, exist_ok=True)
@@ -1604,10 +1322,15 @@ def generate_cubemx_project(
             raise
 
         stop_event = threading.Event()
-        watch_thread = None
-        if auto_confirm:
-            watch_thread = _DialogWatchThread(process.pid, stop_event)
-            watch_thread.start()
+        done = threading.Event()
+        watch_thread = _DialogWatchThread(
+            process.pid,
+            lambda dialog: answer_dialog(dialog, firmware=firmware, download=download),
+            bridge_dll,
+            stop_event,
+            done,
+        )
+        watch_thread.start()
 
         stdout_thread = threading.Thread(
             target=consume_stream, args=(process.stdout, stdout_lines, stdout_handle), daemon=True
@@ -1619,19 +1342,17 @@ def generate_cubemx_project(
         stderr_thread.start()
 
         timeout_error: TimeoutError | None = None
-        dialog_error: BaseException | None = None
-        deadline = time.time() + timeout
+        deadline = time.monotonic() + timeout
         try:
             while True:
-                if watch_thread is not None and watch_thread.error is not None:
-                    dialog_error = watch_thread.error
+                if stop_event.is_set():
                     _terminate_process_tree(process)
                     returncode = process.wait(timeout=5)
                     break
                 returncode = process.poll()
                 if returncode is not None:
                     break
-                if time.time() >= deadline:
+                if time.monotonic() >= deadline:
                     _terminate_process_tree(process)
                     returncode = process.wait(timeout=5)
                     timeout_error = TimeoutError(
@@ -1643,9 +1364,11 @@ def generate_cubemx_project(
                     break
                 time.sleep(0.2)
         finally:
-            stop_event.set()
-            if watch_thread is not None:
-                watch_thread.join(timeout=2.0)
+            # 监视线程在 CubeMX 退出前一直处理消息（Access Bridge 需要它才能让 JVM 结束）。
+            # The watcher pumps messages until CubeMX has exited (the Access Bridge needs that for
+            # the JVM to end).
+            done.set()
+            watch_thread.join(timeout=2.0)
 
         stdout_thread.join(timeout=2.0)
         stderr_thread.join(timeout=2.0)
@@ -1666,11 +1389,11 @@ def generate_cubemx_project(
         with contextlib.suppress(OSError):
             os.remove(actual_script_path)
 
+    if watch_thread.error is not None:
+        raise watch_thread.error
+
     if timeout_error is not None:
         raise timeout_error
-
-    if dialog_error is not None:
-        raise RuntimeError(str(dialog_error)) from dialog_error
 
     if returncode != 0:
         stdout_tail = _tail_text(stdout_text)
@@ -1682,6 +1405,19 @@ def generate_cubemx_project(
                 f"STM32CubeMX 生成失败，退出码 {returncode}\n"
                 f"标准输出末尾：\n{stdout_tail}\n标准错误末尾：\n{stderr_tail}",
             )
+        )
+
+    failed = [
+        command for command, status in _script_results(script_text, stdout_text) if status != "OK"
+    ]
+    if failed:
+        raise RuntimeError(
+            tr(
+                f"STM32CubeMX did not complete the script command: {failed[0]}",
+                f"STM32CubeMX 没有完成脚本命令：{failed[0]}",
+            )
+            + "\n"
+            + _tail_text(stdout_text, 15)
         )
 
     effective_expect_paths = DEFAULT_EXPECT_PATHS if expect_paths is None else expect_paths
