@@ -328,7 +328,25 @@ def _add_stm32_setup(commands) -> None:
             "terminal_source",
         ),
     )
-    parser.add_argument("--xrobot", action="store_true", help=tr("Support XRobot", "支持 XRobot"))
+    xrobot = parser.add_mutually_exclusive_group()
+    xrobot.add_argument(
+        "--xrobot",
+        dest="xrobot",
+        action="store_const",
+        const=True,
+        default=None,
+        help=tr(
+            "generate XRobot registrations (default: keep the project's current choice)",
+            "生成 XRobot 注册代码（默认：沿用工程现在的选择）",
+        ),
+    )
+    xrobot.add_argument(
+        "--no-xrobot",
+        dest="xrobot",
+        action="store_const",
+        const=False,
+        help=tr("generate LibXR code without XRobot", "生成不含 XRobot 的 LibXR 代码"),
+    )
     parser.add_argument(
         "--commit",
         default="",
@@ -338,16 +356,19 @@ def _add_stm32_setup(commands) -> None:
         "--git-source",
         default="auto",
         help=tr(
-            "Git source base URL or full repo URL, or 'auto'/'github' (default: auto)",
-            "Git 源的基础地址或完整仓库地址，或 'auto'/'github'（默认：auto）",
+            "where a missing LibXR is cloned from: 'auto', 'github', or a base or repository "
+            "URL (default: auto); .gitmodules always records "
+            + "https://github.com/xrobot-org/libxr.git",
+            "缺少 LibXR 时从哪里克隆：'auto'、'github'，或基础地址、仓库地址（默认：auto）；"
+            ".gitmodules 始终记录 " + "https://github.com/xrobot-org/libxr.git",
         ),
     )
     parser.add_argument(
         "--git-mirrors",
         default="",
         help=tr(
-            "Comma-separated mirror base/repo URLs (will be tried when --git-source=auto)",
-            "以逗号分隔的镜像基础地址或仓库地址（--git-source=auto 时参与选择）",
+            "comma-separated mirror base or repository URLs, tried with --git-source auto",
+            "以逗号分隔的镜像基础地址或仓库地址，--git-source 为 auto 时参与选择",
         ),
     )
 

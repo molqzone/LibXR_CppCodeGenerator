@@ -12,7 +12,9 @@ CMakeLists.txt as libxr parse, libxr gen and libxr stm32 cmake do.
 
 import logging
 import os
+import re
 import shlex
+import shutil
 import subprocess
 import sys
 
@@ -21,6 +23,16 @@ from xr_syntax.i18n import tr
 DEFAULT_MIRRORS = [
     "https://gitee.com/jiu-xiao/libxr",
 ]
+
+# LibXR 的正式地址，工程的 .gitmodules 记录的就是它。
+# The canonical LibXR URL, which the project's .gitmodules records.
+LIBXR_URL = "https://github.com/xrobot-org/libxr.git"
+# LibXR 在 GitHub 上迁移前后的地址；镜像只替换这些地址。
+# LibXR's GitHub URLs before and after the transfer; a mirror only stands in for these.
+LIBXR_URL_PATTERN = re.compile(
+    r"^https://github\.com/(xrobot-org|jiu-xiao)/libxr(\.git)?/?$", re.IGNORECASE
+)
+SUBMODULE_PATH = "Middlewares/Third_Party/LibXR"
 
 
 def is_git_repo(path):
@@ -111,15 +123,24 @@ def find_ioc_file(directory):
     return None
 
 
+def _probe_environment() -> dict:
+    """测速用的环境：git 不提示输入账号密码，地址填错时直接失败。
+    The environment for probing: git asks for no credentials, so a wrong address just fails.
+    """
+    return dict(os.environ, GIT_TERMINAL_PROMPT="0", GCM_INTERACTIVE="never")
+
+
 def pick_git_base(default_base="https://github.com", mirrors=None, timeout=5.0):
     """在默认源和镜像中选出 git ls-remote 响应最快的 LibXR Git 源。
     Pick the LibXR Git source whose git ls-remote answers fastest, among the default and the
     mirrors.
 
     default_base 和 mirrors 中的每一项可以是基础地址（如 https://github.com，探测
-    <基础地址>/Jiu-Xiao/libxr.git），也可以是以 .git 或 libxr 结尾的完整仓库地址。
+    <基础地址>/xrobot-org/libxr.git），也可以是以 .git 或 libxr 结尾的完整仓库地址。探测时 git
+    不提示输入账号密码。
     default_base and each mirror are either a base URL such as https://github.com, probed as
-    <base>/Jiu-Xiao/libxr.git, or a full repository URL ending in .git or libxr.
+    <base>/xrobot-org/libxr.git, or a full repository URL ending in .git or libxr. Probes never
+    ask for credentials.
 
     Returns:
         最快的候选项，保持传入时的形式；全部失败或超过 timeout 秒时为 default_base。
@@ -128,55 +149,85 @@ def pick_git_base(default_base="https://github.com", mirrors=None, timeout=5.0):
     """
     import time
 
-    def is_repo_url(s: str) -> bool:
-        """s 以 .git 结尾，或最后一段为 libxr（不区分大小写）时视为完整仓库地址。
-        Treat s as a full repository URL when it ends in .git or its last path segment is
-        libxr, ignoring case.
-        """
-        return s.endswith(".git") or s.rstrip("/").split("/")[-1].lower() == "libxr"
-
-    def to_probe_url(base_or_repo: str) -> str:
-        """探测用的仓库地址：完整仓库地址原样使用，基础地址后加 /Jiu-Xiao/libxr.git。
-        The repository URL to probe: a full repository URL as is, a base URL with
-        /Jiu-Xiao/libxr.git appended.
-        """
-        if is_repo_url(base_or_repo):
-            return base_or_repo
-        return f"{base_or_repo.rstrip('/')}/Jiu-Xiao/libxr.git"
-
     candidates = [default_base] + [m.strip() for m in (mirrors or []) if m.strip()]
     scores = []
     for item in candidates:
-        url = to_probe_url(item)
-        start = time.time()
+        start = time.monotonic()
         try:
             r = subprocess.run(
-                ["git", "ls-remote", "-h", url],
+                ["git", "ls-remote", "-h", make_repo_url(item)],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 timeout=timeout,
+                env=_probe_environment(),
             )
             if r.returncode == 0:
-                scores.append((time.time() - start, item))
+                scores.append((time.monotonic() - start, item))
         except subprocess.TimeoutExpired:
             pass
     return min(scores)[1] if scores else default_base
 
 
-def make_repo_url(base_or_repo: str, owner="Jiu-Xiao", repo="libxr"):
+def make_repo_url(base_or_repo: str, owner="xrobot-org", repo="libxr"):
     """完整的仓库地址：base_or_repo 以 .git 或仓库名结尾时原样返回，否则拼成
     <base_or_repo>/<owner>/<repo>.git。
     The full repository URL: base_or_repo as is when it ends in .git or the repository name,
     else <base_or_repo>/<owner>/<repo>.git.
     """
-    # 已是完整仓库地址（以 .git 或仓库名结尾）时原样返回。
-    # If a full repository URL is provided (.git or ends with repo name), return it as-is
     if (
         base_or_repo.endswith(".git")
         or base_or_repo.rstrip("/").split("/")[-1].lower() == repo.lower()
     ):
         return base_or_repo
     return f"{base_or_repo.rstrip('/')}/{owner}/{repo}.git"
+
+
+class LibXRSource:
+    """克隆 LibXR 时实际使用的源。只有需要克隆时才测速选择，工程的 .gitmodules 始终记录 LIBXR_URL。
+    The source LibXR is actually cloned from. It is chosen, by probing, only when a clone is
+    needed; the project's .gitmodules always records LIBXR_URL.
+
+    git_source 为 auto 时在 GitHub 和 mirrors 中选最快的，为 github 时用 GitHub，否则是给定的
+    基础地址或仓库地址。
+    With git_source auto the fastest of GitHub and the mirrors is used, with github GitHub, and
+    otherwise the given base or repository URL.
+    """
+
+    def __init__(self, git_source: str = "auto", mirrors=()):
+        """记录源的选择方式；此时还不测速。
+        Record how the source is chosen; nothing is probed yet.
+        """
+        self.git_source = git_source
+        self.mirrors = list(mirrors)
+        self._url = None
+
+    def url(self) -> str:
+        """选中的仓库地址；第一次调用时选择并记录日志。
+        The chosen repository URL; chosen and logged on the first call.
+        """
+        if self._url is None:
+            if self.git_source == "auto":
+                base = pick_git_base("https://github.com", self.mirrors, timeout=5.0)
+            elif self.git_source == "github":
+                base = "https://github.com"
+            else:
+                base = self.git_source
+            self._url = make_repo_url(base)
+            logging.info(tr(f"Cloning LibXR from {self._url}", f"从 {self._url} 克隆 LibXR"))
+        return self._url
+
+    def config_for(self, recorded_url: str) -> list:
+        """让 recorded_url 改从选中的源获取的 git -c 参数；recorded_url 不是 LibXR 的 GitHub 地址
+        （例如用户自己的分叉）或与选中的源相同时为空。
+        git -c options that fetch recorded_url from the chosen source instead; empty when
+        recorded_url is not a GitHub address of LibXR (a user's fork, say) or is the chosen source.
+        """
+        if not LIBXR_URL_PATTERN.match(recorded_url):
+            return []
+        url = self.url()
+        if url == recorded_url:
+            return []
+        return ["-c", f"url.{url}.insteadOf={recorded_url}"]
 
 
 def create_gitignore_file(project_dir):
@@ -234,64 +285,81 @@ def is_empty_directory(path):
     return os.path.isdir(path) and not os.path.islink(path) and not os.listdir(path)
 
 
-def add_libxr(
-    project_dir, libxr_commit=None, git_base="https://github.com", default_libxr_commit=None
-):
+def _recorded_url(project_dir) -> str:
+    """工程 .gitmodules 中 LibXR 子模块记录的地址；没有时为空字符串。
+    The URL that the project's .gitmodules records for the LibXR submodule; an empty string
+    when there is none.
+    """
+    result = subprocess.run(
+        ["git", "-C", project_dir, "config", "-f", ".gitmodules", "--get-regexp", r"\.path$"],
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    for line in result.stdout.splitlines():
+        key, _, path = line.partition(" ")
+        if path.strip() == SUBMODULE_PATH:
+            name = key[: -len(".path")]
+            url = subprocess.run(
+                ["git", "-C", project_dir, "config", "-f", ".gitmodules", f"{name}.url"],
+                capture_output=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+            return url.stdout.strip()
+    return ""
+
+
+def _has_commit(repo_path, commit) -> bool:
+    """repo_path 中已有 commit 时为 True。
+    True when repo_path already has commit.
+    """
+    result = subprocess.run(
+        ["git", "-C", repo_path, "cat-file", "-e", f"{commit}^{{commit}}"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    return result.returncode == 0
+
+
+def add_libxr(project_dir, libxr_commit=None, source=None, default_libxr_commit=None):
     """把 LibXR 作为 Git 子模块放到 Middlewares/Third_Party/LibXR，并决定检出哪个 commit。
     Put LibXR at Middlewares/Third_Party/LibXR as a Git submodule and decide which commit is
     checked out.
 
     工程还不是 Git 仓库时先执行 git init。已登记的子模块会同步地址，没有检出时按 gitlink 初始化；
-    未登记时从 git_base 加入子模块。已有的 LibXR 目录不会被删除、移动或重新克隆。
+    未登记时以 LIBXR_URL 加入子模块。需要克隆时才从 source（默认 LibXRSource()）选出的源获取，
+    .gitmodules 仍记录 LIBXR_URL。已有的 LibXR 目录不会被删除、移动或重新克隆。
     A project that is not yet a Git repository gets git init. A registered submodule has its URL
     synced and, without a checkout, is initialized to its gitlink; an unregistered one is added
-    from git_base. An existing LibXR directory is never deleted, moved or re-cloned.
+    as LIBXR_URL. Only a clone fetches from the source that source (LibXRSource() by default)
+    chooses, and .gitmodules still records LIBXR_URL. An existing LibXR directory is never
+    deleted, moved or re-cloned.
 
     只有给出 libxr_commit，或本次新加入且原来没有检出的子模块（此时用 default_libxr_commit）才会
-    切换检出；其他情况保持现有检出，与 default_libxr_commit 不同且不比它新时记录警告。
+    切换检出；新加入的子模块的 gitlink 随之暂存。其他情况保持现有检出，与 default_libxr_commit
+    不同且不比它新时记录警告。
     Only libxr_commit, or default_libxr_commit for a submodule added by this run without an earlier
-    checkout, moves the checkout; otherwise the existing checkout is kept, with a warning when it
-    differs from default_libxr_commit and is not newer than it.
+    checkout, moves the checkout; the gitlink of a newly added submodule is staged with it.
+    Otherwise the existing checkout is kept, with a warning when it differs from
+    default_libxr_commit and is not newer than it.
 
     Raises:
         SystemExit: LibXR 目录既不是 Git 检出也不是空目录，或必需的 git 命令失败。
             The LibXR directory is neither a Git checkout nor empty, or a required git command
             failed.
     """
-    sub_rel_path_posix = "Middlewares/Third_Party/LibXR"
-    libxr_path = os.path.join(project_dir, "Middlewares", "Third_Party", "LibXR")
-
-    midware_path = os.path.join(project_dir, "Middlewares")
-    third_party_path = os.path.join(midware_path, "Third_Party")
+    source = source or LibXRSource()
+    libxr_path = os.path.join(project_dir, *SUBMODULE_PATH.split("/"))
+    os.makedirs(os.path.dirname(libxr_path), exist_ok=True)
 
     def has_registered_submodule(repo_root, rel_path):
-        """rel_path 已登记为子模块时为 True：.gitmodules 中有该路径，或索引中该路径是 gitlink
-        （模式 160000）。
-        True when rel_path is registered as a submodule: .gitmodules names the path, or the index
-        holds a gitlink (mode 160000) there.
+        """rel_path 已登记为子模块时为 True：索引中该路径是 gitlink（模式 160000）。只在
+        .gitmodules 中出现（例如解压 ZIP 后 git init 的工程）不算登记，因为没有记录 commit。
+        True when rel_path is registered as a submodule: the index holds a gitlink (mode 160000)
+        there. A path only named in .gitmodules, as in a project unpacked from a ZIP and then
+        given git init, does not count: no commit is recorded for it.
         """
-        if os.path.exists(os.path.join(repo_root, ".gitmodules")):
-            result = subprocess.run(
-                [
-                    "git",
-                    "-C",
-                    repo_root,
-                    "config",
-                    "-f",
-                    ".gitmodules",
-                    "--get-regexp",
-                    r"^submodule\..*\.path$",
-                ],
-                capture_output=True,
-                encoding="utf-8",
-                errors="replace",
-            )
-            if result.returncode == 0:
-                for line in result.stdout.splitlines():
-                    parts = line.split(None, 1)
-                    if len(parts) == 2 and parts[1].strip() == rel_path:
-                        return True
-
         result = subprocess.run(
             ["git", "-C", repo_root, "ls-files", "--stage", "--", rel_path],
             capture_output=True,
@@ -300,19 +368,7 @@ def add_libxr(
         )
         if result.returncode != 0:
             return False
-
-        for line in result.stdout.splitlines():
-            parts = line.split()
-            if len(parts) >= 4 and parts[0] == "160000":
-                return True
-        return False
-
-    if not os.path.exists(midware_path):
-        logging.info(tr("Creating the Middlewares folder...", "正在创建 Middlewares 目录……"))
-        os.makedirs(midware_path)
-    if not os.path.exists(third_party_path):
-        logging.info(tr("Creating the Third_Party folder...", "正在创建 Third_Party 目录……"))
-        os.makedirs(third_party_path)
+        return any(line.split()[:1] == ["160000"] for line in result.stdout.splitlines())
 
     if not is_git_repo(project_dir):
         logging.warning(
@@ -323,7 +379,7 @@ def add_libxr(
         )
         run_command(["git", "init", project_dir])
 
-    registered = has_registered_submodule(project_dir, sub_rel_path_posix)
+    registered = has_registered_submodule(project_dir, SUBMODULE_PATH)
     checkout_path_present = os.path.lexists(libxr_path)
     existing_checkout = checkout_path_present and is_git_worktree_root(libxr_path)
     added_submodule = False
@@ -343,117 +399,105 @@ def add_libxr(
         sys.exit(1)
 
     if registered:
-        if existing_checkout:
+        run_command(["git", "-C", project_dir, "submodule", "sync", "--", SUBMODULE_PATH])
+        if not existing_checkout:
+            options = source.config_for(_recorded_url(project_dir))
             run_command(
-                ["git", "-C", project_dir, "submodule", "sync", "--", sub_rel_path_posix],
-                ignore_error=False,
-            )
-            logging.info(
-                tr(
-                    "LibXR submodule already exists; preserving current checkout.",
-                    "LibXR 子模块已存在，保留当前检出。",
-                )
-            )
-        else:
-            run_command(
-                ["git", "-C", project_dir, "submodule", "sync", "--", sub_rel_path_posix],
-                ignore_error=False,
-            )
-            run_command(
-                [
-                    "git",
-                    "-C",
-                    project_dir,
-                    "submodule",
-                    "update",
-                    "--init",
-                    "--recursive",
-                    "--",
-                    sub_rel_path_posix,
-                ],
-                ignore_error=False,
+                ["git", *options, "-C", project_dir, "submodule", "update", "--init"]
+                + ["--recursive", "--", SUBMODULE_PATH]
             )
     else:
-        logging.info(
-            tr(
-                "LibXR submodule not registered yet; skipping preemptive update.",
-                "LibXR 子模块尚未登记，跳过预先更新。",
-            )
+        if checkout_path_present and not existing_checkout:
+            # 空目录（例如 ZIP 中的子模块目录）挡住 submodule add；它是空的，可以删除。
+            # An empty directory, such as a submodule folder from a ZIP, blocks submodule add;
+            # it is empty, so it can go.
+            os.rmdir(libxr_path)
+        options = [] if existing_checkout else source.config_for(LIBXR_URL)
+        run_command(
+            ["git", *options, "-C", project_dir, "submodule", "add", LIBXR_URL, SUBMODULE_PATH]
         )
-
-    repo_url = make_repo_url(git_base, "Jiu-Xiao", "libxr")
-    if not registered:
         logging.info(
-            tr(
-                f"Adding LibXR as submodule from {repo_url} ...",
-                f"正在从 {repo_url} 加入 LibXR 子模块……",
-            )
+            tr(f"Added the LibXR submodule ({LIBXR_URL}).", f"已加入 LibXR 子模块（{LIBXR_URL}）。")
         )
-        run_command(["git", "-C", project_dir, "submodule", "add", repo_url, sub_rel_path_posix])
-        logging.info(tr("LibXR submodule added and initialized.", "LibXR 子模块已加入并初始化。"))
         added_submodule = True
-    else:
-        logging.info(tr("LibXR submodule already registered.", "LibXR 子模块已登记。"))
 
-    if os.path.exists(libxr_path):
-        logging.info(tr("LibXR submodule path exists.", "LibXR 子模块路径已存在。"))
-        current_commit = get_git_head(libxr_path)
-        target_commit = ""
+    if not os.path.exists(libxr_path):
+        return
+    current_commit = get_git_head(libxr_path)
+    target_commit = ""
 
-        # LibXR 由工程的 gitlink 锁定。只有显式的 --commit 或本次新加入的子模块才会切换检出；
-        # 其他情况下检出保持不变，与包内默认提交不同时只报告。
-        # The project's gitlink pins LibXR. Only an explicit --commit or a
-        # submodule added by this run moves the checkout; otherwise the
-        # checkout stays where it is and a different package default is only
-        # reported.
-        if libxr_commit:
-            target_commit = libxr_commit
+    # LibXR 由工程的 gitlink 锁定。只有显式的 --commit 或本次新加入的子模块才会切换检出；
+    # 其他情况下检出保持不变，与包内默认提交不同时只报告。
+    # The project's gitlink pins LibXR. Only an explicit --commit or a
+    # submodule added by this run moves the checkout; otherwise the
+    # checkout stays where it is and a different package default is only
+    # reported.
+    if libxr_commit:
+        target_commit = libxr_commit
+        logging.info(
+            tr(
+                f"Checking out LibXR to requested commit {target_commit}",
+                f"把 LibXR 检出到指定的提交 {target_commit}",
+            )
+        )
+    elif added_submodule and not existing_checkout and default_libxr_commit:
+        target_commit = default_libxr_commit
+        logging.info(
+            tr(
+                f"Initializing new LibXR submodule to default commit {target_commit}",
+                f"把新加入的 LibXR 子模块初始化到默认提交 {target_commit}",
+            )
+        )
+    elif default_libxr_commit and current_commit != default_libxr_commit:
+        if is_commit_ancestor(libxr_path, default_libxr_commit, current_commit):
             logging.info(
                 tr(
-                    f"Checking out LibXR to requested commit {target_commit}",
-                    f"把 LibXR 检出到指定的提交 {target_commit}",
+                    f"LibXR checkout {current_commit[:12]} is newer than this generator's "
+                    "default; keeping it.",
+                    f"LibXR 的检出 {current_commit[:12]} 比本生成器的默认提交新，保留不变。",
                 )
             )
-        elif added_submodule and not existing_checkout and default_libxr_commit:
-            target_commit = default_libxr_commit
-            logging.info(
-                tr(
-                    f"Initializing new LibXR submodule to default commit {target_commit}",
-                    f"把新加入的 LibXR 子模块初始化到默认提交 {target_commit}",
-                )
-            )
-        elif default_libxr_commit and current_commit != default_libxr_commit:
-            if is_commit_ancestor(libxr_path, default_libxr_commit, current_commit):
-                logging.info(
-                    tr(
-                        "LibXR checkout is newer than this generator's default; keeping it.",
-                        "LibXR 的检出比本生成器的默认提交新，保留不变。",
-                    )
-                )
-            else:
-                relation = (
-                    tr("older than", "早于")
-                    if is_commit_ancestor(libxr_path, current_commit, default_libxr_commit)
-                    else tr("different from", "不同于")
-                )
-                logging.warning(
-                    tr(
-                        f"LibXR checkout {current_commit[:12]} is {relation} this generator's "
-                        f"default {default_libxr_commit[:12]}; it was left unchanged. To switch, "
-                        f"run `libxr stm32 setup` with --commit {default_libxr_commit} (or check out "
-                        "the commit in Middlewares/Third_Party/LibXR) and commit the gitlink.",
-                        f"LibXR 的检出 {current_commit[:12]} {relation}本生成器的默认提交 "
-                        f"{default_libxr_commit[:12]}，未做改动。如需切换，请用 --commit "
-                        f"{default_libxr_commit} 运行 `libxr stm32 setup`（或在 "
-                        "Middlewares/Third_Party/LibXR 中检出该提交），然后提交 gitlink。",
-                    )
-                )
         else:
-            logging.info(tr("Keeping the existing LibXR checkout.", "保留现有的 LibXR 检出。"))
+            relation = (
+                tr("older than", "早于")
+                if is_commit_ancestor(libxr_path, current_commit, default_libxr_commit)
+                else tr("different from", "不同于")
+            )
+            logging.warning(
+                tr(
+                    f"LibXR checkout {current_commit[:12]} is {relation} this generator's "
+                    f"default {default_libxr_commit[:12]}; it was left unchanged. To switch, "
+                    f"run `libxr stm32 setup` with --commit {default_libxr_commit} (or check out "
+                    "the commit in Middlewares/Third_Party/LibXR) and commit the gitlink.",
+                    f"LibXR 的检出 {current_commit[:12]} {relation}本生成器的默认提交 "
+                    f"{default_libxr_commit[:12]}，未做改动。如需切换，请用 --commit "
+                    f"{default_libxr_commit} 运行 `libxr stm32 setup`（或在 "
+                    "Middlewares/Third_Party/LibXR 中检出该提交），然后提交 gitlink。",
+                )
+            )
+    else:
+        logging.info(
+            tr(
+                f"Keeping the LibXR checkout {current_commit[:12]}.",
+                f"保留现有的 LibXR 检出 {current_commit[:12]}。",
+            )
+        )
 
-        if target_commit:
-            run_command(["git", "-C", libxr_path, "fetch", "origin"], ignore_error=True)
-            run_command(["git", "-C", libxr_path, "checkout", target_commit])
+    if target_commit:
+        if not _has_commit(libxr_path, target_commit):
+            origin = subprocess.run(
+                ["git", "-C", libxr_path, "remote", "get-url", "origin"],
+                capture_output=True,
+                encoding="utf-8",
+                errors="replace",
+            ).stdout.strip()
+            options = source.config_for(origin)
+            run_command(["git", *options, "-C", libxr_path, "fetch", "origin"], ignore_error=True)
+        run_command(["git", "-C", libxr_path, "checkout", target_commit])
+        if added_submodule:
+            # submodule add 暂存的是克隆时的 HEAD；暂存检出后的 commit。
+            # submodule add staged the HEAD of the clone; stage the checked-out commit.
+            run_command(["git", "-C", project_dir, "add", "--", SUBMODULE_PATH])
 
 
 def create_user_directory(project_dir):
@@ -530,24 +574,36 @@ def ensure_valid_cubemx_project(path: str):
 def setup_project(
     project_dir: str,
     terminal_source: str = "",
-    xrobot_enable: bool = False,
+    xrobot_enable: bool | None = None,
     commit: str = "",
     git_source: str = "auto",
     git_mirrors: str = "",
 ) -> None:
-    """选择 Git 源，加入 LibXR 子模块，再生成配置、C++ 代码和 CMakeLists.txt。
-    Choose the Git source, add the LibXR submodule, then generate the configuration, the C++ code
-    and CMakeLists.txt.
+    """加入 LibXR 子模块，再生成配置、C++ 代码和 CMakeLists.txt。
+    Add the LibXR submodule, then generate the configuration, the C++ code and CMakeLists.txt.
 
-    commit 为空时以 libxr_version.py 中锁定的 commit 为默认值。git_source 为 auto 时，在 GitHub、
-    内置镜像、XR_GIT_MIRRORS 和 git_mirrors（逗号分隔）中选出响应最快的源。
-    With an empty commit, the commit locked in libxr_version.py is the default. With git_source
-    auto, the fastest of GitHub, the built-in mirror, XR_GIT_MIRRORS and git_mirrors
-    (comma-separated) is chosen.
+    commit 为空时以 libxr_version.py 中锁定的 commit 为默认值。需要克隆 LibXR 时，git_source 为
+    auto 则在 GitHub、内置镜像、XR_GIT_MIRRORS 和 git_mirrors（逗号分隔）中选出响应最快的源。
+    xrobot_enable 为 None 时沿用工程现在的选择：User/app_main.cpp 由 --xrobot 生成时继续生成
+    XRobot 代码。
+    With an empty commit, the commit locked in libxr_version.py is the default. When LibXR has to
+    be cloned, git_source auto picks the fastest of GitHub, the built-in mirror,
+    XR_GIT_MIRRORS and git_mirrors (comma-separated). With xrobot_enable None the project keeps
+    its choice: XRobot code is generated again when User/app_main.cpp was generated with
+    --xrobot.
     """
     from libxr.generator_code_stm32 import generate
-    from libxr.generator_stm32_cmake import integrate
+    from libxr.generator_stm32_cmake import integrate, project_uses_xrobot
     from libxr.peripheral_analyzer_stm32 import parse_project
+
+    if shutil.which("git") is None:
+        logging.error(
+            tr(
+                "git was not found on PATH; LibXR is added to the project as a Git submodule",
+                "PATH 中找不到 git；LibXR 以 Git 子模块的形式加入工程",
+            )
+        )
+        sys.exit(1)
 
     project_dir = project_dir.rstrip("/")
 
@@ -558,14 +614,16 @@ def setup_project(
             from libxr.libxr_version import LibXRInfo
 
             default_libxr_commit = LibXRInfo.COMMIT
-        except ImportError as e:
+        except ImportError:
             logging.info(
                 tr(
-                    f"No lock commit found in src/libxr/libxr_version.py: {e}",
-                    f"src/libxr/libxr_version.py 中没有锁定的提交：{e}",
+                    "No default LibXR commit: src/libxr/libxr_version.py is missing "
+                    "(scripts/gen_libxr_version.py creates it); a new submodule stays at the "
+                    "commit it is cloned at.",
+                    "没有默认的 LibXR 提交：缺少 src/libxr/libxr_version.py"
+                    "（由 scripts/gen_libxr_version.py 生成）；新加入的子模块停在克隆时的提交。",
                 )
             )
-            default_libxr_commit = ""
 
     if libxr_commit:
         logging.info(
@@ -588,8 +646,20 @@ def setup_project(
     # Validate STM32CubeMX project structure (must have Core/ directory)
     ensure_valid_cubemx_project(project_dir)
 
-    # 选择 Git 源（auto 时对默认源和镜像测速）。
-    # Select Git source (auto benchmarks default and mirrors)
+    if xrobot_enable is None:
+        xrobot_enable = project_uses_xrobot(project_dir)
+        if xrobot_enable:
+            logging.info(
+                tr(
+                    "User/app_main.cpp uses XRobot; generating with --xrobot "
+                    "(--no-xrobot turns it off).",
+                    "User/app_main.cpp 使用了 XRobot，继续按 --xrobot 生成（--no-xrobot 可关闭）。",
+                )
+            )
+
+    # 克隆用的源只在需要克隆时选择（auto 时对默认源和镜像测速）。
+    # The source for cloning is chosen only when a clone is needed (auto probes the default and
+    # the mirrors).
     env_mirrors = os.environ.get("XR_GIT_MIRRORS", "")
     cli_mirrors = [m for m in git_mirrors.split(",") if m.strip()]
     all_mirrors = (
@@ -597,23 +667,10 @@ def setup_project(
         + [m.strip() for m in (env_mirrors.split(",") if env_mirrors else []) if m.strip()]
         + cli_mirrors
     )
-
-    if git_source == "auto":
-        git_base = pick_git_base(
-            default_base="https://github.com", mirrors=all_mirrors, timeout=5.0
-        )
-    elif git_source == "github":
-        git_base = "https://github.com"
-    else:
-        git_base = git_source
-    logging.info(tr(f"Selected Git base/repo: {git_base}", f"选用的 Git 源：{git_base}"))
-
-    # 需要时加入 Git 子模块。
-    # Add Git submodule if necessary
     add_libxr(
         project_dir,
         libxr_commit if libxr_commit else None,
-        git_base=git_base,
+        source=LibXRSource(git_source, all_mirrors),
         default_libxr_commit=default_libxr_commit if default_libxr_commit else None,
     )
 

@@ -14,7 +14,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from fixtures import TestCase
+from fixtures import GeneratorTestCase, TestCase
 
 from libxr import config_cubemx_project as cubemx_cfg
 from libxr import generator_code_stm32 as generator
@@ -233,8 +233,98 @@ class LibXRSubmodule(TestCase):
         checkout = project / "Middlewares" / "Third_Party" / "LibXR"
         git("clone", "-q", str(self.remote), str(checkout))
         git("checkout", "-q", self.newer, cwd=checkout)
-        self.add_libxr(project, git_base=str(self.remote))
+        self.add_libxr(project, source=cubemx_cfg.LibXRSource(str(self.remote)))
         self.assertEqual(self.head(checkout), self.newer)
+
+    def test_a_new_submodule_records_github_and_stages_the_default(self):
+        project = self.tmp / "project"
+        project.mkdir()
+        git("init", "-q", "-b", "master", cwd=project)
+        self.add_libxr(project, source=cubemx_cfg.LibXRSource(str(self.remote)))
+        checkout = project / "Middlewares" / "Third_Party" / "LibXR"
+        self.assertEqual(
+            git(
+                "config",
+                "-f",
+                ".gitmodules",
+                f"submodule.{cubemx_cfg.SUBMODULE_PATH}.url",
+                cwd=project,
+            ),
+            cubemx_cfg.LIBXR_URL,
+        )
+        self.assertEqual(self.head(checkout), self.default)
+        staged = git("ls-files", "-s", "--", cubemx_cfg.SUBMODULE_PATH, cwd=project).split()[1]
+        self.assertEqual(staged, self.default)
+
+    def test_an_existing_checkout_needs_no_source(self):
+        project, checkout = self.project(self.default, self.default)
+        with mock.patch.object(cubemx_cfg, "pick_git_base", side_effect=AssertionError):
+            self.add_libxr(project)
+        self.assertEqual(self.head(checkout), self.default)
+
+    def test_a_mirror_only_stands_in_for_the_github_url(self):
+        source = cubemx_cfg.LibXRSource("https://gitee.com/jiu-xiao/libxr")
+        self.assertEqual(
+            source.config_for("https://github.com/Jiu-Xiao/libxr"),
+            [
+                "-c",
+                "url.https://gitee.com/jiu-xiao/libxr.insteadOf=https://github.com/Jiu-Xiao/libxr",
+            ],
+        )
+        self.assertEqual(source.config_for("https://github.com/someone/libxr-fork.git"), [])
+
+
+class SetupProject(GeneratorTestCase):
+    """setup_project：XRobot 模式默认沿用工程现在的选择，没有 git 时报错。
+    setup_project: the XRobot mode keeps the project's choice by default, and a missing git is
+    an error.
+    """
+
+    def setUp(self):
+        super().setUp()
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        (self.root / "Core").mkdir()
+        (self.root / "User").mkdir()
+        (self.root / "demo.ioc").write_text("", encoding="utf-8")
+
+    def xrobot_mode(self, existing, option):
+        """在 app_main 由 existing 模式生成的工程上运行 setup_project（选项为 option），返回生成时
+        的 XRobot 模式。
+        Run setup_project with option on a project whose app_main was generated in the existing
+        mode; return the XRobot mode it generates with.
+        """
+        code = self.generate(use_xrobot=existing)
+        (self.root / "User" / "app_main.cpp").write_text(code, encoding="utf-8")
+        with (
+            mock.patch.object(cubemx_cfg, "add_libxr"),
+            mock.patch("libxr.peripheral_analyzer_stm32.parse_project"),
+            mock.patch("libxr.generator_code_stm32.generate") as generate,
+            mock.patch("libxr.generator_stm32_cmake.integrate"),
+        ):
+            cubemx_cfg.setup_project(str(self.root), xrobot_enable=option)
+        return generate.call_args.args[2]
+
+    def test_the_xrobot_mode_follows_the_project_unless_given(self):
+        for existing, option, mode in (
+            (True, None, True),
+            (False, None, False),
+            (True, False, False),
+            (False, True, True),
+        ):
+            with self.subTest(existing=existing, option=option):
+                self.assertIs(self.xrobot_mode(existing, option), mode)
+
+    def test_a_missing_git_is_an_error(self):
+        with (
+            mock.patch("shutil.which", return_value=None),
+            self.assertLogs(level="ERROR") as logs,
+            self.assertRaises(SystemExit) as exit,
+        ):
+            cubemx_cfg.setup_project(str(self.root))
+        self.assertEqual(exit.exception.code, 1)
+        self.assertIn("git was not found on PATH", logs.output[0])
 
 
 if __name__ == "__main__":

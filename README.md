@@ -166,7 +166,7 @@ the installed version differs from it.
 Automatically configures an STM32CubeMX project.
 
 ```bash
-usage: libxr stm32 setup [-h] -d DIRECTORY [-t TERMINAL] [--xrobot] [--commit COMMIT]
+usage: libxr stm32 setup [-h] -d DIRECTORY [-t TERMINAL] [--xrobot | --no-xrobot] [--commit COMMIT]
                          [--git-source GIT_SOURCE] [--git-mirrors GIT_MIRRORS]
 ```
 
@@ -189,10 +189,13 @@ Parses `.ioc`, generates YAML and C++ code, patches interrupt handlers, and init
   Terminal device name (e.g. `usart1` `usb_fs_cdc`). It is stored as
   `terminal_source` in `User/libxr_config.yaml`, so later regenerations keep it.
 
-- `--xrobot`：
+- `--xrobot` / `--no-xrobot`：
 
-  生成 XRobot Glue 代码
-  Enable XRobot glue code generation.
+  生成或不生成 XRobot 注册代码。都不写时沿用工程现在的选择：`User/app_main.cpp` 由 `--xrobot`
+  生成时继续生成 XRobot 代码，新工程不生成。
+  Generate XRobot registrations, or not. Without either, the project keeps its choice:
+  XRobot code is generated again when `User/app_main.cpp` was generated with `--xrobot`, and a
+  new project gets none.
 
 - `--commit <COMMIT>`
 
@@ -216,8 +219,9 @@ Parses `.ioc`, generates YAML and C++ code, patches interrupt handlers, and init
 
 - `--git-source`
 
-  Git 源的 base URL 或完整仓库 URL，或使用 `auto`/`github`（默认：`auto`）。
-  A Git source base URL or a full repository URL, or `auto`/`github` (default: `auto`).
+  需要克隆 LibXR 时从哪里克隆：`auto`、`github`，或 base URL、完整仓库 URL（默认：`auto`）。
+  Where LibXR is cloned from when a clone is needed: `auto`, `github`, or a base URL or a full
+  repository URL (default: `auto`).
 
   示例 / Examples:
   ```bash
@@ -226,8 +230,8 @@ Parses `.ioc`, generates YAML and C++ code, patches interrupt handlers, and init
 
 - `--git-mirrors`
 
-  逗号分隔的镜像 base/完整仓库 URL 列表，仅在 --git-source=auto 时作为候选参与测速。
-  Comma-separated mirror base/full repo URLs; used as candidates when --git-source=auto.
+  逗号分隔的镜像 base/完整仓库 URL 列表，`--git-source` 为 `auto` 时作为候选参与测速。
+  Comma-separated mirror base/full repo URLs; candidates when `--git-source` is `auto`.
 
   示例 / Examples:
   ```bash
@@ -241,11 +245,18 @@ Parses `.ioc`, generates YAML and C++ code, patches interrupt handlers, and init
 
 #### 🌐 网络与镜像说明 (Networking & Mirrors)
 
-工具会在 GitHub 与内置/自定义镜像间测速并选择最快源。
-The tool benchmarks GitHub and built-in/custom mirrors, then picks the fastest.
+只有需要克隆 LibXR（新加入子模块，或已登记但还没有检出）时，工具才在 GitHub 与内置/自定义镜像间
+测速并从最快的源克隆；测速时 git 不提示输入账号密码。
+Only when LibXR has to be cloned (a new submodule, or a registered one without a checkout) does
+the tool probe GitHub and the built-in/custom mirrors and clone from the fastest; probes never
+ask for credentials.
 
-选中的源会作为子模块的 origin 远程地址。
-The chosen source becomes the submodule’s origin remote.
+镜像只用于这次克隆：工程的 `.gitmodules` 和子模块的 origin 始终是
+`https://github.com/xrobot-org/libxr.git`。新加入的子模块检出默认 commit 后，其 gitlink 已经暂存，
+直接提交即可。
+A mirror is used for that clone only: the project's `.gitmodules` and the submodule's origin are
+always `https://github.com/xrobot-org/libxr.git`. After a new submodule is checked out at the
+default commit, its gitlink is staged and ready to commit.
 
 #### 🤖 CubeMX 自动生成说明 (CubeMX Automation Notes)
 
