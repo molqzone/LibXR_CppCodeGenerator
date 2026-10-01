@@ -479,6 +479,13 @@ trigger no rebuild. One log line at the end lists the files written, unchanged a
   Peripheral instances are keyed by their lower-case name (such as `spi1` or `can1`); the
   upper-case CAN/FDCAN keys of earlier versions (such as `CAN1`) are renamed on generation
   with a notice.
+  软件定时器（`software_timer.priority`）、终端线程和看门狗线程（`thread_priority`）的优先级写
+  0-4 或等级名 `IDLE`、`LOW`、`MEDIUM`、`HIGH`、`REALTIME`；生成的代码使用对应的
+  `LibXR::Thread::Priority` 等级，由 LibXR 按 RTOS 的优先级数换算。其他值使生成失败。
+  The priorities of the software timer (`software_timer.priority`) and of the terminal and
+  watchdog threads (`thread_priority`) take 0-4 or the level names `IDLE`, `LOW`, `MEDIUM`,
+  `HIGH` and `REALTIME`; the generated code uses the matching `LibXR::Thread::Priority`
+  level, which LibXR converts by the RTOS priority count. Any other value stops generation.
 
 - `flash_map.hpp`：
   自动生成的 Flash 扇区表，供 Flash 抽象层使用。推算不出 MCU 型号的 Flash 布局时给出警告，

@@ -268,6 +268,47 @@ class PeripheralObjects(GeneratorTestCase):
                 self.assertIn("static " + declaration, code)
         self.assertLess(code.index('extern "C" void app_main'), code.index("static STM32Timebase"))
 
+    def test_thread_priorities_are_libxr_levels(self):
+        # LibXR 按 RTOS 的优先级数换算等级，原样写数值在 configMAX_PRIORITIES 较大的 FreeRTOS
+        # 上偏低，在 ThreadX 上又偏高。
+        # LibXR converts the levels by the RTOS priority count; a raw number is too low on a
+        # FreeRTOS with a large configMAX_PRIORITIES and too high on ThreadX.
+        generator.libxr_settings["SYSTEM"] = "FreeRTOS"
+        generator.libxr_settings["terminal_source"] = "usart1"
+        generator.libxr_settings["Terminal"]["run_as_thread"] = True
+        generator.libxr_settings["Watchdog"] = {
+            "run_as_thread": True,
+            "thread_priority": "realtime",
+        }
+        project = self.project(
+            peripherals={"USART": {"USART1": {}}, "IWDG": {"IWDG": {"Enabled": True}}}
+        )
+        code = self.generate(project)
+        self.assertIn(
+            "PlatformInit(static_cast<uint32_t>(LibXR::Thread::Priority::MEDIUM), 1024);", code
+        )
+        self.assertIn(
+            '"terminal", 1024,\n                     LibXR::Thread::Priority::HIGH);', code
+        )
+        self.assertIn(
+            '"iwdg_wdg", 1024,\n                      LibXR::Thread::Priority::REALTIME);', code
+        )
+        self.assertNotIn("static_cast<LibXR::Thread::Priority>", code)
+
+    def test_bare_metal_platform_init_takes_no_priority(self):
+        generator.libxr_settings["software_timer"]["priority"] = 9
+        self.assertIn("  PlatformInit();\n", self.generate())
+
+    def test_a_priority_outside_the_levels_is_rejected(self):
+        generator.libxr_settings["SYSTEM"] = "ThreadX"
+        for value in (5, -1, 22, True, "urgent", 2.0):
+            with self.subTest(value=value):
+                generator.libxr_settings["software_timer"]["priority"] = value
+                with self.assertRaisesRegex(
+                    ValueError, "software_timer.priority .* is not a priority level; use 0-4 or"
+                ):
+                    self.generate()
+
     def test_dma_cache_alignment_builds_with_older_cmsis(self):
         # 旧的 F7 CMSIS 没有 __SCB_DCACHE_LINE_SIZE，缓存行对齐不能依赖它。
         # Older F7 CMSIS lacks __SCB_DCACHE_LINE_SIZE, so cache-line alignment cannot need it.

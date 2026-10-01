@@ -1736,17 +1736,50 @@ def _preserve_generated_regions(existing_code: str, generated_code: str) -> str:
     return current.render_bytes().decode("utf-8", errors="surrogateescape")
 
 
+# LibXR 的线程优先级等级，下标即配置中的数值 0-4。
+# The thread priority levels of LibXR; the index is the configuration value 0-4.
+_PRIORITY_LEVELS = ("IDLE", "LOW", "MEDIUM", "HIGH", "REALTIME")
+
+
+def _priority_level(key: str, value) -> str:
+    """配置中的线程优先级 value 对应的 LibXR::Thread::Priority 枚举名。
+    The LibXR::Thread::Priority enumerator of the thread priority value of the configuration.
+
+    value 是 0-4 的整数或大小写不限的等级名。LibXR 按 RTOS 的优先级数把等级换算为 RTOS 优先级
+    （FreeRTOS 数值越大越高，ThreadX 数值越小越高），所以生成的代码写枚举而不写数值。
+    value is an integer 0-4 or a level name in any case. LibXR converts the levels to RTOS
+    priorities by the RTOS priority count (higher numbers are higher on FreeRTOS, lower numbers
+    on ThreadX), so the generated code names the enumerator instead of a number.
+
+    Raises:
+        ValueError: value 既不是 0-4 也不是等级名；key 是出错的设置。
+            value is neither 0-4 nor a level name; key names the setting.
+    """
+    if isinstance(value, int) and not isinstance(value, bool):
+        if 0 <= value < len(_PRIORITY_LEVELS):
+            return _PRIORITY_LEVELS[value]
+    elif isinstance(value, str) and value.strip().upper() in _PRIORITY_LEVELS:
+        return value.strip().upper()
+    raise ValueError(
+        tr(
+            f"{key} {value!r} is not a priority level; use 0-4 or {', '.join(_PRIORITY_LEVELS)}",
+            f"{key} {value!r} 不是优先级等级；请使用 0-4 或 {'、'.join(_PRIORITY_LEVELS)}",
+        )
+    )
+
+
 def _generate_core_system(project_data: dict) -> str:
     """生成时基对象、PlatformInit() 调用和 power_manager 对象的代码。
     Generate the code of the timebase object, the PlatformInit() call and the power_manager
     object.
 
     时基来源为 SysTick 时使用 STM32Timebase，否则使用该定时器的 STM32TimerTimebase。FreeRTOS 和
-    ThreadX 下 PlatformInit() 取软件定时器的优先级和栈深度；不支持的 SYSTEM 记录错误并以状态 1
-    退出。
+    ThreadX 下 PlatformInit() 取软件定时器的优先级等级（见 _priority_level()）和栈深度；不支持的
+    SYSTEM 记录错误并以状态 1 退出。
     SysTick gives STM32Timebase and any other source gives STM32TimerTimebase on that timer.
-    Under FreeRTOS and ThreadX PlatformInit() takes the priority and stack depth of the
-    software timer; an unsupported SYSTEM logs an error and exits with status 1.
+    Under FreeRTOS and ThreadX PlatformInit() takes the priority level (see _priority_level())
+    and stack depth of the software timer; an unsupported SYSTEM logs an error and exits with
+    status 1.
     """
     timebase_cfg = project_data.get("Timebase", {"Source": "SysTick"})
     source = timebase_cfg.get("Source", "SysTick")
@@ -1764,7 +1797,10 @@ def _generate_core_system(project_data: dict) -> str:
     if system_type == "None":  # 裸机 / Bare-metal
         init_args = ""
     elif system_type == "FreeRTOS" or system_type == "ThreadX":
-        init_args = f"{timer_cfg['priority']}, {timer_cfg['stack_depth']}"
+        level = _priority_level("software_timer.priority", timer_cfg["priority"])
+        init_args = (
+            f"static_cast<uint32_t>(LibXR::Thread::Priority::{level}), {timer_cfg['stack_depth']}"
+        )
     else:
         logging.error(
             tr(f"Unsupported system type: {system_type}", f"不支持的系统类型：{system_type}")
@@ -1795,10 +1831,11 @@ def configure_watchdog(project_data: dict) -> str:
     Generate the first feed and the periodic feeding of every enabled IWDG; an empty string
     when no IWDG is enabled.
 
-    libxr_settings 中 Watchdog 的 run_as_thread 为真时由独立线程喂狗，否则由软件定时器任务每隔
-    feed_interval_ms（默认 250）喂狗一次。
+    libxr_settings 中 Watchdog 的 run_as_thread 为真时由独立线程喂狗，线程优先级见
+    _priority_level()；否则由软件定时器任务每隔 feed_interval_ms（默认 250）喂狗一次。
     With run_as_thread of Watchdog in libxr_settings a thread of its own feeds the watchdog,
-    otherwise a software timer task feeds it every feed_interval_ms (default 250).
+    its priority given as in _priority_level(); otherwise a software timer task feeds it every
+    feed_interval_ms (default 250).
     """
     code = ""
     watchdog_instances = []
@@ -1817,10 +1854,12 @@ def configure_watchdog(project_data: dict) -> str:
 """
         if run_as_thread:
             thread_stack = wdg_config.setdefault("thread_stack_depth", 1024)
-            thread_priority = wdg_config.setdefault("thread_priority", 3)
+            level = _priority_level(
+                "Watchdog.thread_priority", wdg_config.setdefault("thread_priority", 3)
+            )
             code += f"""  static LibXR::Thread {name}_thread;
   {name}_thread.Create(reinterpret_cast<LibXR::Watchdog *>(&{name}), {name}.ThreadFun, "{name}_wdg", {thread_stack},
-                      static_cast<LibXR::Thread::Priority>({thread_priority}));
+                      LibXR::Thread::Priority::{level});
 """
         else:
             code += f"""  static auto {name}_task = Timer::CreateTask({name}.TaskFun, reinterpret_cast<LibXR::Watchdog *>(&{name}), {feed_interval});
@@ -1839,11 +1878,12 @@ def configure_terminal(project_data: dict) -> str:
     objects and the code that runs the terminal.
 
     terminal_source 为空时只输出注释行；它未登记为 UART 时记录警告，不初始化终端。Terminal 的
-    run_as_thread 为真时终端运行于独立线程，否则由软件定时器任务每 10 ms 运行一次。
+    run_as_thread 为真时终端运行于独立线程（优先级见 _priority_level()），否则由软件定时器任务每
+    10 ms 运行一次。
     With an empty terminal_source only the comment line is produced; when it is not registered
     as UART a warning is logged and the terminal is not initialized. With run_as_thread of
-    Terminal the terminal runs in a thread of its own, otherwise in a software timer task every
-    10 ms.
+    Terminal the terminal runs in a thread of its own, its priority given as in
+    _priority_level(); otherwise a software timer task runs it every 10 ms.
     """
     code = "  /* Terminal Configuration */\n"
     terminal_source = libxr_settings.get("terminal_source", "").lower()
@@ -1880,7 +1920,9 @@ def configure_terminal(project_data: dict) -> str:
 
         if run_as_thread:
             thread_stack_depth = term_config.setdefault("thread_stack_depth", 1024)
-            thread_priority = term_config.setdefault("thread_priority", 3)
+            level = _priority_level(
+                "Terminal.thread_priority", term_config.setdefault("thread_priority", 3)
+            )
 
         code += f"""
   static RamFS ramfs("XRobot");
@@ -1890,7 +1932,7 @@ def configure_terminal(project_data: dict) -> str:
             code += f"""\
   static LibXR::Thread term_thread;
   term_thread.Create(&terminal, terminal.ThreadFun, "terminal", {thread_stack_depth},
-                     static_cast<LibXR::Thread::Priority>({thread_priority}));
+                     LibXR::Thread::Priority::{level});
 """
         else:
             code += """\
