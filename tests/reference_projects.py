@@ -1,12 +1,14 @@
-"""两个真实 BSP 工程的基准数据：.ioc 和 libxr_config.yaml 输入，以及解析和生成的预期结果。
-Reference data of two real BSP projects: the .ioc and libxr_config.yaml inputs, and the
+"""四个真实 BSP 工程的基准数据：.ioc 和 libxr_config.yaml 输入，以及解析和生成的预期结果。
+Reference data of four real BSP projects: the .ioc and libxr_config.yaml inputs, and the
 expected results of parsing and generation.
 
-tests/data/<名字>/ 中，project.ioc 和 libxr_config.yaml 来自 bsp-dev-c（STM32F4、FreeRTOS、CAN、
-USB）和 bsp-dev-mc02（STM32H7、FDCAN）；expected/ 是按 BSP CI 的命令得到的文件。生成结果有意
-改变时，运行本文件刷新 expected/，再逐行检查差异。
-In tests/data/<name>/, project.ioc and libxr_config.yaml come from bsp-dev-c (STM32F4,
-FreeRTOS, CAN, USB) and bsp-dev-mc02 (STM32H7, FDCAN); expected/ holds the files the BSP CI
+tests/data/<名字>/ 中，project.ioc 和 libxr_config.yaml 来自 bsp-dev-c（STM32F4、CAN、I2C、
+OTG USB）、bsp-dev-mc02（STM32H7、FDCAN、DAC）、BSP-OpenCR-1.0（STM32F7、IWDG）和
+bsp_stm32f103（STM32F1、FSDEV USB），四者都用 FreeRTOS；expected/ 是按 BSP CI 的命令得到的
+文件。生成结果有意改变时，运行本文件刷新 expected/，再逐行检查差异。
+In tests/data/<name>/, project.ioc and libxr_config.yaml come from bsp-dev-c (STM32F4, CAN,
+I2C, OTG USB), bsp-dev-mc02 (STM32H7, FDCAN, DAC), BSP-OpenCR-1.0 (STM32F7, IWDG) and
+bsp_stm32f103 (STM32F1, FSDEV USB), all with FreeRTOS; expected/ holds the files the BSP CI
 commands produce. When the output changes on purpose, run this file to refresh expected/ and
 review the difference line by line.
 """
@@ -21,7 +23,7 @@ from unittest import mock
 from libxr import generator_code_stm32, peripheral_analyzer_stm32
 
 DATA = Path(__file__).resolve().parent / "data"
-PROJECTS = ("devc", "mc02")
+PROJECTS = ("devc", "mc02", "opencr", "f103")
 GENERATED = ("app_main.cpp", "app_main.h", "flash_map.hpp", "libxr_config.yaml")
 
 
