@@ -1892,10 +1892,10 @@ def main() -> None:
     The output defaults to .config.yaml in that directory. A missing directory, no .ioc file
     or several .ioc files exit with status 1.
     """
-    from libxr.output import configure_logging
+    from libxr.output import configure_output
     from libxr.package_info import LibXRPackageInfo
 
-    configure_logging()
+    configure_output()
     LibXRPackageInfo.check_and_print()
 
     localize_argparse()
@@ -1925,7 +1925,7 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.verbose:
-        configure_logging(logging.DEBUG)
+        configure_output(logging.DEBUG)
 
     if not os.path.isdir(args.directory):
         logging.error(

@@ -24,10 +24,10 @@ def main():
     A missing directory or one without .ioc files exits with status 1; a failed subprocess
     exits with its return code.
     """
-    from libxr.output import configure_logging
+    from libxr.output import configure_output
     from libxr.package_info import LibXRPackageInfo
 
-    configure_logging()
+    configure_output()
     LibXRPackageInfo.check_and_print()
 
     localize_argparse()

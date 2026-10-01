@@ -34,11 +34,11 @@ def main():
     Exits with a non-zero status when the input file is missing or the generator fails, and
     with status 0 when the project is not an STM32 project.
     """
-    from libxr.output import configure_logging
+    from libxr.output import configure_output
 
     # 版本检查由子进程 xr_gen_code_stm32 完成，这里不再重复。
     # The xr_gen_code_stm32 subprocess checks the version; it is not repeated here.
-    configure_logging()
+    configure_output()
 
     localize_argparse()
     parser = argparse.ArgumentParser(

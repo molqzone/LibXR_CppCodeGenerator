@@ -570,10 +570,10 @@ def main():
     A wrong argument count prints the usage and exits with code 1; a failure prints the reason
     and the stack trace and exits with code 2.
     """
-    from libxr.output import configure_logging
+    from libxr.output import configure_output
     from libxr.package_info import LibXRPackageInfo
 
-    configure_logging()
+    configure_output()
     LibXRPackageInfo.check_and_print()
 
     def validate_model(model: str) -> bool:

@@ -16,7 +16,7 @@ import sys
 
 from xr_syntax.i18n import localize_argparse, tr
 
-from libxr.output import configure_logging
+from libxr.output import configure_output
 
 # 路径和常量
 # Paths and constants
@@ -156,7 +156,7 @@ def main():
     -g, -n and -p and switches both the toolchain and STARM_TOOLCHAIN_CONFIG. A wrong option
     combination prints the usage and exits with status 1.
     """
-    configure_logging()
+    configure_output()
     localize_argparse()
     examples = (
         "  xr_stm32_toolchain_switch gcc\n"

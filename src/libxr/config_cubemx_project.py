@@ -32,7 +32,8 @@ def is_git_repo(path):
         result = subprocess.run(
             ["git", "-C", path, "rev-parse", "--is-inside-work-tree"],
             capture_output=True,
-            text=True,
+            encoding="utf-8",
+            errors="replace",
             check=True,
         )
         return result.stdout.strip() == "true"
@@ -49,7 +50,8 @@ def is_git_worktree_root(path):
         result = subprocess.run(
             ["git", "-C", path, "rev-parse", "--show-toplevel"],
             capture_output=True,
-            text=True,
+            encoding="utf-8",
+            errors="replace",
             check=True,
         )
         return os.path.realpath(result.stdout.strip()) == os.path.realpath(path)
@@ -77,9 +79,11 @@ def run_command(cmd, ignore_error=False):
     logged and the process exits with code 1.
     """
     if isinstance(cmd, (list, tuple)):
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        result = subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="replace")
     else:
-        result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+        result = subprocess.run(
+            cmd, shell=True, capture_output=True, encoding="utf-8", errors="replace"
+        )
     command_line = _fmt_cmd(cmd)
     if result.returncode == 0:
         logging.info(tr(f"[OK] {command_line}", f"[完成] {command_line}"))
@@ -199,7 +203,10 @@ def get_git_head(path):
     The HEAD commit of the repository at path; an empty string when git fails.
     """
     result = subprocess.run(
-        ["git", "-C", path, "rev-parse", "HEAD"], capture_output=True, text=True
+        ["git", "-C", path, "rev-parse", "HEAD"],
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
     )
     if result.returncode != 0:
         return ""
@@ -277,7 +284,8 @@ def add_libxr(
                     r"^submodule\..*\.path$",
                 ],
                 capture_output=True,
-                text=True,
+                encoding="utf-8",
+                errors="replace",
             )
             if result.returncode == 0:
                 for line in result.stdout.splitlines():
@@ -288,7 +296,8 @@ def add_libxr(
         result = subprocess.run(
             ["git", "-C", repo_root, "ls-files", "--stage", "--", rel_path],
             capture_output=True,
-            text=True,
+            encoding="utf-8",
+            errors="replace",
         )
         if result.returncode != 0:
             return False
@@ -569,10 +578,10 @@ def main():
     Without --commit, the commit locked in libxr_version.py is the default. With --git-source
     auto, the fastest of GitHub, the built-in mirror, XR_GIT_MIRRORS and --git-mirrors is chosen.
     """
-    from libxr.output import configure_logging
+    from libxr.output import configure_output
     from libxr.package_info import LibXRPackageInfo
 
-    configure_logging()
+    configure_output()
     LibXRPackageInfo.check_and_print()
 
     localize_argparse()

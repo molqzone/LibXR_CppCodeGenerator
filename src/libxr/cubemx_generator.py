@@ -27,7 +27,7 @@ from dataclasses import dataclass
 
 from xr_syntax.i18n import localize_argparse, tr
 
-from libxr.output import configure_logging
+from libxr.output import configure_output
 
 LOGGER = logging.getLogger(__name__)
 
@@ -1712,7 +1712,7 @@ def main() -> None:
     Entry point of xr_cubemx_generate: parse the command line and call generate_cubemx_project;
     on an error, log it and exit with code 1.
     """
-    configure_logging()
+    configure_output()
     localize_argparse()
 
     parser = argparse.ArgumentParser(

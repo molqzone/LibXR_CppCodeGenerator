@@ -22,7 +22,7 @@ from xr_syntax.i18n import localize_argparse, tr
 
 from libxr import libxr_config_file
 from libxr.libxr_config_file import LibXRConfigError
-from libxr.output import configure_logging
+from libxr.output import configure_output
 
 # --------------------------
 # 全局配置 / Global Configuration
@@ -2256,7 +2256,7 @@ def main():
     """
     from libxr.package_info import LibXRPackageInfo
 
-    configure_logging()
+    configure_output()
     LibXRPackageInfo.check_and_print()
 
     try:

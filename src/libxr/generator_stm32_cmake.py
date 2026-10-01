@@ -412,10 +412,10 @@ def main():
     when it is missing. LIBXR_SYSTEM follows FreeRTOSConfig.h or app_threadx.h in Core/Inc, and
     is None without either. A missing input directory or CMakeLists.txt exits with status 1.
     """
-    from libxr.output import configure_logging
+    from libxr.output import configure_output
     from libxr.package_info import LibXRPackageInfo
 
-    configure_logging()
+    configure_output()
     LibXRPackageInfo.check_and_print()
 
     localize_argparse()
