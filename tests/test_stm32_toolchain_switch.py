@@ -246,12 +246,46 @@ class SwitchToolchain(TestCase):
         self.assertIn("build", self.folders())
 
     def test_invalid_presets_are_an_error(self):
-        self.presets.write_text("{ broken", encoding="utf-8")
-        with self.assertLogs(level="ERROR") as logs:
-            self.assertEqual(self.switch("clang"), 1)
-        self.assertIn("CMakePresets.json is not valid JSON: ", logs.output[0])
-        self.assertEqual(self.presets.read_text(encoding="utf-8"), "{ broken")
-        self.assertIn("build", self.folders())
+        for content, message in (
+            (
+                b"{ broken",
+                "line 1, column 3: Expecting property name enclosed in double quotes",
+            ),
+            ('{"name": "调试"}'.encode("gbk"), "is not UTF-8 text (byte 11); save it as UTF-8"),
+        ):
+            with self.subTest(content=content):
+                self.presets.write_bytes(content)
+                with self.assertLogs(level="ERROR") as logs:
+                    self.assertEqual(self.switch("clang"), 1)
+                self.assertEqual(logs.output, [f"ERROR:root:{self.presets} {message}"])
+                self.assertEqual(self.presets.read_bytes(), content)
+                self.assertIn("build", self.folders())
+
+    def test_only_the_toolchain_value_changes(self):
+        # 以前整个文件按 4 空格缩进重写：2 空格缩进的文件每行都变，中文写成 调试。
+        # The whole file used to be rewritten with 4-space indentation: every line of a
+        # 2-space file changed, and Chinese text became 调试.
+        data = presets("gcc-arm-none-eabi.cmake")
+        data["configurePresets"][1]["displayName"] = "调试"
+        text = json.dumps(data, indent=2, ensure_ascii=False).replace("\n", "\r\n") + "\r\n"
+        self.presets.write_bytes(text.encode("utf-8"))
+        starm = CUBEMX_STARM.replace("\n", "\r\n").encode("utf-8")
+        self.starm.write_bytes(starm)
+        self.assertEqual(self.switch("clang", "newlib"), 0)
+        self.assertEqual(
+            self.presets.read_bytes(),
+            text.replace("gcc-arm-none-eabi.cmake", "starm-clang.cmake").encode("utf-8"),
+        )
+        self.assertEqual(self.starm.read_bytes(), starm.replace(b"PICOLIBC", b"NEWLIB", 1))
+
+    def test_a_default_preset_without_a_toolchain_gets_one(self):
+        data = presets("gcc-arm-none-eabi.cmake")
+        del data["configurePresets"][0]["toolchainFile"]
+        data["configurePresets"][1]["displayName"] = "调试"
+        self.presets.write_text(json.dumps(data), encoding="utf-8")
+        self.assertEqual(self.switch("gcc"), 0)
+        self.assertEqual(self.toolchain_file(), "${sourceDir}/cmake/gcc-arm-none-eabi.cmake")
+        self.assertIn('"displayName": "调试"', self.presets.read_text(encoding="utf-8"))
 
     def test_a_missing_gcc_toolchain_changes_nothing(self):
         self.presets.write_text(json.dumps(presets("starm-clang.cmake")), encoding="utf-8")

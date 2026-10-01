@@ -73,6 +73,53 @@ def _starm_line(lines: list[str], path: str) -> int:
     )
 
 
+def _read_presets(path: str) -> tuple[str, dict]:
+    """读取 CMakePresets.json，返回 (原文, 解析结果)；原文保留换行符。读不了或不是有效的 JSON
+    时记录错误（写出行、列）并以状态 1 退出。
+    Read CMakePresets.json and return (text, parsed content), the text with its line endings
+    kept. When it cannot be read or is not valid JSON, log an error, with the line and column,
+    and exit with status 1.
+    """
+    try:
+        with open(path, encoding="utf-8", newline="") as f:
+            text = f.read()
+        return text, json.loads(text)
+    except UnicodeDecodeError as error:
+        _fail(
+            tr(
+                f"{path} is not UTF-8 text (byte {error.start + 1}); save it as UTF-8",
+                f"{path} 不是 UTF-8 编码（第 {error.start + 1} 个字节）；请以 UTF-8 保存",
+            )
+        )
+    except json.JSONDecodeError as error:
+        _fail(
+            tr(
+                f"{path} line {error.lineno}, column {error.colno}: {error.msg}",
+                f"{path} 第 {error.lineno} 行第 {error.colno} 列：{error.msg}",
+            )
+        )
+
+
+def _replace_toolchain_file(text: str, current: str | None, expected: str) -> str | None:
+    """把原文中 default preset 的 toolchainFile 值 current 换成 expected，其余字符不变；值不存在
+    或在原文中不止一处时为 None。
+    Replace the toolchainFile value current of the default preset with expected in the text,
+    leaving every other character as it is; None when the value is missing or appears more
+    than once.
+    """
+    if current is None:
+        return None
+    pattern = re.compile(
+        r'("toolchainFile"\s*:\s*)' + re.escape(json.dumps(current, ensure_ascii=False))
+    )
+    matches = list(pattern.finditer(text))
+    if len(matches) != 1:
+        return None
+    match = matches[0]
+    replacement = match.group(1) + json.dumps(expected, ensure_ascii=False)
+    return text[: match.start()] + replacement + text[match.end() :]
+
+
 def remove_build_dirs(directory: str) -> None:
     """删除 directory 下名为 build 或以 cmake-build 开头的子目录，逐个记录。
     Delete the subdirectories of directory named build or starting with cmake-build, logging
@@ -96,14 +143,15 @@ def switch_toolchain(directory: str, compiler: str, std: str | None = None) -> N
 
     gcc 不接受 std；clang 不给 std 时沿用 starm-clang.cmake 中现在的标准库。修改任何文件之前先
     检查 CMakePresets.json（必须是有效的 JSON）、default preset、目标工具链文件以及（需要时）
-    其中的 STARM_TOOLCHAIN_CONFIG 行，不满足时记录错误并以状态 1 退出。工具链改变时删除 build/
-    和 cmake-build* 目录。
+    其中的 STARM_TOOLCHAIN_CONFIG 行，不满足时记录错误并以状态 1 退出。CMakePresets.json 中只
+    替换 default preset 的 toolchainFile 值，其余内容不变。工具链改变时删除 build/ 和
+    cmake-build* 目录。
     gcc takes no std; clang without std keeps the standard library currently in
     starm-clang.cmake. Before any file changes, CMakePresets.json, which must be valid JSON, its
     default preset, the target toolchain file and, when needed, its STARM_TOOLCHAIN_CONFIG line
-    are checked; a failed check logs an error and exits with status 1. A changed toolchain
-    removes the build/ and
-    cmake-build* directories.
+    are checked; a failed check logs an error and exits with status 1. Only the toolchainFile
+    value of the default preset is replaced in CMakePresets.json, the rest stays as it is. A
+    changed toolchain removes the build/ and cmake-build* directories.
     """
     if compiler == "gcc" and std:
         _fail(
@@ -119,31 +167,28 @@ def switch_toolchain(directory: str, compiler: str, std: str | None = None) -> N
         _fail(tr(f"{presets_path} not found.", f"找不到 {presets_path}。"))
     if not os.path.isfile(toolchain_path):
         _fail(tr(f"{toolchain_path} not found.", f"找不到 {toolchain_path}。"))
-    try:
-        with open(presets_path, encoding="utf-8") as f:
-            presets = json.load(f)
-    except ValueError as error:
-        _fail(
-            tr(
-                f"{presets_path} is not valid JSON: {error}",
-                f"{presets_path} 不是有效的 JSON：{error}",
-            )
-        )
+    text, presets = _read_presets(presets_path)
     preset = _default_preset(presets, presets_path)
     lines = []
     if compiler == "clang":
-        with open(toolchain_path, encoding="utf-8") as f:
+        with open(toolchain_path, encoding="utf-8", newline="") as f:
             lines = f.readlines()
         starm_index = _starm_line(lines, toolchain_path)
 
     # 检查都通过之后才写文件。
     # Files are written only after every check has passed.
     expected = "${sourceDir}/" + toolchain
-    if preset.get("toolchainFile") != expected:
-        preset["toolchainFile"] = expected
-        with open(presets_path, "w", encoding="utf-8", newline="\n") as f:
-            json.dump(presets, f, indent=4)
-            f.write("\n")
+    current = preset.get("toolchainFile")
+    if current != expected:
+        # 只替换这一个值，保留文件原有的缩进、字符和换行符；定位不到时才整体重写。
+        # Only this value is replaced, keeping the indentation, characters and line endings
+        # of the file; it is rewritten as a whole only when the value cannot be located.
+        new_text = _replace_toolchain_file(text, current, expected)
+        if new_text is None:
+            preset["toolchainFile"] = expected
+            new_text = json.dumps(presets, indent=4, ensure_ascii=False) + "\n"
+        with open(presets_path, "w", encoding="utf-8", newline="") as f:
+            f.write(new_text)
         logging.info(
             tr(
                 f"Switched the default preset to {toolchain}",
@@ -171,7 +216,7 @@ def switch_toolchain(directory: str, compiler: str, std: str | None = None) -> N
             )
         else:
             lines[starm_index] = STARM_LINE.sub(rf"\g<1>{target}\g<3>", lines[starm_index])
-            with open(toolchain_path, "w", encoding="utf-8", newline="\n") as f:
+            with open(toolchain_path, "w", encoding="utf-8", newline="") as f:
                 f.writelines(lines)
             logging.info(
                 tr(
