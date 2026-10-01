@@ -618,6 +618,21 @@ class GenerationRuns(GeneratorTestCase):
             "flash_map.hpp, libxr_config.yaml",
         )
 
+    def test_the_flash_layout_is_not_copied_to_libxr_config(self):
+        # 以前每次都把整张扇区表写进 libxr_config.yaml，却没有代码读它；f103 BSP 的 441 行中
+        # 有 389 行是它。
+        # The whole sector table used to be written to libxr_config.yaml on every run, with
+        # nothing reading it; 389 of the 441 lines of the f103 BSP were that table.
+        user, _ = self.run_generator("new", self.project())
+        self.assertNotIn("FlashLayout", self.config(user))
+        self.assertTrue((user / "flash_map.hpp").is_file())
+        old = "terminal_source: ''\nFlashLayout:\n  model: STM32F407IGH6\n  sectors: []\n"
+        user, logs = self.run_generator("old", self.project(), old)
+        self.assertNotIn("FlashLayout", self.config(user))
+        self.assertIn(
+            "INFO:root:libxr_config.yaml: removed FlashLayout, which is no longer used", logs
+        )
+
     def test_without_a_flash_layout_the_old_map_is_removed(self):
         self.run_generator("demo", self.project())
         user, logs = self.run_generator("demo", self.project(mcu="STM32X999ZZT6"))

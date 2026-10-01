@@ -331,7 +331,7 @@ class LegacyCommands(TestCase):
         self.assertEqual(self.run_old("xr_stm32_flash", "STM32X999")[0], 2)
         with self.assertLogs(level="ERROR") as logs:
             self.assertEqual(run_libxr("stm32", "flash-info", "STM32X999")[0], 1)
-        self.assertTrue(logs.output[0].startswith("ERROR:root:Failed to process model STM32X999"))
+        self.assertEqual(logs.output, ["ERROR:root:Unrecognized capacity code for STM32X999"])
 
     def test_xr_stm32_toolchain_switch_works_on_the_current_directory(self):
         with mock.patch("libxr.stm32_toolchain_switch.switch_toolchain") as switch:

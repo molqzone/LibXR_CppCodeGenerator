@@ -140,9 +140,9 @@ def layout_flash(model: str) -> FlashInfo:
     address from the first matching rule in STM32FlashLayoutRules.xml.
 
     Raises:
-        ValueError: 无法从型号得到容量，没有匹配的规则，或规则无法恰好覆盖该容量。
+        ValueError: 无法从型号得到容量，没有匹配的规则，或规则无法恰好覆盖该容量；信息中写出型号。
             The size cannot be derived from the model, no rule matches, or the rule does not
-            cover the size exactly.
+            cover the size exactly; the message names the model.
     """
     model = model.strip().upper()
     flash_kb = get_flash_kb(model)
@@ -151,11 +151,19 @@ def layout_flash(model: str) -> FlashInfo:
     if rule is None:
         raise ValueError(
             tr(
-                f"No flash layout rule for {model} in STM32FlashLayoutRules.xml",
-                f"STM32FlashLayoutRules.xml 中没有 {model} 的 Flash 布局规则",
+                f"Unknown STM32 series of {model}; its flash layout cannot be derived",
+                f"不认识 {model} 的系列，无法推算 Flash 布局",
             )
         )
-    sector_entries = _build_sector_entries_from_rule(rule, flash_kb)
+    try:
+        sector_entries = _build_sector_entries_from_rule(rule, flash_kb)
+    except ValueError as error:
+        raise ValueError(
+            tr(
+                f"Cannot derive the flash layout of {model}: {error}",
+                f"无法推算 {model} 的 Flash 布局：{error}",
+            )
+        ) from None
     return _build_flash_info(model, flash_kb, sector_entries, rule.base)
 
 
@@ -565,9 +573,9 @@ def print_flash_info(model: str, error_status: int = 1) -> None:
             )
         info = layout_flash(model)
     except ValueError as error:
-        logging.error(
-            tr(f"Failed to process model {model}: {error}", f"无法处理型号 {model}：{error}")
-        )
+        # 每条报错信息本身都写出了型号。
+        # Every error message names the model itself.
+        logging.error(str(error))
         sys.exit(error_status)
     print(
         yaml.safe_dump(

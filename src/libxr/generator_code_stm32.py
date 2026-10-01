@@ -2336,9 +2336,8 @@ def flash_layout(project_data: dict) -> dict | None:
     except ValueError as error:
         logging.warning(
             tr(
-                f"Cannot derive the flash layout of {mcu_model}: {error}; flash_map.hpp is not "
-                "generated",
-                f"无法推算 {mcu_model} 的 Flash 布局：{error}；不生成 flash_map.hpp",
+                f"{error}; flash_map.hpp is not generated",
+                f"{error}；不生成 flash_map.hpp",
             )
         )
         return None
@@ -2408,15 +2407,17 @@ def generate(
 
     每次从默认设置开始，合并 libxr_config（libxr_config.yaml 的路径或 URL，为空时读取输出目录中
     的文件）。全部文件先在内存中生成，没有错误时才写出，并且只写内容有变化的文件，其余文件的修改
-    时间不变。推算不出 Flash 布局时删除以前生成的 flash_map.hpp。已有输出文件中 User Code 区域的
+    时间不变。Flash 布局只写在 flash_map.hpp 中，推算不出时删除以前生成的 flash_map.hpp；
+    libxr_config.yaml 中以前版本写入的 FlashLayout 段被删除。已有输出文件中 User Code 区域的
     内容被保留。出错时记录错误（调试日志另记调用栈）并以状态 1 退出。
     Every run starts from the default settings and merges libxr_config, the path or URL of
     libxr_config.yaml, or the file in the output directory when empty. All files are generated
     in memory first and written only when nothing failed, and only the files whose content
-    changed are written, so the others keep their modification time. When no Flash layout can
-    be derived, a previously generated flash_map.hpp is deleted. The User Code bodies of an
-    existing output file are kept. An error is logged, with the traceback at debug level, and
-    exits with status 1.
+    changed are written, so the others keep their modification time. The Flash layout goes
+    only into flash_map.hpp, and a previously generated flash_map.hpp is deleted when no
+    layout can be derived; a FlashLayout section that earlier versions wrote to
+    libxr_config.yaml is removed. The User Code bodies of an existing output file are kept. An
+    error is logged, with the traceback at debug level, and exits with status 1.
     """
     try:
         # 只给出文件名时写入当前目录。
@@ -2442,11 +2443,16 @@ def generate(
             "app_main.h": APP_MAIN_HEADER,
         }
         if layout is None:
-            libxr_settings.pop("FlashLayout", None)
             files["flash_map.hpp"] = None
         else:
-            libxr_settings["FlashLayout"] = layout
             files["flash_map.hpp"] = flash_map_header(layout, project_data["Mcu"]["Type"].strip())
+        if libxr_settings.pop("FlashLayout", None) is not None:
+            logging.info(
+                tr(
+                    "libxr_config.yaml: removed FlashLayout, which is no longer used",
+                    "libxr_config.yaml：已删除不再使用的 FlashLayout",
+                )
+            )
         files["libxr_config.yaml"] = libxr_config_text()
 
         os.makedirs(output_dir, exist_ok=True)

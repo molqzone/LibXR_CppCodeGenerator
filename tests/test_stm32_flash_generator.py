@@ -54,15 +54,15 @@ class CommandLine(TestCase):
             ("STM32MP157CAA3", "STM32MP157CAA3 does not provide internal user flash"),
             (
                 "STM32Q999RGT6",
-                "No flash layout rule for STM32Q999RGT6 in STM32FlashLayoutRules.xml",
+                "Unknown STM32 series of STM32Q999RGT6; its flash layout cannot be derived",
             ),
         ):
+            # 以前外层再加一句 Failed to process model <型号>，型号出现两次。
+            # An outer "Failed to process model <model>" used to repeat the model.
             with self.subTest(model=model), self.assertLogs(level="ERROR") as logs:
                 code, out, _ = self.run_flash(model)
                 self.assertEqual((code, out), (1, ""))
-                self.assertEqual(
-                    logs.output, [f"ERROR:root:Failed to process model {model}: {reason}"]
-                )
+                self.assertEqual(logs.output, [f"ERROR:root:{reason}"])
 
 
 if __name__ == "__main__":
