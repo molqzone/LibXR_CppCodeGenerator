@@ -9,6 +9,7 @@ module-level registries and settings.
 import contextlib
 import importlib
 import io
+import logging
 import os
 import textwrap
 import unittest
@@ -92,6 +93,13 @@ def run_libxr(*argv):
         except SystemExit as exit:
             code = exit.code
     return code, out.getvalue(), err.getvalue()
+
+
+def logging_marker():
+    """记一条警告，使 assertLogs 在没有其他警告时也有记录。
+    Log one warning so that assertLogs has a record when nothing else warns.
+    """
+    logging.warning("marker")
 
 
 def user_region(code, name):

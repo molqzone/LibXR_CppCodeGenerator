@@ -104,10 +104,17 @@ class LibXRConfigFile(GeneratorTestCase):
         self.path.write_text(legacy, encoding="utf-8")
         with self.assertLogs(level="WARNING") as logs:
             text = self.regenerate()
-        output = "\n".join(logs.output)
-        self.assertIn("uart_dr16 -> usart3", output)
-        self.assertIn("remote -> usart3", output)
-        self.assertIn("LED_R -> PC13", output)
+        self.assertEqual(
+            logs.output,
+            [
+                "WARNING:root:Removed the legacy device_aliases table from libxr_config.yaml; "
+                "generated objects are registered only under their own names. Update "
+                "configurations that used these aliases (alias -> device):",
+                "WARNING:root:  uart_dr16 -> usart3",
+                "WARNING:root:  remote -> usart3",
+                "WARNING:root:  LED_R -> PC13",
+            ],
+        )
         self.assertNotIn("device_aliases", text)
         self.assertIn("# pinned generator\ngenerator: 6.0.0\n", text)
 
@@ -177,17 +184,26 @@ class LibXRConfigFile(GeneratorTestCase):
 
     def test_non_mapping_file_is_an_error(self):
         self.path.write_text("- usart1\n", encoding="utf-8")
-        with self.assertRaisesRegex(config_file.LibXRConfigError, "mapping"):
+        with self.assertRaisesMessage(
+            config_file.LibXRConfigError,
+            f"{self.path} must contain a YAML mapping at the top level",
+        ):
             generator.load_libxr_config(str(self.directory), "")
 
     def test_type_conflict_is_an_error(self):
         self.path.write_text("terminal_source:\n  device: usart1\n", encoding="utf-8")
-        with self.assertRaisesRegex(config_file.LibXRConfigError, "terminal_source"):
+        with self.assertRaisesMessage(
+            config_file.LibXRConfigError,
+            "Config type conflict for key 'terminal_source': expected str, got a mapping",
+        ):
             generator.load_libxr_config(str(self.directory), "")
 
     def test_missing_explicit_config_source_is_an_error(self):
-        with self.assertRaisesRegex(config_file.LibXRConfigError, "Cannot locate"):
-            generator.load_libxr_config(str(self.directory), str(self.directory / "absent.yaml"))
+        absent = self.directory / "absent.yaml"
+        with self.assertRaisesMessage(
+            config_file.LibXRConfigError, f"Cannot locate config source: {absent}"
+        ):
+            generator.load_libxr_config(str(self.directory), str(absent))
 
     def test_bare_output_file_name_writes_into_current_directory(self):
         (self.directory / "input.yaml").write_text(yaml.safe_dump(PROJECT), encoding="utf-8")

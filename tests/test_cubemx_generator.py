@@ -145,7 +145,13 @@ class CommandLine(CubeMXTestCase):
             self.assertEqual(
                 build_cubemx_command(exe, script, launch_mode="auto"), [exe, "-q", script]
             )
-        self.assertIn("STM32CubeMX.exe starts CubeMX and returns at once", logs.output[0])
+        self.assertEqual(
+            logs.output,
+            [
+                "WARNING:libxr.cubemx_generator:STM32CubeMX.exe starts CubeMX and returns at "
+                "once, so the generation is not awaited; use --launch-mode auto"
+            ],
+        )
         java = build_cubemx_command(jar, script, launch_mode="auto", java_cmd=sys.executable)
         index = java.index("-jar")
         self.assertEqual(java[index + 1 : index + 4], [jar, "-q", script])
@@ -207,7 +213,11 @@ class CommandLine(CubeMXTestCase):
     def test_a_command_that_cannot_be_built_leaves_no_script(self):
         exe = self.tmp / "STM32CubeMX.exe"
         exe.write_text("", encoding="utf-8")
-        with self.assertRaises(ValueError):
+        with self.assertRaisesMessage(
+            ValueError,
+            "Java launch mode requires an STM32CubeMX .jar path, or an installation with its "
+            "jre folder and STM32CubeMX.jar (or a jar embedded in the executable).",
+        ):
             self.generate(cubemx_cmd=str(exe), launch_mode="java", java_cmd=sys.executable)
         self.assertEqual([p.name for p in self.project.iterdir()], ["demo.ioc"])
 
@@ -237,18 +247,13 @@ class Generation(CubeMXTestCase):
         self.assertTrue((self.project / "Drivers").is_dir())
 
     def test_a_failed_script_command_fails_the_run(self):
-        with self.assertRaises(RuntimeError) as failure:
+        with self.assertRaisesMessage(
+            RuntimeError,
+            "STM32CubeMX did not complete the script command: project generate\n"
+            f"config load {(self.project / 'demo.ioc').as_posix()}\n"
+            "OK\nproject generate\nKO\nexit\nBye bye",
+        ):
             self.generate("ko")
-        self.assertEqual(
-            str(failure.exception).splitlines()[:5],
-            [
-                "STM32CubeMX did not complete the script command: project generate",
-                f"config load {(self.project / 'demo.ioc').as_posix()}",
-                "OK",
-                "project generate",
-                "KO",
-            ],
-        )
 
     def test_missing_expected_paths_fail_the_run(self):
         missing = ", ".join(

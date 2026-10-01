@@ -324,12 +324,14 @@ class SetupProject(GeneratorTestCase):
             (
                 "two .ioc",
                 lambda root: (root / "other.ioc").write_text("", encoding="utf-8"),
-                "{} holds several .ioc files (demo.ioc, other.ioc)",
+                "{} holds several .ioc files (demo.ioc, other.ioc); a directory holds one CubeMX "
+                "project",
             ),
             (
                 "not CMake",
                 lambda root: (root / "CMakeLists.txt").unlink(),
-                "{} has no CMakeLists.txt; set Toolchain / IDE to CMake",
+                "{} has no CMakeLists.txt; set Toolchain / IDE to CMake in the Project Manager of "
+                "STM32CubeMX and generate the project again",
             ),
         )
         for case, prepare, message in cases:
@@ -344,7 +346,7 @@ class SetupProject(GeneratorTestCase):
                 ):
                     cubemx_cfg.setup_project(str(self.root))
                 self.assertEqual(exit.exception.code, 1)
-                self.assertIn(message.format(self.root.name), logs.output[-1])
+                self.assertEqual(logs.output, ["ERROR:root:" + message.format(self.root.name)])
                 add_libxr.assert_not_called()
                 self.assertEqual(sorted(path.name for path in self.root.iterdir()), before)
 
@@ -383,7 +385,13 @@ class SetupProject(GeneratorTestCase):
         ):
             cubemx_cfg.setup_project(str(self.root))
         self.assertEqual(exit.exception.code, 1)
-        self.assertIn("git was not found on PATH", logs.output[0])
+        self.assertEqual(
+            logs.output,
+            [
+                "ERROR:root:git was not found on PATH; LibXR is added to the project as a Git "
+                "submodule"
+            ],
+        )
 
 
 if __name__ == "__main__":

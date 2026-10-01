@@ -13,9 +13,10 @@ import tempfile
 import textwrap
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import yaml
-from fixtures import IOC, GeneratorTestCase, user_region
+from fixtures import IOC, GeneratorTestCase, logging_marker, user_region
 
 from libxr import cli
 from libxr import generator_code_stm32 as generator
@@ -58,8 +59,12 @@ class EntrySource(GeneratorTestCase):
             "  /* User Code End 3 */\n  XROBOT_MAIN();\n",
             "  UserSetup();\n  XROBOT_MAIN();\n  /* User Code End 3 */\n",
         )
-        with self.assertRaisesRegex(
-            ValueError, r"line \d+: User Code 3 still calls XROBOT_MAIN\(\).*delete"
+        line = old.splitlines().index("  XROBOT_MAIN();") + 1
+        with self.assertRaisesMessage(
+            ValueError,
+            f"line {line}: User Code 3 still calls XROBOT_MAIN(). The generator now emits "
+            "XROBOT_MAIN() after the User Code regions of app_main; delete this call from the "
+            "User Code region and regenerate. Nothing was written.",
         ):
             self.generate(existing=old)
 
@@ -149,13 +154,19 @@ class Registrations(GeneratorTestCase):
     def test_unnamed_registration_is_diagnosed(self):
         generator.registered_devices.clear()
         generator._register_device("adc.GetChannel(0)", "ADC")
-        with self.assertRaisesRegex(ValueError, r"existing C\+\+ name"):
+        with self.assertRaisesMessage(
+            ValueError, "Static registration needs an existing C++ name: adc.GetChannel(0)"
+        ):
             generator.generate_xrobot_registrations()
 
     def test_every_registered_name_has_one_type(self):
         generator.initialize_registry(True)
         generator._register_device("usart1", "UART")
-        with self.assertRaisesRegex(ValueError, "'usart1'.*collides"):
+        with self.assertRaisesMessage(
+            ValueError,
+            "Generated name 'usart1' (GPIO object) collides with the existing 'usart1' "
+            "(UART object); every generated object needs its own name",
+        ):
             generator._register_device("usart1", "GPIO")
 
     def test_fdcan_is_also_registered_as_classic_can(self):
@@ -180,15 +191,18 @@ class Registrations(GeneratorTestCase):
         self.assertNotIn("LibXR::CAN& can1", code)
 
     def test_fdcan_alias_colliding_with_classic_can_is_rejected(self):
-        for peripherals in (
-            {"CAN": {"CAN1": {}}, "FDCAN": {"FDCAN1": {}}},
-            {"FDCAN": {"FDCAN1": {}}, "CAN": {"CAN1": {}}},
+        alias = "'can1' (LibXR::CAN alias of fdcan1)"
+        classic = "'can1' (classic CAN peripheral CAN1)"
+        for peripherals, later, earlier in (
+            ({"CAN": {"CAN1": {}}, "FDCAN": {"FDCAN1": {}}}, alias, classic),
+            ({"FDCAN": {"FDCAN1": {}}, "CAN": {"CAN1": {}}}, classic, alias),
         ):
             with (
                 self.subTest(order=list(peripherals)),
-                self.assertRaisesRegex(
+                self.assertRaisesMessage(
                     ValueError,
-                    r"'can1'.*LibXR::CAN alias of fdcan1|LibXR::CAN alias of fdcan1.*'can1'",
+                    f"Generated name {later} collides with the existing {earlier}; every "
+                    "generated object needs its own name",
                 ),
             ):
                 self.generate(self.project(peripherals=peripherals))
@@ -230,8 +244,45 @@ class PeripheralObjects(GeneratorTestCase):
 
     def test_removed_cdc_count_is_not_silently_accepted(self):
         project = self.usb_otg_hs(cdc_count=2)
-        with self.assertRaisesRegex(ValueError, "BSP user code"):
+        with self.assertRaisesMessage(
+            ValueError,
+            "USB cdc_count is not a generator option; define composite USB in BSP user code",
+        ):
             self.generate(project)
+
+    def usb_fs(self, role):
+        """启用 usb_fs 的 STM32H503 工程数据；USB 实例的角色和 PCD 句柄是 parse 读出的值。
+        STM32H503 project data with usb_fs enabled; the role and PCD handle of the USB instance
+        are what parse reads.
+        """
+        generator.libxr_settings.setdefault("USB", {})["usb_fs"] = {"enable": True}
+        return self.project(
+            peripherals={"USB": {"USB": {"Role": role, "PCDHandle": "hpcd_USB_DRD_FS"}}},
+            mcu="STM32H503RBT6",
+            family="STM32H5",
+        )
+
+    def test_the_usb_device_uses_the_handle_parse_recorded(self):
+        # STM32CubeH5 的 USBX 设备例程都定义 PCD_HandleTypeDef hpcd_USB_DRD_FS；以前生成的是
+        # hpcd_USB_FS，链接失败。
+        # The USBX device examples of STM32CubeH5 all define PCD_HandleTypeDef hpcd_USB_DRD_FS;
+        # hpcd_USB_FS used to be generated and failed to link.
+        code = self.generate(self.usb_fs("Device"), use_xrobot=False)
+        self.assertIn("extern PCD_HandleTypeDef hpcd_USB_DRD_FS;", code)
+        self.assertIn("static STM32USBDeviceDevFs usb_fs(\n      &hpcd_USB_DRD_FS,", code)
+
+    def test_a_usb_in_host_mode_generates_no_device(self):
+        with self.assertLogs(level="WARNING") as logs:
+            code = self.generate(self.usb_fs("Host"), use_xrobot=False)
+        self.assertNotIn("hpcd_", code)
+        self.assertNotIn("usb_fs", code)
+        self.assertEqual(
+            logs.output,
+            [
+                "WARNING:root:USB instance 'usb_fs' is in host mode in CubeMX, and the LibXR USB "
+                "device needs device mode. Skipping generation."
+            ],
+        )
 
     def test_resident_peripherals_channels_and_terminal_are_static(self):
         project = self.project(
@@ -305,8 +356,10 @@ class PeripheralObjects(GeneratorTestCase):
         for value in (5, -1, 22, True, "urgent", 2.0):
             with self.subTest(value=value):
                 generator.libxr_settings["software_timer"]["priority"] = value
-                with self.assertRaisesRegex(
-                    ValueError, "software_timer.priority .* is not a priority level; use 0-4 or"
+                with self.assertRaisesMessage(
+                    ValueError,
+                    f"software_timer.priority {value!r} is not a priority level; use 0-4 or "
+                    "IDLE, LOW, MEDIUM, HIGH, REALTIME",
                 ):
                     self.generate()
 
@@ -326,6 +379,57 @@ class PeripheralObjects(GeneratorTestCase):
         self.assertIn("#if defined(__SCB_DCACHE_LINE_SIZE)", code)
         self.assertIn("#define XR_DCACHE_LINE_SIZE 32U", code)
 
+    def test_uart_buffers_follow_the_dma_directions(self):
+        code = self.generate(
+            self.project(
+                peripherals={
+                    "USART": {
+                        "USART1": {"DMA_TX": "ENABLE", "DMA_RX": "ENABLE"},
+                        "USART2": {"DMA_RX": "ENABLE"},
+                        "USART3": {},
+                    }
+                }
+            )
+        )
+        for uart, buffers in (
+            ("usart1(&huart1", "usart1_rx_buf, usart1_tx_buf"),
+            ("usart2(&huart2", "usart2_rx_buf, {nullptr, 0}"),
+            ("usart3(&huart3", "{nullptr, 0}, {nullptr, 0}"),
+        ):
+            with self.subTest(uart=uart):
+                self.assertIn(f"static STM32UART {uart},\n              {buffers}, 5);", code)
+        self.assertEqual(
+            [line for line in code.splitlines() if line.startswith("alignas(4) static uint8_t")],
+            [
+                "alignas(4) static uint8_t usart1_tx_buf[128];",
+                "alignas(4) static uint8_t usart1_rx_buf[128];",
+                "alignas(4) static uint8_t usart2_rx_buf[128];",
+            ],
+        )
+
+    def test_a_channel_in_several_ranks_gets_one_reference_per_rank(self):
+        # DevC 的 ADC3 在第 1 和第 12 个 rank 都转换 IN8；以前两个引用同名，生成时报名字冲突。
+        # ADC3 of DevC converts IN8 in ranks 1 and 12; both references used to get the same
+        # name, and generation failed with a name collision.
+        ranks = [8, 1, 2, 3, 5, 6, 7, 9, 13, 14, 15, 8]
+        channels = [f"ADC_CHANNEL_{n}" for n in ranks]
+        code = self.generate(
+            self.project(
+                peripherals={"ADC": {"ADC3": {"DMA": "ENABLE", "RegularConversions": channels}}}
+            )
+        )
+        self.assertIn(
+            f"static STM32ADC adc3(&hadc3, adc3_buf, {{{', '.join(channels)}}}, 3.3);", code
+        )
+        names = [f"adc3_adc_channel_{n}" for n in ranks[:-1]] + ["adc3_adc_channel_8_rank12"]
+        self.assertEqual(
+            [line for line in code.splitlines() if line.startswith("  static auto& adc3_")],
+            [f"  static auto& {name} = adc3.GetChannel({i});" for i, name in enumerate(names)],
+        )
+        # 默认 buffer_size 为 32 字节，每个 rank 16 个 uint16_t。
+        # The default buffer_size is 32 bytes, 16 uint16_t per rank.
+        self.assertIn("alignas(4) static uint16_t adc3_buf[192];", code)
+
 
 class GpioObjectNames(GeneratorTestCase):
     """GPIO 标签成为 app_main 中的 C++ 对象名。
@@ -333,11 +437,19 @@ class GpioObjectNames(GeneratorTestCase):
     """
 
     def assertRejected(self, gpio, message, peripherals=None, use_xrobot=True):
-        """断言这组 GPIO 标签使生成报错，报错匹配 message。
-        Assert that these GPIO labels make generation fail with an error matching message.
+        """断言这组 GPIO 标签使生成报错，报错文本为 message。
+        Assert that these GPIO labels make generation fail with the error text message.
         """
-        with self.assertRaisesRegex(ValueError, message):
+        with self.assertRaisesMessage(ValueError, message):
             self.generate(self.project(gpio, peripherals), use_xrobot)
+
+    def assertRenameAsked(self, gpio, problem, peripherals=None, use_xrobot=True):
+        """断言这组 GPIO 标签使生成报错，要求在 CubeMX 中改名，问题为 problem。
+        Assert that these GPIO labels make generation fail asking for a rename in CubeMX, the
+        problem being problem.
+        """
+        message = f"rename these GPIO labels in CubeMX:\n  {problem}"
+        self.assertRejected(gpio, message, peripherals, use_xrobot)
 
     def test_ordinary_labels_and_pins_are_accepted(self):
         for use_xrobot in (True, False):
@@ -347,22 +459,28 @@ class GpioObjectNames(GeneratorTestCase):
                 self.assertIn("static STM32GPIO PB1(GPIOB, GPIO_PIN_1);", code)
 
     def test_keyword_label_is_rejected(self):
-        self.assertRejected(
-            {"PA0": {"Label": "switch"}}, "'switch' \\(pin PA0\\) is a C\\+\\+ keyword"
+        self.assertRenameAsked(
+            {"PA0": {"Label": "switch"}}, "GPIO object 'switch' (pin PA0) is a C++ keyword"
         )
 
     def test_reserved_label_is_rejected(self):
-        self.assertRejected({"PA0": {"Label": "_Reset"}}, "reserved C\\+\\+ identifier")
+        self.assertRenameAsked(
+            {"PA0": {"Label": "_Reset"}},
+            "GPIO object '_Reset' (pin PA0) is a reserved C++ identifier",
+        )
 
     def test_cmsis_macro_label_is_rejected(self):
         for label in ("SPI1", "GPIOC", "EXTI0_IRQn", "UNUSED"):
             with self.subTest(label=label):
-                self.assertRejected({"PA0": {"Label": label}}, "CMSIS/HAL macro or IRQ name")
+                self.assertRenameAsked(
+                    {"PA0": {"Label": label}},
+                    f"GPIO object '{label}' (pin PA0) is a CMSIS/HAL macro or IRQ name",
+                )
 
     def test_label_macro_of_another_label_is_rejected(self):
-        self.assertRejected(
+        self.assertRenameAsked(
             {"PA0": {"Label": "LED"}, "PA1": {"Label": "LED_Pin"}},
-            "is the CubeMX macro of GPIO label 'LED'",
+            "GPIO object 'LED_Pin' (pin PA1) is the CubeMX macro of GPIO label 'LED'",
         )
 
     def test_label_shadowing_a_generated_name_is_rejected(self):
@@ -374,9 +492,10 @@ class GpioObjectNames(GeneratorTestCase):
                 ("PlatformInit", {}),
             ):
                 with self.subTest(label=label, use_xrobot=use_xrobot):
-                    self.assertRejected(
+                    self.assertRenameAsked(
                         {"PA0": {"Label": label}},
-                        f"'{label}' \\(pin PA0\\) collides with a name the generated code uses",
+                        f"GPIO object '{label}' (pin PA0) collides with a name the generated "
+                        "code uses",
                         peripherals,
                         use_xrobot,
                     )
@@ -384,12 +503,17 @@ class GpioObjectNames(GeneratorTestCase):
     def test_label_equal_to_a_device_object_is_rejected(self):
         self.assertRejected(
             {"PA0": {"Label": "usart1"}},
-            "'usart1' \\(UART object\\) collides with the existing 'usart1' \\(GPIO label usart1 on PA0\\)",
+            "Generated name 'usart1' (UART object) collides with the existing 'usart1' "
+            "(GPIO label usart1 on PA0); every generated object needs its own name",
             {"USART": {"USART1": {}}},
         )
 
     def test_label_equal_to_another_pin_is_rejected(self):
-        self.assertRejected({"PA0": {}, "PB1": {"Label": "PA0"}}, "'PA0' .*collides")
+        self.assertRejected(
+            {"PA0": {}, "PB1": {"Label": "PA0"}},
+            "Generated name 'PA0' (GPIO label PA0 on PB1) collides with the existing 'PA0' "
+            "(GPIO PA0); every generated object needs its own name",
+        )
 
 
 class ExtiInterrupts(GeneratorTestCase):
@@ -449,14 +573,26 @@ class UserRegionMarkers(GeneratorTestCase):
         super().setUp()
         self.base = self.generate(use_xrobot=False)
 
-    def assertRefused(self, existing, message):
-        """断言已有代码使生成报错，报错匹配 message 并说明没有写入。
-        Assert that the existing code makes generation fail with an error matching message
-        that says nothing was written.
+    def assertRefused(self, existing, *problems):
+        """断言已有代码使生成报错：报错说明没有写入，然后每行列出 problems 中的一个问题。
+        Assert that the existing code makes generation fail with an error that says nothing was
+        written and then lists problems, one per line.
         """
-        with self.assertRaisesRegex(ValueError, message) as error:
+        message = (
+            "existing User Code markers cannot be preserved safely; nothing was written. Fix "
+            "the markers and regenerate:"
+        )
+        with self.assertRaisesMessage(ValueError, "\n  ".join([message, *problems])):
             self.generate(use_xrobot=False, existing=existing)
-        self.assertIn("nothing was written", str(error.exception))
+
+    @staticmethod
+    def line(text, content, occurrence=0):
+        """text 中第 occurrence 个（从 0 起）去掉缩进后为 content 的行的行号（从 1 起）。
+        The 1-based number of the line of text whose stripped content is content, counting
+        from occurrence 0.
+        """
+        lines = [n for n, line in enumerate(text.splitlines(), 1) if line.strip() == content]
+        return lines[occurrence]
 
     def test_canonical_markers_are_accepted(self):
         existing = self.base.replace(
@@ -469,17 +605,33 @@ class UserRegionMarkers(GeneratorTestCase):
 
     def test_unpaired_begin_is_refused(self):
         existing = self.base.replace("  /* User Code End 2 */\n", "  Keep();\n", 1)
-        self.assertRefused(existing, "opens before User Code End 2")
+        begin = self.line(existing, "/* User Code Begin 3 */")
+        self.assertRefused(
+            existing, f"line {begin}: /* User Code Begin 3 */ opens before User Code End 2"
+        )
 
     def test_unpaired_end_is_refused(self):
         existing = self.base.replace("/* User Code Begin 1 */\n", "", 1)
-        self.assertRefused(existing, "User Code End 1 \\*/ has no matching Begin")
+        end = self.line(existing, "/* User Code End 1 */")
+        self.assertRefused(
+            existing,
+            f"line {end}: /* User Code End 1 */ has no matching Begin marker",
+            "User Code Begin 1 / End 1 markers are missing",
+        )
 
     def test_renamed_region_is_refused(self):
         existing = self.base.replace("User Code Begin 2", "User Code Begin 7").replace(
             "User Code End 2", "User Code End 7"
         )
-        self.assertRefused(existing, "does not emit")
+        self.assertRefused(
+            existing,
+            *(
+                f"line {self.line(existing, marker)}: {marker} names a region the generator "
+                "does not emit (expected 1, 2, 3)"
+                for marker in ("/* User Code Begin 7 */", "/* User Code End 7 */")
+            ),
+            "User Code Begin 2 / End 2 markers are missing",
+        )
 
     def test_duplicated_region_is_refused(self):
         existing = self.base.replace(
@@ -487,26 +639,47 @@ class UserRegionMarkers(GeneratorTestCase):
             "/* User Code End 1 */\n/* User Code Begin 1 */\nKeep();\n/* User Code End 1 */",
             1,
         )
-        self.assertRefused(existing, "duplicated")
+        second = self.line(existing, "/* User Code Begin 1 */", 1)
+        self.assertRefused(existing, f"line {second}: /* User Code Begin 1 */ is duplicated")
 
     def test_missing_region_is_refused(self):
         existing = self.base.replace("  /* User Code Begin 2 */\n  /* User Code End 2 */\n", "", 1)
-        self.assertRefused(existing, "End 2 markers are missing")
+        self.assertRefused(existing, "User Code Begin 2 / End 2 markers are missing")
 
     def test_malformed_marker_is_refused(self):
         existing = self.base.replace("/* User Code Begin 1 */", "// User Code Begin 1", 1)
-        self.assertRefused(existing, "malformed User Code marker")
+        self.assertRefused(
+            existing,
+            f"line {self.line(existing, '// User Code Begin 1')}: malformed User Code marker "
+            "// User Code Begin 1",
+            f"line {self.line(existing, '/* User Code End 1 */')}: /* User Code End 1 */ has no "
+            "matching Begin marker",
+            "User Code Begin 1 / End 1 markers are missing",
+        )
 
     def test_region_inside_disabled_block_is_refused(self):
-        for replacement in (
-            "#if 0\n/* User Code Begin 1 */\nKeep();\n/* User Code End 1 */\n#endif",
-            "#if 0\n/* User Code Begin 1 */\n#endif\nKeep();\n/* User Code End 1 */",
+        for replacement, markers in (
+            (
+                "#if 0\n/* User Code Begin 1 */\nKeep();\n/* User Code End 1 */\n#endif",
+                ("/* User Code Begin 1 */", "/* User Code End 1 */"),
+            ),
+            (
+                "#if 0\n/* User Code Begin 1 */\n#endif\nKeep();\n/* User Code End 1 */",
+                ("/* User Code Begin 1 */",),
+            ),
         ):
             with self.subTest(replacement=replacement):
                 existing = self.base.replace(
                     "/* User Code Begin 1 */\n/* User Code End 1 */", replacement, 1
                 )
-                self.assertRefused(existing, "inside a preprocessor conditional")
+                self.assertRefused(
+                    existing,
+                    *(
+                        f"line {self.line(existing, marker)}: {marker} is inside a "
+                        "preprocessor conditional"
+                        for marker in markers
+                    ),
+                )
 
     def test_conditional_inside_region_body_is_preserved(self):
         body = "#if 0\n  Disabled();\n#endif\n  Kept();"
@@ -656,12 +829,16 @@ class GenerationRuns(GeneratorTestCase):
 
     def test_config_values_of_the_wrong_type_are_rejected(self):
         for update, problem in (
-            ({"USART": 5}, "expected a mapping, got int"),
-            ({"terminal_source": {"usart1": {}}}, "expected str, got a mapping"),
+            ({"USART": 5}, "'USART': expected a mapping, got int"),
+            ({"terminal_source": {"usart1": {}}}, "'terminal_source': expected str, got a mapping"),
         ):
-            with self.subTest(update=update), self.assertRaises(LibXRConfigError) as error:
+            with (
+                self.subTest(update=update),
+                self.assertRaisesMessage(
+                    LibXRConfigError, f"Config type conflict for key {problem}"
+                ),
+            ):
                 generator._deep_merge({"USART": {}, "terminal_source": ""}, update)
-            self.assertIn(problem, str(error.exception))
         # 空的段等同于空映射。
         # An empty section counts as an empty mapping.
         self.assertEqual(
@@ -785,6 +962,39 @@ class HashSeedIndependence(GeneratorTestCase):
             for name in reference:
                 with self.subTest(seed=seed, file=name):
                     self.assertEqual(output[name], reference[name])
+
+
+class GeneratorPin(GeneratorTestCase):
+    """libxr_config.yaml 固定的 generator 版本与已安装的不同时警告。
+    A warning when the generator pinned in libxr_config.yaml differs from the installed one.
+    """
+
+    def warnings(self, pin):
+        """在固定 pin、已安装 6.0.0 时检查，返回警告日志。
+        Check with the pin pin and 6.0.0 installed; return the warning logs.
+        """
+        generator.libxr_settings["generator"] = pin
+        with (
+            mock.patch("libxr.update_notice.installed_version", return_value="6.0.0"),
+            self.assertLogs(level="WARNING") as logs,
+        ):
+            logging_marker()
+            generator.check_generator_pin()
+        return [line for line in logs.output if "marker" not in line]
+
+    def test_a_different_pin_warns(self):
+        self.assertEqual(
+            self.warnings("5.2.4"),
+            [
+                "WARNING:root:libxr_config.yaml pins generator 5.2.4, but libxr 6.0.0 is "
+                "installed; the BSP CI generates with 5.2.4"
+            ],
+        )
+
+    def test_the_same_version_a_commit_or_no_pin_is_quiet(self):
+        for pin in ("6.0.0", "0123456789abcdef0123456789abcdef01234567", None):
+            with self.subTest(pin=pin):
+                self.assertEqual(self.warnings(pin), [])
 
 
 if __name__ == "__main__":

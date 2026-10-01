@@ -76,7 +76,13 @@ class ModulesDirectory(GeneratorTestCase):
         (self.root / "cmake" / "LibXR.CMake").write_text(existing, encoding="utf-8")
         with self.assertLogs(level="WARNING") as logs:
             self.assertEqual(self.run_cmake_generator(), existing)
-        self.assertIn("remove that line", "\n".join(logs.output))
+        self.assertEqual(
+            logs.output,
+            [
+                "WARNING:root:LibXR.CMake sets XROBOT_MODULES_DIR, but User/app_main.cpp was not "
+                "generated with --xrobot; remove that line for a LibXR-only project."
+            ],
+        )
 
     def test_build_directories_are_kept(self):
         (self.root / "build" / "debug").mkdir(parents=True)
@@ -106,10 +112,13 @@ class ModulesDirectory(GeneratorTestCase):
         )
         with self.assertLogs(level="WARNING") as logs:
             self.run_cmake_generator()
-        self.assertIn(
-            "add set(XROBOT_MODULES_DIR ${CMAKE_CURRENT_SOURCE_DIR}/Modules) before "
-            "add_subdirectory(Middlewares/Third_Party/LibXR)",
-            "\n".join(logs.output),
+        self.assertEqual(
+            logs.output,
+            [
+                "WARNING:root:User/app_main.cpp uses XRobot, but LibXR.CMake does not set "
+                "XROBOT_MODULES_DIR; add set(XROBOT_MODULES_DIR ${CMAKE_CURRENT_SOURCE_DIR}/Modules) "
+                "before add_subdirectory(Middlewares/Third_Party/LibXR)"
+            ],
         )
 
     def test_an_include_in_any_spelling_is_not_appended_again(self):
