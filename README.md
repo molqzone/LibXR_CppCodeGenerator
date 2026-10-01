@@ -121,14 +121,16 @@ holding an STM32CubeMX `.ioc` file) is supported so far.
 
 每个子命令都接受 `--verbose`，输出调试日志。
 
-每个命令运行时在后台查询 PyPI，结束时若有更新的 libxr 就提示升级：pipx 安装的提示
-`pipx upgrade libxr`，其余提示 `pip install -U libxr`。
+命令运行时在后台查询 PyPI，结束时若有更新的 libxr 就提示升级：pipx 安装的提示
+`pipx upgrade libxr`，其余提示用运行 libxr 的那个 Python 执行 `-m pip install -U libxr`。查询结果
+在用户缓存目录中保存一天；以 `pip install -e` 从源码安装时不查询。
 
 Every subcommand takes `--verbose` for debug logging.
 
 While a command runs, PyPI is queried in the background; a newer libxr is reported when the
-command ends, with `pipx upgrade libxr` for a pipx installation and `pip install -U libxr`
-otherwise.
+command ends, with `pipx upgrade libxr` for a pipx installation and otherwise
+`-m pip install -U libxr` run by the Python that runs libxr. The result is kept in the user
+cache directory for a day; an installation from source with `pip install -e` is not checked.
 
 ### 旧命令 / Old commands
 

@@ -82,7 +82,8 @@ def run_libxr(*argv):
     """
     out, err = io.StringIO(), io.StringIO()
     with (
-        mock.patch("libxr.update_notice._latest_version", return_value=None),
+        mock.patch("libxr.update_notice._latest_release", return_value=None),
+        mock.patch("libxr.update_notice._cache_path", return_value=None),
         contextlib.redirect_stdout(out),
         contextlib.redirect_stderr(err),
     ):

@@ -536,7 +536,8 @@ LIBXR_CONFIG = textwrap.dedent("""\
 GENERATE = textwrap.dedent("""\
     from unittest.mock import patch
     from libxr import cli
-    with patch('libxr.update_notice._latest_version', return_value=None):
+    with (patch('libxr.update_notice._latest_release', return_value=None),
+          patch('libxr.update_notice._cache_path', return_value=None)):
         cli.main(['parse', '-d', 'project', '-o', 'project/cubemx.yaml'])
         cli.main(['gen', '-i', 'project/cubemx.yaml', '-o', 'project/User/app_main.cpp',
                   '--xrobot', '-d', 'project'])

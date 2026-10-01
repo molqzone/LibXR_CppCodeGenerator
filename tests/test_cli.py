@@ -5,8 +5,10 @@ and the check of the generator pin.
 
 import contextlib
 import io
+import json
 import logging
 import os
+import platform
 import re
 import subprocess
 import sys
@@ -17,7 +19,7 @@ from unittest import mock
 
 from fixtures import IOC, GeneratorTestCase, TestCase, run_libxr
 
-from libxr import cli, legacy
+from libxr import cli, legacy, update_notice
 from libxr import generator_code_stm32 as generator
 
 REPOSITORY = Path(__file__).resolve().parents[1]
@@ -216,7 +218,8 @@ class LegacyCommands(TestCase):
         """
         out, err = io.StringIO(), io.StringIO()
         with (
-            mock.patch("libxr.update_notice._latest_version", return_value=None),
+            mock.patch("libxr.update_notice._latest_release", return_value=None),
+            mock.patch("libxr.update_notice._cache_path", return_value=None),
             contextlib.redirect_stdout(out),
             contextlib.redirect_stderr(err),
             self.assertLogs(level="WARNING"),
@@ -230,7 +233,8 @@ class LegacyCommands(TestCase):
     def test_an_old_command_warns_and_runs_the_new_one(self):
         out = io.StringIO()
         with (
-            mock.patch("libxr.update_notice._latest_version", return_value=None),
+            mock.patch("libxr.update_notice._latest_release", return_value=None),
+            mock.patch("libxr.update_notice._cache_path", return_value=None),
             contextlib.redirect_stdout(out),
             self.assertLogs(level="WARNING") as logs,
         ):
@@ -368,38 +372,92 @@ class UpdateNotice(TestCase):
     At the end of a command, a newer libxr on PyPI is reported.
     """
 
-    def run_with_latest(self, latest, *argv):
-        """在 PyPI 最新版本为 latest、已安装 6.0.0 时运行 libxr，返回警告日志。
+    FLASH_INFO = ("stm32", "flash-info", "STM32F103C8T6")
+
+    def setUp(self):
+        super().setUp()
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.cache = Path(temporary.name) / "libxr" / "update.json"
+        self.queries = 0
+        self.pip = f'"{sys.executable}" -m pip install -U libxr'
+
+    def run_with_latest(self, latest, *argv, requires_python=">=3.10", editable=False):
+        """在 PyPI 最新版本为 latest、已安装 6.0.0 时运行 libxr，返回警告日志；查询次数计入
+        self.queries，缓存在 self.cache。
         Run libxr while the latest version on PyPI is latest and 6.0.0 is installed; return the
-        warning logs.
+        warning logs. Queries are counted in self.queries and cached in self.cache.
         """
+
+        def query():
+            """PyPI 查询的替身：计数，并返回 latest 的版本信息。
+            Stand-in for the PyPI query: count it and return the release of latest.
+            """
+            self.queries += 1
+            return {"version": latest, "requires_python": requires_python} if latest else None
+
         with (
-            mock.patch("libxr.update_notice._latest_version", return_value=latest),
+            mock.patch("libxr.update_notice._latest_release", side_effect=query),
             mock.patch("libxr.update_notice.installed_version", return_value="6.0.0"),
+            mock.patch("libxr.update_notice._editable_install", return_value=editable),
+            mock.patch("libxr.update_notice._cache_path", return_value=self.cache),
             contextlib.redirect_stdout(io.StringIO()),
             contextlib.redirect_stderr(io.StringIO()),
             self.assertLogs(level="WARNING") as logs,
         ):
             logging_marker()
             with contextlib.suppress(SystemExit):
-                cli.main(list(argv))
+                cli.main(list(argv or self.FLASH_INFO))
         return [line for line in logs.output if line.startswith("WARNING") and "marker" not in line]
 
+    def notice(self, command):
+        """升级到 6.1.0 的提示，升级命令为 command。
+        The notice of 6.1.0 with the upgrade command command.
+        """
+        return [
+            f"WARNING:root:libxr 6.1.0 is available (installed: 6.0.0); upgrade with `{command}`"
+        ]
+
     def test_a_newer_version_is_reported_at_the_end(self):
-        self.assertEqual(
-            self.run_with_latest("6.1.0", "stm32", "flash-info", "STM32F103C8T6"),
-            [
-                "WARNING:root:libxr 6.1.0 is available (installed: 6.0.0); "
-                "upgrade with `pip install -U libxr`"
-            ],
-        )
+        # 升级命令用当前 Python 的 pip；以前的 pip install -U libxr 可能是另一个环境的 pip。
+        # The upgrade uses the pip of the running Python; the earlier pip install -U libxr may
+        # be the pip of another environment.
+        self.assertEqual(self.run_with_latest("6.1.0"), self.notice(self.pip))
 
     def test_the_notice_follows_a_failed_command_too(self):
         self.assertEqual(
-            self.run_with_latest("6.1.0", "parse", "-d", "absent"),
+            self.run_with_latest("6.1.0", "parse", "-d", "absent"), self.notice(self.pip)
+        )
+
+    def test_an_editable_installation_is_not_checked(self):
+        # 照提示升级会把源码安装换成 PyPI 上的包。
+        # Following the notice would replace the source installation with the PyPI package.
+        self.assertEqual(self.run_with_latest("6.1.0", editable=True), [])
+        self.assertEqual(self.queries, 0)
+
+    def test_the_result_is_cached_for_a_day(self):
+        self.assertEqual(self.run_with_latest("6.1.0"), self.notice(self.pip))
+        self.assertEqual(self.run_with_latest("6.2.0"), self.notice(self.pip))
+        self.assertEqual(self.queries, 1)
+        stale = json.loads(self.cache.read_text(encoding="utf-8"))
+        stale["checked"] -= update_notice.INTERVAL
+        self.cache.write_text(json.dumps(stale), encoding="utf-8")
+        self.assertIn("libxr 6.2.0 is available", self.run_with_latest("6.2.0")[0])
+        self.assertEqual(self.queries, 2)
+
+    def test_a_failed_query_is_not_repeated_within_a_day(self):
+        # 网络不通时以前每个命令都多等约 1 秒。
+        # Every command used to wait about one more second while the network was down.
+        self.assertEqual(self.run_with_latest(None), [])
+        self.assertEqual(self.run_with_latest("6.1.0"), [])
+        self.assertEqual(self.queries, 1)
+
+    def test_a_release_for_a_newer_python_names_its_requirement(self):
+        self.assertEqual(
+            self.run_with_latest("6.1.0", requires_python=">=99"),
             [
-                "WARNING:root:libxr 6.1.0 is available (installed: 6.0.0); "
-                "upgrade with `pip install -U libxr`"
+                "WARNING:root:libxr 6.1.0 is available (installed: 6.0.0), but it needs Python "
+                f">=99 and this is Python {platform.python_version()}"
             ],
         )
 
@@ -407,21 +465,14 @@ class UpdateNotice(TestCase):
         with tempfile.TemporaryDirectory() as prefix:
             Path(prefix, "pipx_metadata.json").write_text("{}", encoding="utf-8")
             with mock.patch.object(sys, "prefix", prefix):
-                warnings = self.run_with_latest("6.1.0", "stm32", "flash-info", "STM32F103C8T6")
-        self.assertEqual(
-            warnings,
-            [
-                "WARNING:root:libxr 6.1.0 is available (installed: 6.0.0); "
-                "upgrade with `pipx upgrade libxr`"
-            ],
-        )
+                warnings = self.run_with_latest("6.1.0")
+        self.assertEqual(warnings, self.notice("pipx upgrade libxr"))
 
     def test_no_notice_without_a_newer_version(self):
         for latest in (None, "6.0.0", "5.9.9", "not a version"):
             with self.subTest(latest=latest):
-                self.assertEqual(
-                    self.run_with_latest(latest, "stm32", "flash-info", "STM32F103C8T6"), []
-                )
+                self.cache.unlink(missing_ok=True)
+                self.assertEqual(self.run_with_latest(latest), [])
 
 
 class GeneratorPin(GeneratorTestCase):
