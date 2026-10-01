@@ -111,6 +111,23 @@ class LibXRConfigFile(GeneratorTestCase):
         self.assertNotIn("device_aliases", text)
         self.assertIn("# pinned generator\ngenerator: 6.0.0\n", text)
 
+    def test_written_values_read_back_the_same(self):
+        document, settings = config_file.parse("count: 010\nenable: yes\n", "test")
+        config_file.update(document, dict(settings, mode="on", time="12:30", flag="no"))
+        text = config_file.dump(document)
+        self.assertTrue(text.startswith("count: 010\n"), text)
+        self.assertEqual(
+            yaml.safe_load(text),
+            {"count": 8, "enable": True, "mode": "on", "time": "12:30", "flag": "no"},
+        )
+
+    def test_a_comment_only_file_keeps_its_comments(self):
+        comments = "# generator: 6.0.0\n\n#  terminal_source: usart1\n"
+        self.path.write_text(comments, encoding="utf-8")
+        kept = self.regenerate()
+        self.path.unlink()
+        self.assertEqual(kept, comments + self.regenerate())
+
     def test_unparsable_file_is_an_error_and_is_not_rewritten(self):
         broken = "terminal_source: usart1\nTerminal: [unclosed\n"
         self.path.write_text(broken, encoding="utf-8")

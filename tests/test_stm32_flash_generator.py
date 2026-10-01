@@ -28,6 +28,14 @@ class CommandLine(TestCase):
             ("STM32F103C8T6", "0x08000000", 64),
         )
 
+    def test_a_rule_may_move_the_flash_base(self):
+        code, out, _ = self.run_flash("STM32WB09KEV6")
+        layout = yaml.safe_load(out)
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            (layout["flash_base"], layout["sectors"][0]["address"]), ("0x10040000",) * 2
+        )
+
     def test_help_and_wrong_usage(self):
         code, out, err = self.run_flash("--help")
         self.assertEqual((code, err), (0, ""))
@@ -41,6 +49,12 @@ class CommandLine(TestCase):
         for model, reason in (
             ("STM32", "Invalid STM32 model format: STM32"),
             ("STM32U575Z0T6", "Unrecognized capacity code for STM32U575Z0T6"),
+            ("STM32WBA62C", "Unrecognized capacity code for STM32WBA62C"),
+            ("STM32MP157CAA3", "STM32MP157CAA3 does not provide internal user flash"),
+            (
+                "STM32Q999RGT6",
+                "No flash layout rule for STM32Q999RGT6 in STM32FlashLayoutRules.xml",
+            ),
         ):
             with self.subTest(model=model):
                 code, out, err = self.run_flash(model)

@@ -2,9 +2,13 @@
 libxr stm32 flash-info: derive the internal flash size and erase sector layout of an STM32
 model.
 
-容量取自型号中的容量代码；扇区布局按 STM32FlashLayoutRules.xml 中第一条匹配的规则生成。
-The size comes from the capacity code in the model; the sector layout follows the first matching
-rule in STM32FlashLayoutRules.xml.
+容量取自型号中的容量代码；扇区布局和 Flash 起始地址按 STM32FlashLayoutRules.xml 中第一条匹配的
+规则生成，没有匹配的规则时报错。规则按出厂的 bank 配置编写，并与 STM32CubeProgrammer 的器件数据
+核对过。
+The size comes from the capacity code in the model; the sector layout and the flash start
+address follow the first matching rule in STM32FlashLayoutRules.xml, and a model without a
+matching rule is an error. The rules describe the factory bank configuration and were checked
+against the STM32CubeProgrammer device data.
 """
 
 import re
@@ -48,10 +52,11 @@ class FlashRule:
     One rule of STM32FlashLayoutRules.xml.
 
     prefix、contains、regex 和 flash_kb 系列字段是匹配条件，为 None 时不参与匹配。layout_type 为
-    uniform、sequence 或 banked，决定使用 size_bytes、pattern_kb 和 bank 字段中的哪些。
+    uniform、sequence 或 banked，决定使用 size_bytes、pattern_kb 和 bank 字段中的哪些。base 是
+    Flash 的起始地址。
     prefix, contains, regex and the flash_kb fields are match conditions, ignored when None.
     layout_type is uniform, sequence or banked and selects which of size_bytes, pattern_kb and
-    the bank fields apply.
+    the bank fields apply. base is the start address of the flash.
     """
 
     name: str
@@ -66,44 +71,29 @@ class FlashRule:
     pattern_kb: tuple[int, ...]
     bank_kb: int | None
     bank_address_stride_kb: int | None
+    base: int
 
 
+# 型号第 11 个字符（STM32WBA 为第 12 个）表示的 Flash 容量（KB），与 STM32CubeMX 的器件表一致。
+# Flash size in KB of the 11th character of a model (the 12th for STM32WBA), as in the
+# STM32CubeMX device list.
 FLASH_SIZE_CODES = {
+    "3": 8,
     "4": 16,
     "6": 32,
     "8": 64,
     "B": 128,
+    "Z": 192,
     "C": 256,
     "D": 384,
     "E": 512,
+    "Y": 640,
     "F": 768,
     "G": 1024,
     "H": 1536,
     "I": 2048,
-    "J": 3072,
-    "K": 4096,
-    "L": 6144,
-    "M": 8192,
-    "N": 12288,
-    "P": 16384,
-    "Q": 512,
-    "R": 640,
-    "S": 768,
-    "T": 1024,
-    "Z": 512,
-    "5": 512,
-    "7": 2048,
-    "A": 1024,
-    "V": 1024,
-    "W": 512,
-    "X": 1024,
-    "Y": 2048,
-    "1": 256,
-    "3": 8,
+    "J": 4096,
 }
-
-U5_FLASH_SIZE_CODES = dict(FLASH_SIZE_CODES)
-U5_FLASH_SIZE_CODES["J"] = 4096
 
 _FLASH_BASE = 0x08000000
 
@@ -112,81 +102,60 @@ def get_flash_kb(model: str) -> int:
     """由 STM32 型号中的容量代码得到 Flash 容量（KB）。
     The flash size in KB from the capacity code in an STM32 model.
 
-    一般型号取第 11 个字符查 FLASH_SIZE_CODES；STM32U5 查 U5_FLASH_SIZE_CODES（J 为 4096），
-    代码不在表中时为 None；STM32WBA 取第 12 个字符，查不到时为 512；STM32WL 和 STM32WB 按型号中
-    的个别字符判断。
-    Most models look up the 11th character in FLASH_SIZE_CODES; STM32U5 uses
-    U5_FLASH_SIZE_CODES (where J is 4096) and gives None for a code missing from it; STM32WBA
-    uses the 12th character and falls back to 512; STM32WL and STM32WB are decided by specific
-    characters in the model.
+    容量代码是型号的第 11 个字符，STM32WBA 为第 12 个；STM32WB1x 的 C 表示 320 KB。
+    The capacity code is the 11th character of the model, the 12th for STM32WBA; C means
+    320 KB on STM32WB1x.
 
     Raises:
-        ValueError: 型号为 STM32N6（没有内部用户 Flash），或容量代码无法识别。
-            The model is an STM32N6, which has no internal user flash, or the capacity code is
-            not recognized.
+        ValueError: 型号为没有内部用户 Flash 的 STM32N6 或 STM32MP，或容量代码无法识别。
+            The model is an STM32N6 or STM32MP, which have no internal user flash, or the
+            capacity code is not recognized.
     """
     model = model.strip().upper()
 
-    if model.startswith("STM32N6"):
+    if model.startswith(("STM32N6", "STM32MP")):
         raise ValueError(
             tr(
-                "STM32N6 devices do not provide internal user flash",
-                "STM32N6 器件没有内部用户 Flash",
+                f"{model} does not provide internal user flash",
+                f"{model} 没有内部用户 Flash",
             )
         )
-    if model.startswith("STM32WL"):
-        if "X" in model:
-            return 1024
-        if any(code in model for code in ["55", "54", "53", "52"]):
-            return 512
-        return 512
-    if model.startswith("STM32WBA"):
-        code = model[11]
-        return FLASH_SIZE_CODES.get(code, 512)
-    if model.startswith("STM32WB"):
-        if "7" in model:
-            return 2048
-        if "V" in model:
-            return 1024
-        return 512
-    if model.startswith("STM32U5"):
-        try:
-            return U5_FLASH_SIZE_CODES[model[10]]
-        except (KeyError, IndexError):
-            raise ValueError(
-                tr(f"Unrecognized capacity code for {model}", f"无法识别 {model} 的容量代码")
-            ) from None
-
+    position = 11 if model.startswith("STM32WBA") else 10
+    code = model[position] if len(model) > position else ""
+    if model.startswith("STM32WB1") and code == "C":
+        return 320
     try:
-        return FLASH_SIZE_CODES[model[10]]
-    except (KeyError, IndexError):
+        return FLASH_SIZE_CODES[code]
+    except KeyError:
         raise ValueError(
             tr(f"Unrecognized capacity code for {model}", f"无法识别 {model} 的容量代码")
         ) from None
 
 
 def layout_flash(model: str) -> FlashInfo:
-    """STM32 型号的 Flash 布局：容量由型号得到，扇区按 STM32FlashLayoutRules.xml 中第一条匹配的
-    规则生成，没有匹配规则时为 1 KB 的均匀扇区。
-    The flash layout of an STM32 model: the size comes from the model and the sectors from the
-    first matching rule in STM32FlashLayoutRules.xml, or 1 KB uniform sectors without a match.
+    """STM32 型号的 Flash 布局：容量由型号得到，扇区和起始地址按 STM32FlashLayoutRules.xml 中第一条
+    匹配的规则生成。
+    The flash layout of an STM32 model: the size comes from the model, the sectors and the start
+    address from the first matching rule in STM32FlashLayoutRules.xml.
 
     Raises:
-        ValueError: 无法从型号得到容量，或规则无法恰好覆盖该容量。
-            The size cannot be derived from the model, or the rule does not cover it exactly.
+        ValueError: 无法从型号得到容量，没有匹配的规则，或规则无法恰好覆盖该容量。
+            The size cannot be derived from the model, no rule matches, or the rule does not
+            cover the size exactly.
     """
     model = model.strip().upper()
     flash_kb = get_flash_kb(model)
 
     rule = _match_flash_rule(model, flash_kb)
     if rule is None:
-        sector_entries = _build_contiguous_sector_entries(
-            _build_uniform_sector_sizes(flash_kb, 1024)
+        raise ValueError(
+            tr(
+                f"No flash layout rule for {model} in STM32FlashLayoutRules.xml",
+                f"STM32FlashLayoutRules.xml 中没有 {model} 的 Flash 布局规则",
+            )
         )
-    else:
-        sector_entries = _build_sector_entries_from_rule(rule, flash_kb)
-
-    return _build_flash_info(model, flash_kb, sector_entries)
+    sector_entries = _build_sector_entries_from_rule(rule, flash_kb)
+    return _build_flash_info(model, flash_kb, sector_entries, rule.base)
 
 
 def flash_info_to_dict(info: FlashInfo) -> dict:
@@ -214,10 +183,11 @@ def _build_flash_info(
     model: str,
     flash_kb: int,
     sector_entries: list[tuple[int, int]],
+    base: int,
 ) -> FlashInfo:
-    """由 (地址, 字节数) 列表构造 FlashInfo：扇区按顺序从 0 编号，基地址为 0x08000000。
-    Build a FlashInfo from (address, size in bytes) entries: sectors are numbered in order from
-    0, and the base address is 0x08000000.
+    """由 (地址, 字节数) 列表和 Flash 起始地址构造 FlashInfo：扇区按顺序从 0 编号。
+    Build a FlashInfo from (address, size in bytes) entries and the flash start address: sectors
+    are numbered in order from 0.
     """
     sectors = []
 
@@ -232,7 +202,7 @@ def _build_flash_info(
 
     return FlashInfo(
         model=model,
-        flash_base=_FLASH_BASE,
+        flash_base=base,
         flash_sectors=sectors,
         flash_size_kb=flash_kb,
     )
@@ -306,12 +276,13 @@ def _build_banked_sector_entries(
     bank_kb: int,
     pattern_kb: tuple[int, ...],
     bank_address_stride_kb: int,
+    base: int = _FLASH_BASE,
 ) -> list[tuple[int, int]]:
-    """按 bank 生成 (地址, 字节数) 列表：第 n 个 bank 从 0x08000000 + n * bank_address_stride_kb KB
+    """按 bank 生成 (地址, 字节数) 列表：第 n 个 bank 从 base + n * bank_address_stride_kb KB
     开始，按 pattern_kb 排列扇区；最后一个 bank 可以不满，但必须恰好由 pattern_kb 的前几项填满。
     Build (address, size in bytes) entries bank by bank: bank n starts at
-    0x08000000 + n * bank_address_stride_kb KB and follows pattern_kb; the last bank may be
-    partial but must be filled exactly by a leading part of pattern_kb.
+    base + n * bank_address_stride_kb KB and follows pattern_kb; the last bank may be partial
+    but must be filled exactly by a leading part of pattern_kb.
 
     Raises:
         ValueError: pattern_kb 之和不等于 bank_kb，或某个 bank 无法被恰好填满。
@@ -332,7 +303,7 @@ def _build_banked_sector_entries(
     while remaining_kb > 0:
         bank_remaining_kb = min(remaining_kb, bank_kb)
         bank_used_kb = 0
-        address = _FLASH_BASE + bank_index * bank_address_stride_kb * 1024
+        address = base + bank_index * bank_address_stride_kb * 1024
 
         for size_kb in pattern_kb:
             if bank_used_kb + size_kb > bank_remaining_kb:
@@ -360,10 +331,11 @@ def _build_sector_entries_from_rule(
     rule: FlashRule,
     flash_kb: int,
 ) -> list[tuple[int, int]]:
-    """按规则的布局类型生成 (地址, 字节数) 列表：uniform 为均匀扇区，sequence 为按序列紧接排列的
-    扇区，banked 为分 bank 的扇区（地址步长默认等于 bank 大小）。
-    Build (address, size in bytes) entries by the rule's layout type: uniform sectors, a
-    back-to-back sequence, or banked sectors whose address stride defaults to the bank size.
+    """按规则的布局类型从规则的起始地址生成 (地址, 字节数) 列表：uniform 为均匀扇区，sequence 为
+    按序列紧接排列的扇区，banked 为分 bank 的扇区（地址步长默认等于 bank 大小）。
+    Build (address, size in bytes) entries from the rule's start address by its layout type:
+    uniform sectors, a back-to-back sequence, or banked sectors whose address stride defaults to
+    the bank size.
 
     Raises:
         ValueError: 规则缺少所需字段、布局类型不受支持，或无法恰好覆盖 flash_kb。
@@ -376,12 +348,12 @@ def _build_sector_entries_from_rule(
                 tr(f"Rule {rule.name} is missing size_bytes", f"规则 {rule.name} 缺少 size_bytes")
             )
         return _build_contiguous_sector_entries(
-            _build_uniform_sector_sizes(flash_kb, rule.size_bytes)
+            _build_uniform_sector_sizes(flash_kb, rule.size_bytes), rule.base
         )
 
     if rule.layout_type == "sequence":
         return _build_contiguous_sector_entries(
-            _build_sequence_sector_sizes(flash_kb, rule.pattern_kb)
+            _build_sequence_sector_sizes(flash_kb, rule.pattern_kb), rule.base
         )
 
     if rule.layout_type == "banked":
@@ -395,6 +367,7 @@ def _build_sector_entries_from_rule(
             rule.bank_kb,
             rule.pattern_kb,
             bank_address_stride_kb,
+            rule.base,
         )
 
     raise ValueError(
@@ -465,6 +438,7 @@ def _load_flash_rules() -> tuple[FlashRule, ...]:
                 bank_address_stride_kb=_parse_optional_int(
                     layout_elem.attrib.get("address_stride_kb")
                 ),
+                base=_parse_optional_int(rule_elem.attrib.get("base")) or _FLASH_BASE,
             )
         )
 

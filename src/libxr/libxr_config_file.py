@@ -3,13 +3,16 @@ Read and rewrite libxr_config.yaml without losing user content.
 
 生成器负责它计算的值，但文件中还有它不解释的键（例如 BSP CI 安装的 ``generator`` 版本固定项）
 和用户注释。文本被解析两次：PyYAML 按以往的标量规则得到设置，ruamel.yaml 的往返文档为改写保留
-注释、键顺序和引号。生成器没有改变的值保留原节点。
+注释、键顺序和引号。生成器没有改变的值保留原节点。读写都按 PyYAML 实现的 YAML 1.1 规则，写出的
+文件再读回时得到相同的值。
 The generator owns the values it computes, but the file also carries keys it
 does not interpret (for example the ``generator`` pin that BSP CI installs)
 and user comments. The text is parsed twice: PyYAML yields the settings with
 the same scalar rules as before, and a ruamel.yaml round-trip document keeps
 comments, key order and quoting for the rewrite. Values the generator did
-not change keep their original nodes.
+not change keep their original nodes. Reading and writing both follow the
+YAML 1.1 rules that PyYAML implements, so a written file reads back as the
+same values.
 """
 
 import io
@@ -43,11 +46,16 @@ def _loader() -> YAML:
 
 
 def _dumper() -> YAML:
-    """写出用的 ruamel.yaml 往返输出器：保留引号，块布局与 yaml.dump() 相同（序列不缩进）。
-    The ruamel.yaml round-trip dumper for writing: quoting is kept and the block layout matches
-    yaml.dump(), with sequences not indented.
+    """写出用的 ruamel.yaml 往返输出器：按 YAML 1.1 写出标量，保留引号，块布局与 yaml.dump()
+    相同（序列不缩进）。
+    The ruamel.yaml round-trip dumper for writing: scalars are written for YAML 1.1, quoting is
+    kept and the block layout matches yaml.dump(), with sequences not indented.
     """
     dumper = YAML()
+    # 与读取相同的 YAML 1.1：八进制写成 010，on/off/yes/no 等字符串加引号。
+    # The same YAML 1.1 as for reading: octal is written as 010, and strings such as
+    # on/off/yes/no are quoted.
+    dumper.version = (1, 1)
     dumper.preserve_quotes = True
     # 块布局与 yaml.dump() 相同：序列不缩进。
     # Same block layout as yaml.dump(): sequences are not indented.
@@ -66,8 +74,9 @@ def parse(text: str, origin: str):
     """解析 libxr_config.yaml 文本，返回 (往返文档, 普通设置)。
     Parse a libxr_config.yaml text and return (round-trip document, plain settings).
 
-    文本为空或只含注释时得到空文档和空设置。
-    An empty or comment-only text gives an empty document and empty settings.
+    文本为空或只含注释时得到空设置；注释作为文档开头的注释保留。
+    An empty or comment-only text gives empty settings; its comments are kept as the comment at
+    the start of the document.
 
     Args:
         origin: 错误信息中使用的来源名（路径或 URL）。
@@ -85,7 +94,7 @@ def parse(text: str, origin: str):
             tr(f"Cannot parse {origin}: {error}", f"无法解析 {origin}：{error}")
         ) from error
     if settings is None:
-        return new_document(), {}
+        return _comment_document(text), {}
     if not isinstance(settings, dict) or not isinstance(document, CommentedMap):
         raise LibXRConfigError(
             tr(
@@ -94,6 +103,29 @@ def parse(text: str, origin: str):
             )
         )
     return document, settings
+
+
+def _comment_document(text: str) -> CommentedMap:
+    """只含注释的文本对应的空文档：注释行（去掉 "# "）和空行成为文档开头的注释。
+    The empty document of a comment-only text: its comment lines, without "# ", and blank lines
+    become the comment at the start of the document.
+    """
+    lines = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            body = stripped[1:]
+            lines.append(body[1:] if body.startswith(" ") else body)
+        elif not stripped:
+            lines.append("")
+    while lines and not lines[-1]:
+        lines.pop()
+    while lines and not lines[0]:
+        lines.pop(0)
+    document = new_document()
+    if lines:
+        document.yaml_set_start_comment("\n".join(lines))
+    return document
 
 
 def read(path: str):
@@ -115,12 +147,19 @@ def read(path: str):
 
 
 def dump(document: CommentedMap) -> str:
-    """按 _dumper() 的布局把往返文档输出为 YAML 文本。
-    Render a round-trip document as YAML text in the layout of _dumper().
+    """按 _dumper() 的布局把往返文档输出为 YAML 文本，不带 %YAML 版本指令。
+    Render a round-trip document as YAML text in the layout of _dumper(), without the %YAML
+    version directive.
     """
     stream = io.StringIO()
     _dumper().dump(document, stream)
-    return stream.getvalue()
+    text = stream.getvalue()
+    # 文件中不写版本指令：PyYAML 本来就按 YAML 1.1 读取。
+    # The file carries no version directive: PyYAML reads YAML 1.1 anyway.
+    for directive in ("%YAML 1.1\n---\n", "%YAML 1.1\n--- "):
+        if text.startswith(directive):
+            return text[len(directive) :]
+    return text
 
 
 def write(path: str, document: CommentedMap) -> None:
