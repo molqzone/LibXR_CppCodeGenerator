@@ -1340,9 +1340,10 @@ class USBParser(PeripheralParser):
 # DMA 解析器 / DMA Parser
 # --------------------------
 class DMAParser(PeripheralParser):
-    """读取 DMA 和 BDMA 的请求与 stream 配置，并挂到对应的外设实例下。
-    Reads DMA and BDMA requests and stream configurations and attaches them to the peripheral
-    instances they serve.
+    """读取 DMA、BDMA 的请求与 stream 配置，以及 GPDMA、HPDMA、LPDMA 通道的请求，并挂到对应的
+    外设实例下。
+    Reads DMA and BDMA requests and stream configurations, and the channel requests of GPDMA,
+    HPDMA and LPDMA, and attaches them to the peripheral instances they serve.
     """
 
     # CubeMX DMA 配置属性到内部字段名和转换函数的映射。
@@ -1366,15 +1367,85 @@ class DMAParser(PeripheralParser):
         "FIFOMode": ("fifo", lambda v: "Enabled" if "ENABLE" in v else "Disabled"),
     }
 
+    # GPDMA、HPDMA、LPDMA 通道的简单请求：<控制器>.REQUEST_<通道>=<控制器>_REQUEST_<目标>。
+    # Simple requests of GPDMA, HPDMA and LPDMA channels:
+    # <controller>.REQUEST_<channel>=<controller>_REQUEST_<target>.
+    _CHANNEL_REQUEST = re.compile(r"^((?:GP|HP|LP)DMA\d+)\.REQUEST_(\w+?(\d+))$")
+
     def parse(self, p_type: str) -> None:
-        """依次解析 Dma. 与 Bdma. 前缀下的请求和配置，然后把配置挂到外设实例下。
-        Parse the requests and configurations under the Dma. and Bdma. prefixes, then attach
-        the configurations to the peripheral instances.
+        """依次解析 Dma. 与 Bdma. 前缀下的请求和配置、GPDMA/HPDMA/LPDMA 通道的请求，然后把配置
+        挂到外设实例下；链表模式的请求只给出警告。
+        Parse the requests and configurations under the Dma. and Bdma. prefixes and the
+        channel requests of GPDMA/HPDMA/LPDMA, then attach the configurations to the peripheral
+        instances; linked-list requests only get a warning.
         """
         for prefix, dma_type in (("Dma", "DMA"), ("Bdma", "BDMA")):
             self._parse_requests(prefix, dma_type)
             self._parse_configs(prefix, dma_type)
+        self._parse_channel_requests()
+        self._warn_linked_lists()
         self._link_configs()
+
+    def _parse_channel_requests(self) -> None:
+        """读取 GPDMA、HPDMA、LPDMA 通道的简单请求，每个请求生成一份配置。
+        Read the simple requests of GPDMA, HPDMA and LPDMA channels, one configuration per
+        request.
+
+        STM32H5、U5、H7R/S、N6、WBA 等系列用这类控制器。配置包含请求目标（如 USART1_TX）、
+        控制器类型和通道（如 GPDMA1_Channel0），有 DIRECTION_<通道> 时另存完整方向；_link_configs
+        据此打开外设的 DMA 开关。
+        Families such as STM32H5, U5, H7R/S, N6 and WBA use these controllers. A configuration
+        holds the request target (such as USART1_TX), the controller type and the channel (such
+        as GPDMA1_Channel0), and the complete direction when DIRECTION_<channel> is present;
+        _link_configs then sets the DMA flags of the peripheral.
+        """
+        for key, value in self.raw_map.items():
+            match = self._CHANNEL_REQUEST.match(key)
+            if match is None:
+                continue
+            controller, channel, number = match.groups()
+            marker = f"{controller}_REQUEST_"
+            target = str(value).strip()
+            if not target.startswith(marker):
+                continue
+            target = target[len(marker) :]
+            request_key = f"{controller}.{channel}"
+            dma_type = controller.rstrip("0123456789")
+            self.config.dma_requests[request_key] = target
+            self.config.dma_types[request_key] = dma_type
+            structured = {
+                "request_id": channel,
+                "peripheral": target,
+                "dma_type": dma_type,
+                "stream": f"{controller}_Channel{number}",
+            }
+            direction = self.raw_map.get(f"{controller}.DIRECTION_{channel}")
+            if direction:
+                structured["direction_full"] = self._normalize_dma_direction(direction)
+            self.config.dma_configs[f"{target}_{controller}_{channel}"] = structured
+
+    def _warn_linked_lists(self) -> None:
+        """链表模式的 DMA 请求（Linkedlist.*.Requestforcodegen）不读取，记录一条警告列出其目标。
+        DMA requests in linked-list mode (Linkedlist.*.Requestforcodegen) are not read; one
+        warning lists their targets.
+        """
+        targets = sorted(
+            {
+                str(value).split("_REQUEST_", 1)[1]
+                for key, value in self.raw_map.items()
+                if key.startswith("Linkedlist.")
+                and key.endswith(".Requestforcodegen")
+                and "_REQUEST_" in str(value)
+            }
+        )
+        if targets:
+            logging.warning(
+                tr(
+                    f"DMA requests in linked-list mode are not read: {', '.join(targets)}; "
+                    "these peripherals get no DMA buffers",
+                    f"链表模式的 DMA 请求不会识别：{'、'.join(targets)}；这些外设不生成 DMA 缓冲区",
+                )
+            )
 
     def _parse_requests(self, prefix="Dma", dma_type="DMA") -> None:
         """记录每个 <prefix>.RequestN 条目：请求 key 到目标外设信号的映射，以及 DMA 类型。
@@ -1856,9 +1927,9 @@ def save_to_yaml(data: dict[str, Any], output_path: str = "parsed_ioc.yaml") -> 
 
 
 def print_summary(data: dict[str, Any]) -> None:
-    """向标准输出打印配置摘要：MCU、GPIO 输出/输入/外部中断数量、各外设实例和看门狗。
+    """向标准输出打印配置摘要：MCU、GPIO 输出/输入/外部中断数量和各外设实例（含看门狗）。
     Print a configuration summary to standard output: the MCU, GPIO output/input/external
-    interrupt counts, each peripheral instance and the watchdogs.
+    interrupt counts and each peripheral instance, watchdogs included.
     """
     print(tr("\n===== [Configuration Summary] =====", "\n===== [配置摘要] ====="))
 
@@ -1888,28 +1959,16 @@ def print_summary(data: dict[str, Any]) -> None:
             details = _format_peripheral_config(p_type, cfg)
             print(f"    {name}: {details}" if details else f"    {name}")
 
-    iwdgs = data.get("Peripherals", {}).get("IWDG", {})
-    wwdgs = data.get("Peripherals", {}).get("WWDG", {})
-    if iwdgs or wwdgs:
-        print(tr("\nWatchdogs:", "\n看门狗："))
-        for k, v in iwdgs.items():
-            print(
-                f"  {k}: Enabled={v.get('Enabled', False)}, Prescaler={v.get('Prescaler')}, Reload={v.get('Reload')}"
-            )
-        for k, v in wwdgs.items():
-            print(
-                f"  {k}: Enabled={v.get('Enabled', False)}, Prescaler={v.get('Prescaler')}, Window={v.get('Window')}, Counter={v.get('Counter')}"
-            )
-
 
 def _format_peripheral_config(p_type: str, config: dict) -> str:
     """外设实例的一行摘要，只列出有值的字段：TIM 为模式、周期、预分频和 PWM 通道，ADC 为规则
-    转换通道数，DAC 为通道，SPI、USART、CAN、FDCAN 为波特率，I2C 为时钟速度和时序；其他类型
-    以及没有可列字段时为空字符串。
+    转换通道数，DAC 为通道，SPI、USART、CAN、FDCAN 为波特率，I2C 为时钟速度和时序，IWDG、WWDG
+    为启用状态、预分频、重载值、窗口和计数值；其他类型以及没有可列字段时为空字符串。
     A one-line summary of a peripheral instance listing only the fields that have a value:
     mode, period, prescaler and PWM channels for TIM, the number of regular conversion channels
-    for ADC, the channels for DAC, the baud rate for SPI, USART, CAN and FDCAN, and clock speed
-    and timing for I2C; an empty string for other types or when no field has a value.
+    for ADC, the channels for DAC, the baud rate for SPI, USART, CAN and FDCAN, clock speed and
+    timing for I2C, and enable state, prescaler, reload, window and counter for IWDG and WWDG;
+    an empty string for other types or when no field has a value.
     """
     fields: list[tuple[str, Any]] = []
     if p_type == "TIM":
@@ -1927,6 +1986,11 @@ def _format_peripheral_config(p_type: str, config: dict) -> str:
         fields = [("BaudRate", config.get("BaudRate"))]
     elif p_type == "I2C":
         fields = [("ClockSpeed", config.get("ClockSpeed")), ("Timing", config.get("Timing"))]
+    elif p_type in ("IWDG", "WWDG"):
+        fields = [
+            (name, config.get(name))
+            for name in ("Enabled", "Prescaler", "Reload", "Window", "Counter")
+        ]
     return " | ".join(f"{name}={value}" for name, value in fields if value not in (None, ""))
 
 
