@@ -96,6 +96,40 @@ class ModulesDirectory(GeneratorTestCase):
             older.replace("GLOB LIBXR_USER_SOURCES", "GLOB LIBXR_USER_SOURCES CONFIGURE_DEPENDS"),
         )
 
+    def test_a_missing_modules_directory_names_its_place(self):
+        self.write_app_main(True)
+        (self.root / "cmake").mkdir()
+        (self.root / "cmake" / "LibXR.CMake").write_text(
+            "set(LIBXR_SYSTEM None)\nset(LIBXR_DRIVER st)\n"
+            "add_subdirectory(Middlewares/Third_Party/LibXR)\n",
+            encoding="utf-8",
+        )
+        with self.assertLogs(level="WARNING") as logs:
+            self.run_cmake_generator()
+        self.assertIn(
+            "add set(XROBOT_MODULES_DIR ${CMAKE_CURRENT_SOURCE_DIR}/Modules) before "
+            "add_subdirectory(Middlewares/Third_Party/LibXR)",
+            "\n".join(logs.output),
+        )
+
+    def test_an_include_in_any_spelling_is_not_appended_again(self):
+        # 以前只比较整行文字，下面前两种写法会再追加一行 include，CMake 配置失败。
+        # Comparing whole lines used to append a second include for the first two, which fails
+        # the CMake configure.
+        cmakelists = self.root / "CMakeLists.txt"
+        for text, appended in (
+            ("project(demo)\ninclude(${CMAKE_CURRENT_LIST_DIR}/cmake/LibXR.CMake)", False),
+            ("project(demo)\nINCLUDE( cmake/LibXR.CMake )\n", False),
+            ("project(demo)\n# include(${CMAKE_CURRENT_LIST_DIR}/cmake/LibXR.CMake)\n", True),
+        ):
+            with self.subTest(text=text):
+                cmakelists.write_text(text, encoding="utf-8")
+                self.run_cmake_generator()
+                expected = text + (
+                    "\n# Add LibXR\n" + stm32_cmake.include_cmake_cmd if appended else ""
+                )
+                self.assertEqual(cmakelists.read_text(encoding="utf-8"), expected)
+
     def test_a_directory_without_cmakelists_is_left_untouched(self):
         (self.root / "CMakeLists.txt").unlink()
         (self.root / "build").mkdir()
