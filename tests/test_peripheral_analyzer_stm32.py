@@ -7,6 +7,7 @@ notice at its top, and the peripheral configuration it reads.
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from fixtures import IOC, TestCase, run_libxr
 
@@ -38,6 +39,16 @@ class ParseIoc(TestCase):
         output = self.project / ".config.yaml"
         self.assertEqual(output.read_text(encoding="utf-8").splitlines()[0], NOTICE)
         self.assertFalse((self.project / "demo.yaml").exists())
+
+    def test_the_output_directory_is_created_and_written_without_anchors(self):
+        output = self.project / ".ci-tools" / "cubemx.yaml"
+        self.assertEqual(self.parse("-o", str(output)), 0)
+        text = output.read_text(encoding="utf-8")
+        # USART1 的 DMA 配置同时出现在外设和 DMA 段中，两处都完整写出。
+        # The DMA configuration of USART1 is under the peripheral and in the DMA section, both
+        # written in full.
+        self.assertNotIn("&id", text)
+        self.assertEqual(text.count("stream: DMA2_Stream5"), 2)
 
     def test_an_explicit_output_is_kept(self):
         self.assertEqual(self.parse("-o", str(self.project / "cubemx.yaml")), 0)
@@ -89,19 +100,67 @@ class ParsedConfiguration(TestCase):
             {
                 "defaultTask": {
                     "Priority": "0",
-                    "StackSize": "3192B",
+                    "StackSize": "3192 words",
                     "EntryFunction": "StartDefaultTask",
                     "Type": "Default",
                 },
                 "worker": {
                     "Priority": "24",
-                    "StackSize": "256B",
+                    "StackSize": "256 words",
                     "EntryFunction": "StartWorker",
                     "Type": "Default",
                 },
             },
         )
         self.assertEqual((freertos["Heap"], freertos["Features"]), ("65536B", ["vTaskDelayUntil"]))
+
+    def test_sizes_and_dma_priorities_keep_their_values(self):
+        # CubeMX 可以把堆大小写成十六进制；DMA 优先级有 VERY_HIGH 一级。
+        # CubeMX may write the heap size in hexadecimal; DMA priorities have a VERY_HIGH level.
+        parsed = self.parse(
+            "FREERTOS.configTOTAL_HEAP_SIZE=0x18800\n"
+            "Dma.USART1_RX.0.Priority=DMA_PRIORITY_VERY_HIGH\n"
+            "Dma.USART1_TX.1.Priority=DMA_PRIORITY_LOW\n"
+        )
+        self.assertEqual(parsed["FreeRTOS"]["Heap"], "100352B")
+        self.assertNotIn("AllocationMethod", parsed["FreeRTOS"])
+        configurations = parsed["DMA"]["Configurations"]
+        self.assertEqual(configurations["USART1_RX_0"]["priority"], "VeryHigh")
+        self.assertEqual(configurations["USART1_TX_1"]["priority"], "Low")
+
+    def test_fmpi2c_is_not_taken_for_i2c(self):
+        # LibXR 没有 FMPI2C 驱动；当成 I2C 会生成类型不符的 I2C_HandleTypeDef 句柄。
+        # LibXR has no FMPI2C driver; taken for I2C it would get a mistyped I2C_HandleTypeDef.
+        with self.assertLogs(level="WARNING") as logs:
+            peripherals = self.parse("PC6.Signal=FMPI2C1_SCL\nPC7.Signal=FMPI2C1_SDA\n")[
+                "Peripherals"
+            ]
+        self.assertNotIn("I2C", peripherals)
+        fmpi2c = [line for line in logs.output if "FMPI2C1" in line]
+        self.assertEqual(
+            fmpi2c, ["WARNING:root:FMPI2C1 is not generated: LibXR has no driver for it"]
+        )
+
+    def test_a_dac_entry_without_a_comma_is_skipped(self):
+        with self.assertLogs(level="WARNING") as logs:
+            parsed = self.parse("SH.COMP_DAC1_group.0=DAC_OUT1\n")
+        self.assertIsNotNone(parsed)
+        self.assertIn(
+            "Ignored DAC entry without a channel and an alias: SH.COMP_DAC1_group.0=DAC_OUT1",
+            "\n".join(logs.output),
+        )
+
+    def test_a_parse_error_logs_its_traceback_at_debug_level(self):
+        with (
+            mock.patch.object(
+                peripheral_analyzer_stm32.TIMParser, "parse", side_effect=RuntimeError("boom")
+            ),
+            self.assertLogs(level="DEBUG") as logs,
+        ):
+            self.assertIsNone(self.parse(""))
+        errors = [r for r in logs.records if r.levelname == "ERROR"]
+        self.assertEqual([r.getMessage() for r in errors], ["Parsing failed: boom"])
+        self.assertIsNotNone(logs.records[-1].exc_info)
 
     def test_can_flags_follow_their_hal_meaning(self):
         # ABOM 是自动离线恢复，NART 是禁止自动重传；未写出的参数取 HAL 的默认值。

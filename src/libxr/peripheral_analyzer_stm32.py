@@ -36,6 +36,18 @@ def sanitize_numeric(value: str) -> int | float | str:
         return value
 
 
+def byte_size(value: str) -> str:
+    """CubeMX 中的字节数（十进制或 0x 开头的十六进制）写成十进制加 B，例如 0x18800 为
+    100352B；不是整数时原样加 B。
+    A CubeMX byte count, decimal or 0x hexadecimal, written in decimal with a B suffix, e.g.
+    0x18800 gives 100352B; a value that is not an integer gets the B suffix as is.
+    """
+    try:
+        return f"{int(str(value).strip(), 0)}B"
+    except ValueError:
+        return f"{value}B"
+
+
 # --------------------------
 # 配置容器 / Configuration Containers
 # --------------------------
@@ -48,14 +60,8 @@ class ConfigurationManager:
     def __init__(self) -> None:
         """创建空的配置容器；时基默认为 SysTick。
         Create empty configuration containers; the timebase defaults to SysTick.
-
-        gpio_pins 是 pin_registry 的别名，供旧调用方使用。
-        gpio_pins is an alias of pin_registry kept for older callers.
         """
         self.pin_registry: defaultdict[str, dict[str, Any]] = defaultdict(dict)
-        # 兼容旧调用方的别名；引脚配置以 pin_registry 为准。
-        # Compatibility alias for older callers; pin_registry is the canonical store.
-        self.gpio_pins: defaultdict[str, dict[str, Any]] = self.pin_registry
         self.peripherals: defaultdict[str, defaultdict[str, dict]] = defaultdict(
             lambda: defaultdict(dict)
         )
@@ -164,9 +170,6 @@ class ConfigurationManager:
         return {
             "RTOS": self.freertos_config.get("RTOS", "FreeRTOS"),
             "Enabled": self.freertos_config.get("Enabled", False),
-            "AllocationMethod": self.freertos_config.get("AllocationMethod"),
-            "MemPoolSize": self.freertos_config.get("MemPoolSize"),
-            "CorePresent": self.freertos_config.get("CorePresent"),
             "Tasks": self.freertos_config["Tasks"],
             "Heap": self.freertos_config["Heap"],
             "Features": [
@@ -477,18 +480,16 @@ class TIMParser(PeripheralParser):
                 self.config.peripherals[p_type][tim_name]["Mode"] = value
 
     def _ensure_tim_instance(self, p_type: str, tim_name: str) -> None:
-        """TIM 实例不存在时创建，模式、周期、预分频为空，通道和脉宽表为空。
+        """TIM 实例不存在时创建，模式、周期、预分频为空，通道表为空。
         Create the TIM instance when it does not exist, with empty mode, period and prescaler
-        and empty channel and pulse maps.
+        and an empty channel map.
         """
         if not self.config.peripherals[p_type].get(tim_name):
             self.config.peripherals[p_type][tim_name] = {
                 "Mode": None,
-                "ClockPrescaler": None,
                 "Period": None,
                 "Prescaler": None,
                 "Channels": {},
-                "Pulses": {},
             }
 
     def _handle_pwm_channel(self, tim_name: str, parts: list, value: str) -> None:
@@ -496,11 +497,9 @@ class TIMParser(PeripheralParser):
         Record one PWM channel from an entry such as TIMx.Channel-PWM Generation2
         CH2N=TIM_CHANNEL_2.
 
-        通道取 key 末尾的 CHx / CHxN，CHxN 标记为互补输出；Label 为该通道所连引脚的标签；
-        值全是数字时存为 DutyCycle。
+        通道取 key 末尾的 CHx / CHxN，CHxN 标记为互补输出；Label 为该通道所连引脚的标签。
         The channel is the trailing CHx / CHxN of the key, and CHxN is marked complementary;
-        Label is the label of the pin wired to the channel; an all-digit value is stored as
-        DutyCycle.
+        Label is the label of the pin wired to the channel.
         """
         # 用正则表达式取出末尾的 CHx 或 CHxN。
         # Use regex to capture CHx or CHxN
@@ -518,7 +517,6 @@ class TIMParser(PeripheralParser):
             "Label": pin_label,
             "PWM": True,
             "Complementary": is_n,
-            "DutyCycle": sanitize_numeric(value) if value.isdigit() else None,
         }
 
     def _get_associated_pin_label(self, timer_name: str, channel_id: str) -> tuple[str, bool]:
@@ -617,12 +615,10 @@ class ADCParser(PeripheralParser):
 
         # 温度传感器：优先取 CommonPathInternal 中带后缀的宏，其次用通用宏。
         # TempSensor: prefer suffixed macros from CommonPathInternal, then generic
-        if "TEMP" in v_upper or "TEMPSENSOR" in v_upper:
+        if "TEMP" in v_upper:
             for tok in cp_list:
                 if re.match(r"ADC_CHANNEL_TEMPSENSOR_ADC\d+$", tok):
                     return tok
-            if "ADC_CHANNEL_TEMPSENSOR" in cp_list:
-                return "ADC_CHANNEL_TEMPSENSOR"
             return "ADC_CHANNEL_TEMPSENSOR"
 
         # 运算放大器 OPAMPn
@@ -805,12 +801,13 @@ class DACParser(PeripheralParser):
         """读取两种 DAC 条目：SH.COMP_DAC<n>_group.<k> 和 DACx.* 属性。
         Read two kinds of DAC entries: SH.COMP_DAC<n>_group.<k> and DACx.* properties.
 
-        SH.COMP_DAC 条目的值在第一个逗号处拆成通道和别名。一位编号（如 COMP_DAC2_group）归入
-        实例 DAC，通道键为值中的通道；两位编号（如 COMP_DAC12_group）归入 DAC1 的 OUT2。
+        SH.COMP_DAC 条目的值在第一个逗号处拆成通道和别名，没有逗号的条目记录警告后跳过。一位
+        编号（如 COMP_DAC2_group）归入实例 DAC，通道键为值中的通道；两位编号（如
+        COMP_DAC12_group）归入 DAC1 的 OUT2。
         The value of an SH.COMP_DAC entry is split at the first comma into a channel and an
-        alias. A one-digit number such as COMP_DAC2_group goes to the instance DAC under the
-        channel from the value; a two-digit number such as COMP_DAC12_group goes to OUT2 of
-        DAC1.
+        alias; an entry without a comma is logged as a warning and skipped. A one-digit number
+        such as COMP_DAC2_group goes to the instance DAC under the channel from the value; a
+        two-digit number such as COMP_DAC12_group goes to OUT2 of DAC1.
         """
         for key, value in self.raw_map.items():
             # 1. SH.COMP_DAC*_group 条目，单通道和多通道 DAC 都能识别。
@@ -818,6 +815,14 @@ class DACParser(PeripheralParser):
             m = re.match(r"^SH\.COMP_DAC(\d{1,2})_group\.\d+$", key)
             if m:
                 digits = m.group(1)
+                if "," not in value:
+                    logging.warning(
+                        tr(
+                            f"Ignored DAC entry without a channel and an alias: {key}={value}",
+                            f"忽略缺少通道和别名的 DAC 条目：{key}={value}",
+                        )
+                    )
+                    continue
                 out, alias = value.split(",", 1)
                 if len(digits) == 1:
                     # 一位数字（如 COMP_DAC2_group）：唯一的 DAC，通道 OUTx（通常为 OUT1/OUT2）。
@@ -1032,11 +1037,14 @@ class I2CParser(PeripheralParser):
         contains I2C, recorded as SCL or SDA of that instance; and I2Cx.* properties.
 
         属性按 key 的最后一段匹配：ClockSpeed 转为数值，DualAddressMode 转为布尔值，Timing
-        存为字符串，DutyCycle 和 AddressingMode 原样保存。
+        存为字符串，DutyCycle 和 AddressingMode 原样保存。引脚信号属于 FMPI2C 等名字不以 I2C
+        开头的外设时，记录一次警告后跳过，因为 LibXR 没有它们的驱动。
         Properties match on the last token of the key: ClockSpeed becomes a number,
         DualAddressMode a boolean and Timing a string; DutyCycle and AddressingMode are stored
-        as is.
+        as is. Pin signals of a peripheral whose name does not start with I2C, such as FMPI2C,
+        are logged once as a warning and skipped, as LibXR has no driver for them.
         """
+        unsupported: set[str] = set()
         for key, value in self.raw_map.items():
             if self._ioc_key_startswith(key, "Mcu.IP"):
                 val = str(value)
@@ -1048,6 +1056,19 @@ class I2CParser(PeripheralParser):
                 portpin = self._normalize_ioc_key_pin(key)
                 per_sig = self._normalize_signal_token(value)
                 i2c_name = self._signal_root(per_sig)
+                if not i2c_name.startswith("I2C"):
+                    # FMPI2C 等外设的信号名也含 I2C，但 LibXR 没有对应的驱动。
+                    # FMPI2C and similar peripherals have I2C in their signal names, but LibXR
+                    # has no driver for them.
+                    if i2c_name not in unsupported:
+                        unsupported.add(i2c_name)
+                        logging.warning(
+                            tr(
+                                f"{i2c_name} is not generated: LibXR has no driver for it",
+                                f"{i2c_name} 不会生成：LibXR 没有它的驱动",
+                            )
+                        )
+                    continue
                 self._ensure_i2c_instance(p_type, i2c_name)
                 cfg = self.config.peripherals[p_type][i2c_name]
                 pins = cfg.setdefault("Pins", {"SCL": None, "SDA": None})
@@ -1081,9 +1102,9 @@ class I2CParser(PeripheralParser):
                 self.config.peripherals[p_type][i2c_name]["Timing"] = str(value)
 
     def _ensure_i2c_instance(self, p_type: str, i2c_name: str) -> None:
-        """I2C 实例不存在时创建：7 位寻址，双地址和 NoStretchMode 关闭，引脚未定。
-        Create the I2C instance when it does not exist: 7-bit addressing, dual address and
-        NoStretchMode off, and no pins.
+        """I2C 实例不存在时创建：7 位寻址，双地址关闭，引脚未定。
+        Create the I2C instance when it does not exist: 7-bit addressing, dual address off, and
+        no pins.
         """
         if not self.config.peripherals[p_type].get(i2c_name):
             self.config.peripherals[p_type][i2c_name] = {
@@ -1092,7 +1113,6 @@ class I2CParser(PeripheralParser):
                 "DutyCycle": None,
                 "AddressingMode": "7-bit",
                 "DualAddressMode": False,
-                "NoStretchMode": False,
                 "DMA": {},
                 "Pins": {"SCL": None, "SDA": None},
             }
@@ -1259,21 +1279,11 @@ class USBParser(PeripheralParser):
             elif re.match(r"^USB(_OTG(_FS|_HS))?\.", key):
                 usb_names.setdefault(self._ioc_key_root(key))
 
-        logging.info(
-            tr(
-                f"[USBParser] Detected USB peripherals: {list(usb_names)}",
-                f"[USBParser] 检测到的 USB 外设：{list(usb_names)}",
-            )
-        )
+        logging.debug(f"[USBParser] Detected USB peripherals: {list(usb_names)}")
 
         for usb_name in usb_names:
             self._ensure_usb_instance(usb_name)
-            logging.info(
-                tr(
-                    f"[USBParser] Parsing configuration for: {usb_name}",
-                    f"[USBParser] 正在解析配置：{usb_name}",
-                )
-            )
+            logging.debug(f"[USBParser] Parsing configuration for: {usb_name}")
 
             for key, value in self.raw_map.items():
                 if not self._has_ioc_prefix(key, usb_name):
@@ -1298,11 +1308,8 @@ class USBParser(PeripheralParser):
                         parameters = self.config.peripherals["USB"][usb_name]["profiles"][profile][
                             param
                         ]
-                        logging.info(
-                            tr(
-                                f"[USBParser] IPParameters for profile={profile}: {parameters}",
-                                f"[USBParser] profile={profile} 的 IPParameters：{parameters}",
-                            )
+                        logging.debug(
+                            f"[USBParser] IPParameters for profile={profile}: {parameters}"
                         )
                     else:
                         self.config.peripherals["USB"][usb_name]["profiles"][profile][param] = value
@@ -1313,12 +1320,7 @@ class USBParser(PeripheralParser):
                     if rest_key == "IPParameters":
                         self.config.peripherals["USB"][usb_name][rest_key] = value.split(",")
                         parameters = self.config.peripherals["USB"][usb_name][rest_key]
-                        logging.info(
-                            tr(
-                                f"[USBParser] IPParameters: {parameters}",
-                                f"[USBParser] IPParameters：{parameters}",
-                            )
-                        )
+                        logging.debug(f"[USBParser] IPParameters: {parameters}")
                     else:
                         self.config.peripherals["USB"][usb_name][rest_key] = value
 
@@ -1350,9 +1352,13 @@ class DMAParser(PeripheralParser):
         "PeriphDataAlignment": ("periph_align", lambda v: v.split("_")[-1].lower()),
         "MemDataAlignment": ("mem_align", lambda v: v.split("_")[-1].lower()),
         "Mode": ("mode", lambda v: v.split("_")[-1].capitalize()),
+        # DMA_PRIORITY_VERY_HIGH 为 VeryHigh，DMA_PRIORITY_LOW 为 Low。
+        # DMA_PRIORITY_VERY_HIGH gives VeryHigh and DMA_PRIORITY_LOW gives Low.
         "Priority": (
             "priority",
-            lambda v: v.split("_")[-1].replace("VERY", "").strip().capitalize(),
+            lambda v: "".join(
+                word.capitalize() for word in v.upper().removeprefix("DMA_PRIORITY_").split("_")
+            ),
         ),
         "FIFOMode": ("fifo", lambda v: "Enabled" if "ENABLE" in v else "Disabled"),
     }
@@ -1448,37 +1454,36 @@ class DMAParser(PeripheralParser):
         """把每份 DMA 配置挂到请求目标对应的外设实例下。
         Attach each DMA configuration to the peripheral instance its request targets.
 
-        依次在 SPI、I2C、USART、LPUART、ADC、TIM 中查找同名实例，把配置存入其 dma 字典的
-        dma_<方向> 或 dma 键；方向为 tx/rx 时另设 DMA_TX/DMA_RX 为 ENABLE 并记录 DMA 类型，
-        供生成缓冲区使用。
-        The instance is looked up in SPI, I2C, USART, LPUART, ADC and TIM in that order, and
-        the configuration goes into its dma dict under dma_<direction> or dma; a tx/rx
-        direction also sets DMA_TX/DMA_RX to ENABLE and records the DMA type for buffer
-        generation.
+        依次在 SPI、I2C、USART（含 UART 和 LPUART）、ADC、TIM 中查找同名实例，把配置存入其
+        dma 字典的 dma_<方向> 或 dma 键。SPI、I2C、USART、ADC 的实例同时打开 DMA 开关，供生成
+        缓冲区使用：方向为 tx/rx 时设 DMA_TX/DMA_RX 为 ENABLE 并记录 DMA 类型，没有方向时设
+        DMA 为 ENABLE。
+        The instance is looked up in SPI, I2C, USART (with UART and LPUART), ADC and TIM in that
+        order, and the configuration goes into its dma dict under dma_<direction> or dma. For
+        SPI, I2C, USART and ADC instances the DMA flags used for buffer generation are set too:
+        a tx/rx direction sets DMA_TX/DMA_RX to ENABLE and records the DMA type, and no
+        direction sets DMA to ENABLE.
         """
         for cfg in self.config.dma_configs.values():
-            peripheral_full = cfg["peripheral"]
+            p_name, direction = self._parse_dma_request_endpoint(cfg["peripheral"])
             dma_type = cfg.get("dma_type", "DMA")
-            p_name, direction = self._parse_dma_request_endpoint(peripheral_full)
-            # 依次在各外设类型中查找该外设。
-            # Search for the peripheral in all possible types
-            for p_type in ["SPI", "I2C", "USART", "LPUART", "ADC", "TIM"]:
-                if p_name in self.config.peripherals.get(p_type, {}):
-                    dir_key = f"dma_{direction}" if direction != "general" else "dma"
-                    if "dma" not in self.config.peripherals[p_type][p_name]:
-                        self.config.peripherals[p_type][p_name]["dma"] = {}
-                    # 保存带 DMA 类型标记的 DMA 配置。
-                    # Store DMA config with type marking
-                    self.config.peripherals[p_type][p_name]["dma"][dir_key] = cfg
-                    # 自动把 DMA_TX/DMA_RX 设为 ENABLE，供生成缓冲区使用。
-                    # Automatically enable DMA_TX/DMA_RX flags for buffer generation
-                    if direction == "tx":
-                        self.config.peripherals[p_type][p_name]["DMA_TX"] = "ENABLE"
-                        self.config.peripherals[p_type][p_name]["DMA_TX_TYPE"] = dma_type
-                    elif direction == "rx":
-                        self.config.peripherals[p_type][p_name]["DMA_RX"] = "ENABLE"
-                        self.config.peripherals[p_type][p_name]["DMA_RX_TYPE"] = dma_type
-                    break  # 找到后停止查找 / Stop searching once found
+            for p_type in ("SPI", "I2C", "USART", "ADC", "TIM"):
+                instance = self.config.peripherals.get(p_type, {}).get(p_name)
+                if instance is None:
+                    continue
+                dir_key = f"dma_{direction}" if direction != "general" else "dma"
+                instance.setdefault("dma", {})[dir_key] = cfg
+                if p_type == "TIM":
+                    break
+                if direction == "tx":
+                    instance["DMA_TX"] = "ENABLE"
+                    instance["DMA_TX_TYPE"] = dma_type
+                elif direction == "rx":
+                    instance["DMA_RX"] = "ENABLE"
+                    instance["DMA_RX_TYPE"] = dma_type
+                elif direction == "general":
+                    instance["DMA"] = "ENABLE"
+                break
 
 
 class ThreadXParser(PeripheralParser):
@@ -1503,7 +1508,7 @@ class ThreadXParser(PeripheralParser):
         """
         for key, value in self.raw_map.items():
             if key.endswith("TX_APP_MEM_POOL_SIZE"):
-                self.config.threadx_config["MemPoolSize"] = f"{sanitize_numeric(value)}B"
+                self.config.threadx_config["MemPoolSize"] = byte_size(value)
 
             elif key.endswith("AZRTOS_APP_MEM_ALLOCATION_METHOD"):
                 method_map = {
@@ -1519,9 +1524,7 @@ class ThreadXParser(PeripheralParser):
                 parts = self._split_ioc_key(key)
                 if len(parts) == 3:
                     task = parts[1]
-                    self.config.threadx_config["Tasks"][task] = {
-                        "StackSize": f"{sanitize_numeric(value)}B"
-                    }
+                    self.config.threadx_config["Tasks"][task] = {"StackSize": byte_size(value)}
 
 
 # --------------------------
@@ -1558,8 +1561,6 @@ class WatchdogParser(PeripheralParser):
                     # group(1) 为 "IWDG1"、"IWDG2" 或 ""。
                     # group(1) is "IWDG1", "IWDG2" or "".
                     wdg_name = match.group(1) or "IWDG"
-                    if not wdg_name:
-                        wdg_name = "IWDG"
                     self._ensure_wdg_instance("IWDG", wdg_name)
                     self.config.peripherals["IWDG"][wdg_name]["Enabled"] = True
             elif self._ioc_key_root(key).startswith("IWDG"):
@@ -1630,7 +1631,7 @@ class FreeRTOSParser(PeripheralParser):
             if parts[1].startswith("Tasks"):
                 self._process_task_configuration(value)
             elif parts[1] == "configTOTAL_HEAP_SIZE" or "HeapSize" in key:
-                self.config.freertos_config["Heap"] = f"{sanitize_numeric(value)}B"
+                self.config.freertos_config["Heap"] = byte_size(value)
             elif "INCLUDE_" in key:
                 self._process_feature_flag(parts[1], value)
 
@@ -1640,16 +1641,16 @@ class FreeRTOSParser(PeripheralParser):
         Read task definitions: tasks are separated by semicolons, each is split at commas with
         empty and NULL items dropped, and recorded when at least five items remain.
 
-        前五项依次为任务名、优先级、栈大小（带 B 后缀）、入口函数和类型。
-        The first five items are the task name, priority, stack size with a B suffix, entry
-        function and type.
+        前五项依次为任务名、优先级、栈大小、入口函数和类型；CubeMX 中栈大小的单位是字（word）。
+        The first five items are the task name, priority, stack size, entry function and type;
+        CubeMX gives the stack size in words.
         """
         for task in task_data.split(";"):
             elements = [x for x in task.split(",") if x and x != "NULL"]
             if len(elements) >= 5:
                 self.config.freertos_config["Tasks"][elements[0]] = {
                     "Priority": elements[1],
-                    "StackSize": f"{elements[2]}B",
+                    "StackSize": f"{elements[2]} words",
                     "EntryFunction": elements[3],
                     "Type": elements[4],
                 }
@@ -1669,11 +1670,14 @@ def parse_ioc_file(ioc_path: str) -> dict[str, Any] | None:
     Parse one .ioc file and return the cleaned configuration; a read or parse failure is
     logged as an error and gives None.
 
-    依次读取时基（NVIC.TimeBaseIP、NVIC.TimeBase）和 GPIO，运行各外设解析器，最后按 DMA
-    请求设置对应外设的 DMA 开关。
+    先读取时基（NVIC.TimeBaseIP、NVIC.TimeBase）和 GPIO，再运行各外设解析器；DMA 解析器最后
+    运行，把 DMA 配置和开关挂到对应的外设实例下。
     The timebase (NVIC.TimeBaseIP, NVIC.TimeBase) and GPIO are read first, then each
-    peripheral parser runs, and finally the DMA flags of the peripherals named by DMA
-    requests are set.
+    peripheral parser runs; the DMA parser runs last and attaches the DMA configurations and
+    flags to the peripheral instances.
+
+    解析出错时记录错误；--verbose（调试日志）下同时记录调用栈。
+    A parse error is logged; with --verbose (debug logging) the traceback is logged too.
     """
     config = ConfigurationManager()
 
@@ -1728,13 +1732,10 @@ def parse_ioc_file(ioc_path: str) -> dict[str, Any] | None:
                 # Strip 'Parser' suffix
                 parser.parse(parser.__class__.__name__[:-6])
 
-        # 阶段 3：后处理。
-        # Phase 3: Post-processing
-        _link_dma_requests(config)
-
         return config.clean_structure()
     except Exception as e:
         logging.error(tr(f"Parsing failed: {str(e)}", f"解析失败：{str(e)}"))
+        logging.debug(tr("Traceback:", "调用栈："), exc_info=True)
         return None
 
 
@@ -1798,35 +1799,37 @@ def _extract_key_value_pairs(file_handler: TextIO) -> dict[str, str]:
     return raw_map
 
 
-def _link_dma_requests(config: ConfigurationManager) -> None:
-    """按每个 DMA 请求的目标，把 USART、SPI、ADC、I2C 中同名实例的 DMA_<方向> 设为 ENABLE。
-    For each DMA request target, set DMA_<DIRECTION> to ENABLE on the USART, SPI, ADC and I2C
-    instances of that name.
-
-    请求目标没有方向后缀时设置的字段为 DMA。
-    A request target without a direction suffix sets the field DMA.
-    """
-    for peripheral in config.dma_requests.values():
-        p_name, direction = PeripheralParser._parse_dma_request_endpoint(peripheral)
-        direction_key = f"DMA_{direction.upper()}" if direction != "general" else "DMA"
-
-        for p_type in ["USART", "SPI", "ADC", "I2C"]:
-            if p_name in config.peripherals[p_type]:
-                config.peripherals[p_type][p_name][direction_key] = "ENABLE"
-
-
 # --------------------------
 # 输出生成 / Output Generation
 # --------------------------
+class _NoAliasDumper(yaml.SafeDumper):
+    """不生成锚点和别名的 YAML Dumper：同一对象出现多次时每处都完整写出。
+    A YAML dumper without anchors and aliases: an object that appears several times is written
+    out in full each time.
+    """
+
+    def ignore_aliases(self, data: Any) -> bool:
+        """总是忽略别名。
+        Always ignore aliases.
+        """
+        return True
+
+
 def save_to_yaml(data: dict[str, Any], output_path: str = "parsed_ioc.yaml") -> bool:
     """把配置写成 YAML 文件，首行为生成文件说明注释，键保持插入顺序；成功时为 True。
     Write the configuration as a YAML file with a generated-file comment on the first line and
     keys in insertion order; True on success.
 
-    写入或序列化失败时记录错误并返回 False。
-    A write or serialization failure is logged as an error and gives False.
+    输出目录不存在时先创建。同一份 DMA 配置会同时出现在外设和 DMA 段中，两处都完整写出，不用
+    锚点引用。写入或序列化失败时记录错误并返回 False。
+    A missing output directory is created first. A DMA configuration appears under its
+    peripheral and in the DMA section, and both places are written in full rather than as an
+    anchor reference. A write or serialization failure is logged as an error and gives False.
     """
     try:
+        directory = os.path.dirname(output_path)
+        if directory:
+            os.makedirs(directory, exist_ok=True)
         with open(output_path, "w", encoding="utf-8", newline="\n") as f:
             f.write(
                 "# Generated by `libxr parse` from the CubeMX .ioc file; do not edit by hand.\n"
@@ -1834,6 +1837,7 @@ def save_to_yaml(data: dict[str, Any], output_path: str = "parsed_ioc.yaml") -> 
             yaml.dump(
                 data,
                 f,
+                Dumper=_NoAliasDumper,
                 allow_unicode=True,
                 sort_keys=False,
                 default_flow_style=False,
@@ -1878,7 +1882,8 @@ def print_summary(data: dict[str, Any]) -> None:
     for p_type, group in data.get("Peripherals", {}).items():
         print(tr(f"  {p_type}: {len(group)} instance(s)", f"  {p_type}：{len(group)} 个实例"))
         for name, cfg in group.items():
-            print(f"    {name}: {_format_peripheral_config(p_type, cfg)}")
+            details = _format_peripheral_config(p_type, cfg)
+            print(f"    {name}: {details}" if details else f"    {name}")
 
     iwdgs = data.get("Peripherals", {}).get("IWDG", {})
     wwdgs = data.get("Peripherals", {}).get("WWDG", {})
@@ -1895,22 +1900,31 @@ def print_summary(data: dict[str, Any]) -> None:
 
 
 def _format_peripheral_config(p_type: str, config: dict) -> str:
-    """外设实例的一行摘要：TIM 为模式和周期，ADC 为规则转换通道数，DAC 为通道列表，SPI、
-    I2C、USART 为波特率或时钟速度，其他类型为空字符串。
-    A one-line summary of a peripheral instance: mode and period for TIM, the number of
-    regular conversion channels for ADC, the channel list for DAC, the baud rate or clock
-    speed for SPI, I2C and USART, and an empty string for other types.
+    """外设实例的一行摘要，只列出有值的字段：TIM 为模式、周期、预分频和 PWM 通道，ADC 为规则
+    转换通道数，DAC 为通道，SPI、USART、CAN、FDCAN 为波特率，I2C 为时钟速度和时序；其他类型
+    以及没有可列字段时为空字符串。
+    A one-line summary of a peripheral instance listing only the fields that have a value:
+    mode, period, prescaler and PWM channels for TIM, the number of regular conversion channels
+    for ADC, the channels for DAC, the baud rate for SPI, USART, CAN and FDCAN, and clock speed
+    and timing for I2C; an empty string for other types or when no field has a value.
     """
+    fields: list[tuple[str, Any]] = []
     if p_type == "TIM":
-        return f"Mode={config.get('Mode')} | Period={config.get('Period')}"
+        fields = [
+            ("Mode", config.get("Mode")),
+            ("Period", config.get("Period")),
+            ("Prescaler", config.get("Prescaler")),
+            ("Channels", ",".join(config.get("Channels", {}))),
+        ]
     elif p_type == "ADC":
-        return f"Channels={len(config.get('RegularConversions', []))}"
+        fields = [("Channels", len(config.get("RegularConversions", [])) or None)]
     elif p_type == "DAC":
-        chs = config.get("Channels", {})
-        return f"Channels={list(chs.keys())}" if chs else "Channels=0"
-    elif p_type in ["SPI", "I2C", "USART"]:
-        return f"Baud={config.get('BaudRate') or config.get('ClockSpeed')}"
-    return ""
+        fields = [("Channels", ",".join(config.get("Channels", {})))]
+    elif p_type in ("SPI", "USART", "CAN", "FDCAN"):
+        fields = [("BaudRate", config.get("BaudRate"))]
+    elif p_type == "I2C":
+        fields = [("ClockSpeed", config.get("ClockSpeed")), ("Timing", config.get("Timing"))]
+    return " | ".join(f"{name}={value}" for name, value in fields if value not in (None, ""))
 
 
 # --------------------------
