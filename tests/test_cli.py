@@ -127,6 +127,15 @@ class LegacyCommands(TestCase):
                     cli.build_parser().parse_args([*new, "--help"])
                 self.assertEqual(exit.exception.code, 0)
 
+    def test_the_positional_directory_of_xr_stm32_cmake_still_works(self):
+        with (
+            mock.patch("libxr.update_notice._latest_version", return_value=None),
+            mock.patch("libxr.generator_stm32_cmake.integrate") as integrate,
+            self.assertLogs(level="WARNING"),
+        ):
+            self.assertEqual(cli.legacy("xr_stm32_cmake", ["project"]), 0)
+        integrate.assert_called_once_with("project")
+
     def test_an_old_module_still_runs_as_a_script(self):
         result = subprocess.run(
             [sys.executable, "-m", "libxr.stm32_flash_generator", "STM32F103C8T6"],

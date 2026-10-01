@@ -78,13 +78,31 @@ class ModulesDirectory(GeneratorTestCase):
             self.assertEqual(self.run_cmake_generator(), existing)
         self.assertIn("remove that line", "\n".join(logs.output))
 
+    def test_build_directories_are_kept(self):
+        (self.root / "build" / "debug").mkdir(parents=True)
+        self.run_cmake_generator()
+        self.assertTrue((self.root / "build" / "debug").is_dir())
+
+    def test_new_user_sources_are_globbed_at_build_time(self):
+        self.assertIn(
+            'GLOB LIBXR_USER_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/User/*.cpp"',
+            self.run_cmake_generator(),
+        )
+        path = self.root / "cmake" / "LibXR.CMake"
+        older = path.read_text(encoding="utf-8").replace(" CONFIGURE_DEPENDS", "")
+        path.write_text(older, encoding="utf-8")
+        self.assertEqual(
+            self.run_cmake_generator(),
+            older.replace("GLOB LIBXR_USER_SOURCES", "GLOB LIBXR_USER_SOURCES CONFIGURE_DEPENDS"),
+        )
+
     def test_a_directory_without_cmakelists_is_left_untouched(self):
         (self.root / "CMakeLists.txt").unlink()
         (self.root / "build").mkdir()
         with self.assertLogs(level="ERROR") as logs, self.assertRaises(SystemExit) as exit:
             self.run_cmake_generator()
         self.assertEqual(exit.exception.code, 1)
-        self.assertEqual(logs.output, ["ERROR:root:CMakeLists.txt not found."])
+        self.assertEqual(logs.output, [f"ERROR:root:{self.root / 'CMakeLists.txt'} not found."])
         self.assertEqual(sorted(p.name for p in self.root.iterdir()), ["User", "build"])
 
 

@@ -185,7 +185,7 @@ def cmd_stm32_cmake(args: argparse.Namespace) -> None:
     """
     from libxr.generator_stm32_cmake import integrate
 
-    integrate(args.input_dir)
+    integrate(args.directory)
 
 
 def cmd_stm32_flash_info(args: argparse.Namespace) -> None:
@@ -204,7 +204,7 @@ def cmd_stm32_toolchain(args: argparse.Namespace) -> None:
     """
     from libxr.stm32_toolchain_switch import switch_toolchain
 
-    switch_toolchain(args.compiler, args.std)
+    switch_toolchain(args.directory, args.compiler, args.std)
 
 
 def _command(group, name: str, text: str, run: Callable[[argparse.Namespace], None], **options):
@@ -476,9 +476,21 @@ def _add_stm32_cmake(commands) -> None:
         ),
         cmd_stm32_cmake,
     )
+    _add_project_directory(parser)
+
+
+def _add_project_directory(parser) -> None:
+    """加入 -d/--directory：工程目录，默认当前目录。
+    Add -d/--directory: the project directory, the current directory by default.
+    """
     parser.add_argument(
-        "input_dir",
-        help=tr("CubeMX CMake Project Directory", "CubeMX CMake 工程目录"),
+        "-d",
+        "--directory",
+        default=".",
+        help=tr(
+            "CubeMX CMake project directory (default: current directory)",
+            "CubeMX CMake 工程目录（默认：当前目录）",
+        ),
     )
 
 
@@ -513,11 +525,22 @@ def _add_stm32_toolchain(commands) -> None:
             "切换默认 preset 的工具链和 clang 的标准库",
         ),
         cmd_stm32_toolchain,
-        epilog=tr("examples:", "示例：")
+        epilog=tr(
+            "A changed toolchain removes build/ and cmake-build*: CMake keeps an existing build "
+            "directory on its old compiler.\n\n",
+            "工具链改变时删除 build/ 和 cmake-build*：CMake 不会更换已有构建目录的编译器。\n\n",
+        )
+        + tr("examples:", "示例：")
         + "\n  libxr stm32 toolchain gcc\n  libxr stm32 toolchain clang -g"
-        + "\n  libxr stm32 toolchain clang --newlib\n  libxr stm32 toolchain clang --picolibc",
+        + "\n  libxr stm32 toolchain clang --newlib\n  libxr stm32 toolchain clang --picolibc"
+        + "\n  libxr stm32 toolchain clang"
+        + tr(
+            "    (keeps the current standard library)",
+            "    （沿用现在的标准库）",
+        ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
+    _add_project_directory(parser)
     parser.add_argument(
         "compiler",
         choices=["gcc", "clang"],
@@ -629,7 +652,12 @@ def legacy(old: str, argv: Sequence[str] | None = None) -> int:
             f"{old} 已改为 `{new}`；旧命令将在 libxr 7.0.0 删除",
         )
     )
-    return main([*LEGACY_COMMANDS[old], *(sys.argv[1:] if argv is None else argv)])
+    args = list(sys.argv[1:] if argv is None else argv)
+    if old == "xr_stm32_cmake" and args and not args[0].startswith("-"):
+        # xr_stm32_cmake 的工程目录是位置参数。
+        # xr_stm32_cmake took the project directory as a positional argument.
+        args.insert(0, "-d")
+    return main([*LEGACY_COMMANDS[old], *args])
 
 
 # 旧命令的 console_scripts 入口。
