@@ -197,7 +197,7 @@ def update_or_create_libxr_cmake(file_path: str, system: str, use_xrobot: bool) 
         content = read_text_with_fallback(str(cmake_path))
         new_content = normalize_libxr_cmake(content, system)
         if new_content != content:
-            cmake_path.write_text(new_content, encoding="utf-8")
+            cmake_path.write_text(new_content, encoding="utf-8", newline="\n")
             logging.info(
                 tr(
                     f"Updated existing LibXR.CMake for system: {system}",
@@ -245,6 +245,7 @@ def update_or_create_libxr_cmake(file_path: str, system: str, use_xrobot: bool) 
                 "_XROBOT_MODULES_DIR_", XROBOT_MODULES_DIR_LINE if use_xrobot else ""
             ),
             encoding="utf-8",
+            newline="\n",
         )
         logging.info(
             tr(f"Generated LibXR.CMake at: {cmake_path}", f"已生成 LibXR.CMake：{cmake_path}")

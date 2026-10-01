@@ -1,0 +1,168 @@
+generator: 6.0.0
+terminal_source: usb_otg_hs_cdc
+software_timer:
+  priority: 2
+  stack_depth: 1024
+SPI:
+  spi2:
+    tx_buffer_size: 32
+    rx_buffer_size: 32
+    dma_section: .axi_ram
+    dma_enable_min_size: 3
+  spi6:
+    tx_buffer_size: 32
+    rx_buffer_size: 32
+    dma_section: .ram_d3
+    dma_enable_min_size: 3
+  spi1:
+    tx_buffer_size: 32
+    rx_buffer_size: 32
+    dma_enable_min_size: 3
+    dma_section: ''
+USART:
+  uart5:
+    tx_buffer_size: 128
+    rx_buffer_size: 128
+    dma_section: .axi_ram
+    tx_queue_size: 5
+  uart7:
+    tx_buffer_size: 128
+    rx_buffer_size: 128
+    dma_section: .axi_ram
+    tx_queue_size: 5
+  usart1:
+    tx_buffer_size: 128
+    rx_buffer_size: 128
+    dma_section: .axi_ram
+    tx_queue_size: 5
+  usart10:
+    tx_buffer_size: 128
+    rx_buffer_size: 128
+    dma_section: .axi_ram
+    tx_queue_size: 5
+  usart2:
+    tx_buffer_size: 128
+    rx_buffer_size: 128
+    dma_section: .axi_ram
+    tx_queue_size: 5
+  usart3:
+    tx_buffer_size: 128
+    rx_buffer_size: 128
+    dma_section: .axi_ram
+    tx_queue_size: 5
+  usart6:
+    tx_buffer_size: 512
+    rx_buffer_size: 512
+    tx_queue_size: 15
+    dma_section: ''
+ADC:
+  adc1:
+    buffer_size: 128
+    dma_section: .axi_ram
+    vref: 3.3
+  adc3:
+    buffer_size: 128
+    vref: 3.3
+    dma_section: ''
+FDCAN:
+  FDCAN1:
+    queue_size: 5
+  FDCAN2:
+    queue_size: 5
+  FDCAN3:
+    queue_size: 5
+USB:
+  usb_otg_hs:
+    enable: true
+    ep0_packet_size: 8
+    tx_buffer_size: 128
+    rx_buffer_size: 128
+    rx_fifo_size: 256
+    tx_fifo_size: 128
+    dma_section: .axi_ram
+    cdc_tx_fifo_size: 128
+    cdc_rx_fifo_size: 128
+    cdc_queue_size: 3
+    vid: 5840
+    pid: 5266
+    bcd: 62471
+    manufacturer: QDU-Future
+    product: MainCtrl
+    serial: QDU-Future-MainCtrl-89ABCDEF0123456701234567
+  usb_otg_fs:
+    enable: true
+    ep0_packet_size: 8
+    tx_buffer_size: 128
+    rx_buffer_size: 128
+    rx_fifo_size: 256
+    tx_fifo_size: 128
+    dma_section: ''
+    cdc_tx_fifo_size: 128
+    cdc_rx_fifo_size: 128
+    cdc_queue_size: 3
+    vid: 5840
+    pid: 5266
+    bcd: 62471
+    manufacturer: QDU-Future
+    product: MainCtrl
+    serial: QDU-Future-MainCtrl-89ABCDEF0123456701234567
+Terminal:
+  read_buff_size: 32
+  max_line_size: 32
+  max_arg_number: 5
+  max_history_number: 5
+  run_as_thread: true
+  thread_stack_depth: 2048
+  thread_priority: 2
+SYSTEM: FreeRTOS
+DAC:
+  dac1:
+    init_voltage: 0.0
+    vref: 3.3
+FlashLayout:
+  model: STM32H723VGT6
+  flash_base: '0x08000000'
+  flash_size_kb: 1024
+  sectors:
+  - index: 0
+    address: '0x08000000'
+    size_kb: 128.0
+  - index: 1
+    address: '0x08020000'
+    size_kb: 128.0
+  - index: 2
+    address: '0x08040000'
+    size_kb: 128.0
+  - index: 3
+    address: '0x08060000'
+    size_kb: 128.0
+  - index: 4
+    address: '0x08080000'
+    size_kb: 128.0
+  - index: 5
+    address: '0x080A0000'
+    size_kb: 128.0
+  - index: 6
+    address: '0x080C0000'
+    size_kb: 128.0
+  - index: 7
+    address: '0x080E0000'
+    size_kb: 128.0
+I2C:
+  i2c1:
+    buffer_size: 32
+    dma_enable_min_size: 3
+    dma_section: ''
+  i2c2:
+    buffer_size: 32
+    dma_enable_min_size: 3
+    dma_section: ''
+  i2c3:
+    buffer_size: 32
+    dma_enable_min_size: 3
+    dma_section: ''
+CAN:
+  CAN1:
+    queue_size: 5
+  CAN2:
+    queue_size: 5

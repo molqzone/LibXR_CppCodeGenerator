@@ -15,6 +15,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import reference_projects
 from fixtures import IOC, GeneratorTestCase, user_region
 
 from libxr import generator_code_stm32 as generator
@@ -105,6 +106,21 @@ class EntrySource(GeneratorTestCase):
     def test_repeat_generation_is_idempotent(self):
         first = self.generate()
         self.assertEqual(self.generate(existing=first), first)
+
+
+class ReferenceProjects(GeneratorTestCase):
+    """两个真实 BSP 工程生成的文件与基准文件逐字节相同。
+    The files generated for two real BSP projects equal the reference files byte for byte.
+    """
+
+    def test_the_generated_files_are_the_reference(self):
+        for name in reference_projects.PROJECTS:
+            expected = reference_projects.DATA / name / "expected"
+            with self.subTest(project=name), tempfile.TemporaryDirectory() as temporary:
+                user = reference_projects.generate(name, expected / "cubemx.yaml", Path(temporary))
+                for file in reference_projects.GENERATED:
+                    with self.subTest(file=file):
+                        self.assertEqual((user / file).read_bytes(), (expected / file).read_bytes())
 
 
 class ProjectConfiguration(GeneratorTestCase):

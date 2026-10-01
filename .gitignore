@@ -47,3 +47,7 @@ pip-delete-this-directory.txt
 .DS_Store
 Thumbs.db
 src/libxr/libxr_version.py
+
+# 测试的基准数据。
+# Reference data of the tests.
+!tests/data/**
