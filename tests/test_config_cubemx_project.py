@@ -172,16 +172,30 @@ class LibXRSubmodule(TestCase):
         return git("rev-parse", "HEAD", cwd=checkout)
 
     def test_existing_checkouts_stay_where_they_are(self):
-        for recorded, checked_out in (
-            (self.default, self.old),
-            (self.old, self.old),
-            (self.default, self.default),
-            (self.default, self.newer),
-            (self.default, self.divergent),
+        def warning(relation):
+            return (
+                f"WARNING:root:LibXR checkout {checked_out[:12]} is {relation} this generator's "
+                f"default {self.default[:12]}; it was left unchanged. To switch, run "
+                f"xr_cubemx_cfg with --commit {self.default} (or check out the commit in "
+                "Middlewares/Third_Party/LibXR) and commit the gitlink."
+            )
+
+        for recorded, checked_out, relation in (
+            (self.default, self.old, "older than"),
+            (self.old, self.old, "older than"),
+            (self.default, self.default, None),
+            (self.default, self.newer, None),
+            (self.default, self.divergent, "different from"),
         ):
             with self.subTest(recorded=recorded, checked_out=checked_out):
                 project, checkout = self.project(recorded, checked_out)
-                self.add_libxr(project)
+                if relation is None:
+                    with self.assertNoLogs(level="WARNING"):
+                        self.add_libxr(project)
+                else:
+                    with self.assertLogs(level="WARNING") as logs:
+                        self.add_libxr(project)
+                    self.assertEqual(logs.output, [warning(relation)])
                 self.assertEqual(self.head(checkout), checked_out)
 
     def test_local_changes_are_kept(self):
