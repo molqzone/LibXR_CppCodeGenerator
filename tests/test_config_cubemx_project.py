@@ -8,6 +8,7 @@ import contextlib
 import importlib
 import io
 import os
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -262,6 +263,28 @@ class LibXRSubmodule(TestCase):
             self.add_libxr(project)
         self.assertEqual(self.head(checkout), self.default)
 
+    def test_a_local_source_is_cloned_without_a_global_file_permission(self):
+        # git 2.38 起子模块默认不能从本地路径克隆；这里不设 GIT_ALLOW_PROTOCOL。
+        # Since git 2.38 a submodule cannot be cloned from a local path by default; no
+        # GIT_ALLOW_PROTOCOL is set here.
+        project = self.tmp / "project"
+        project.mkdir()
+        git("init", "-q", "-b", "master", cwd=project)
+        with mock.patch.dict(os.environ):
+            del os.environ["GIT_ALLOW_PROTOCOL"]
+            self.add_libxr(project, source=cubemx_cfg.LibXRSource(str(self.remote)))
+        checkout = project / "Middlewares" / "Third_Party" / "LibXR"
+        self.assertEqual(self.head(checkout), self.default)
+        self.assertEqual(
+            cubemx_cfg.LibXRSource(str(self.remote)).config_for(cubemx_cfg.LIBXR_URL),
+            [
+                "-c",
+                f"url.{self.remote}.insteadOf={cubemx_cfg.LIBXR_URL}",
+                "-c",
+                "protocol.file.allow=always",
+            ],
+        )
+
     def test_a_mirror_only_stands_in_for_the_github_url(self):
         source = cubemx_cfg.LibXRSource("https://gitee.com/jiu-xiao/libxr")
         self.assertEqual(
@@ -275,9 +298,9 @@ class LibXRSubmodule(TestCase):
 
 
 class SetupProject(GeneratorTestCase):
-    """setup_project：XRobot 模式默认沿用工程现在的选择，没有 git 时报错。
-    setup_project: the XRobot mode keeps the project's choice by default, and a missing git is
-    an error.
+    """setup_project：改动之前先检查工程，XRobot 模式默认沿用工程现在的选择，没有 git 时报错。
+    setup_project: the project is checked before anything changes, the XRobot mode keeps the
+    project's choice by default, and a missing git is an error.
     """
 
     def setUp(self):
@@ -288,6 +311,42 @@ class SetupProject(GeneratorTestCase):
         (self.root / "Core").mkdir()
         (self.root / "User").mkdir()
         (self.root / "demo.ioc").write_text("", encoding="utf-8")
+        (self.root / "CMakeLists.txt").write_text("", encoding="utf-8")
+
+    def test_the_project_is_checked_before_anything_changes(self):
+        cases = (
+            (
+                "missing Core",
+                lambda root: shutil.rmtree(root / "Core"),
+                "{} is not a valid STM32CubeMX project: missing Core/ directory",
+            ),
+            ("no .ioc", lambda root: (root / "demo.ioc").unlink(), "{} holds no .ioc file"),
+            (
+                "two .ioc",
+                lambda root: (root / "other.ioc").write_text("", encoding="utf-8"),
+                "{} holds several .ioc files (demo.ioc, other.ioc)",
+            ),
+            (
+                "not CMake",
+                lambda root: (root / "CMakeLists.txt").unlink(),
+                "{} has no CMakeLists.txt; set Toolchain / IDE to CMake",
+            ),
+        )
+        for case, prepare, message in cases:
+            with self.subTest(case=case):
+                self.setUp()
+                prepare(self.root)
+                before = sorted(path.name for path in self.root.iterdir())
+                with (
+                    mock.patch.object(cubemx_cfg, "add_libxr") as add_libxr,
+                    self.assertLogs(level="ERROR") as logs,
+                    self.assertRaises(SystemExit) as exit,
+                ):
+                    cubemx_cfg.setup_project(str(self.root))
+                self.assertEqual(exit.exception.code, 1)
+                self.assertIn(message.format(self.root.name), logs.output[-1])
+                add_libxr.assert_not_called()
+                self.assertEqual(sorted(path.name for path in self.root.iterdir()), before)
 
     def xrobot_mode(self, existing, option):
         """在 app_main 由 existing 模式生成的工程上运行 setup_project（选项为 option），返回生成时

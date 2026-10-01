@@ -424,9 +424,10 @@ def _add_stm32_setup(commands) -> None:
         "--git-source",
         default="auto",
         help=tr(
-            "where a missing LibXR is cloned from: auto, github, or a base or repository URL "
-            "(default: auto); .gitmodules always records https://github.com/xrobot-org/libxr.git",
-            "缺少 LibXR 时从哪里克隆：auto、github，或基础地址、仓库地址（默认：auto）；"
+            "where a missing LibXR is cloned from: auto, github, a base or repository URL, or a "
+            "local repository (default: auto); .gitmodules always records "
+            "https://github.com/xrobot-org/libxr.git",
+            "缺少 LibXR 时从哪里克隆：auto、github、基础地址、仓库地址或本地仓库（默认：auto）；"
             ".gitmodules 始终记录 https://github.com/xrobot-org/libxr.git",
         ),
     )

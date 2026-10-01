@@ -95,20 +95,21 @@ def switch_toolchain(directory: str, compiler: str, std: str | None = None) -> N
     switch the standard library to std.
 
     gcc 不接受 std；clang 不给 std 时沿用 starm-clang.cmake 中现在的标准库。修改任何文件之前先
-    检查 CMakePresets.json、default preset、目标工具链文件以及（需要时）其中的
-    STARM_TOOLCHAIN_CONFIG 行，不满足时记录错误并以状态 1 退出。工具链改变时删除 build/ 和
-    cmake-build* 目录。
+    检查 CMakePresets.json（必须是有效的 JSON）、default preset、目标工具链文件以及（需要时）
+    其中的 STARM_TOOLCHAIN_CONFIG 行，不满足时记录错误并以状态 1 退出。工具链改变时删除 build/
+    和 cmake-build* 目录。
     gcc takes no std; clang without std keeps the standard library currently in
-    starm-clang.cmake. Before any file changes, CMakePresets.json, its default preset, the target
-    toolchain file and, when needed, its STARM_TOOLCHAIN_CONFIG line are checked; a failed check
-    logs an error and exits with status 1. A changed toolchain removes the build/ and
+    starm-clang.cmake. Before any file changes, CMakePresets.json, which must be valid JSON, its
+    default preset, the target toolchain file and, when needed, its STARM_TOOLCHAIN_CONFIG line
+    are checked; a failed check logs an error and exits with status 1. A changed toolchain
+    removes the build/ and
     cmake-build* directories.
     """
     if compiler == "gcc" and std:
         _fail(
             tr(
-                "Standard library option (-g/-n/-p) cannot be used with gcc!",
-                "gcc 不能使用标准库选项（-g/-n/-p）！",
+                "Standard library option (-g/-n/-p) cannot be used with gcc.",
+                "gcc 不能使用标准库选项（-g/-n/-p）。",
             )
         )
     presets_path = os.path.normpath(os.path.join(directory, CMAKE_PRESETS))
@@ -118,8 +119,16 @@ def switch_toolchain(directory: str, compiler: str, std: str | None = None) -> N
         _fail(tr(f"{presets_path} not found.", f"找不到 {presets_path}。"))
     if not os.path.isfile(toolchain_path):
         _fail(tr(f"{toolchain_path} not found.", f"找不到 {toolchain_path}。"))
-    with open(presets_path, encoding="utf-8") as f:
-        presets = json.load(f)
+    try:
+        with open(presets_path, encoding="utf-8") as f:
+            presets = json.load(f)
+    except ValueError as error:
+        _fail(
+            tr(
+                f"{presets_path} is not valid JSON: {error}",
+                f"{presets_path} 不是有效的 JSON：{error}",
+            )
+        )
     preset = _default_preset(presets, presets_path)
     lines = []
     if compiler == "clang":
@@ -174,6 +183,6 @@ def switch_toolchain(directory: str, compiler: str, std: str | None = None) -> N
 
 
 if __name__ == "__main__":
-    from libxr.cli import legacy
+    from libxr.legacy import run
 
-    raise SystemExit(legacy("xr_stm32_toolchain_switch"))
+    raise SystemExit(run("xr_stm32_toolchain_switch"))

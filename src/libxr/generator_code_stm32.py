@@ -1897,8 +1897,8 @@ def configure_terminal(project_data: dict) -> str:
             logging.warning(
                 tr(
                     f"terminal_source '{terminal_source}' is not registered as UART, terminal "
-                    "will not be initialized!",
-                    f"terminal_source '{terminal_source}' 没有登记为 UART，不初始化终端！",
+                    "will not be initialized.",
+                    f"terminal_source '{terminal_source}' 没有登记为 UART，不初始化终端。",
                 )
             )
             return code

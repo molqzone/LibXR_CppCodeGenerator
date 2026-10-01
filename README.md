@@ -189,6 +189,12 @@ usage: libxr stm32 setup [-h] [-d DIRECTORY] [-t TERMINAL] [--xrobot | --no-xrob
 加入 LibXR 子模块，解析 `.ioc` 文件，生成 YAML 和 C++ 代码，并接入 CMake
 Adds the LibXR submodule, parses `.ioc`, generates the YAML and the C++ code, and integrates CMake.
 
+改动工程之前先检查：有 `Core/`、恰好一个 `.ioc` 文件、有 `CMakeLists.txt`（CubeMX 的
+Toolchain / IDE 设为 CMake）。不满足时报错，工程保持不变。
+The project is checked before anything changes: it needs `Core/`, exactly one `.ioc` file and
+a `CMakeLists.txt` (Toolchain / IDE set to CMake in CubeMX). Otherwise the command stops with an
+error and leaves the project unchanged.
+
 #### ⚙️ 可选参数 (Optional)
 
 - `-d, --directory <DIRECTORY>`：
@@ -233,13 +239,17 @@ Adds the LibXR submodule, parses `.ioc`, generates the YAML and the C++ code, an
 
 - `--git-source`
 
-  需要克隆 LibXR 时从哪里克隆：`auto`、`github`，或 base URL、完整仓库 URL（默认：`auto`）。
-  Where LibXR is cloned from when a clone is needed: `auto`, `github`, or a base URL or a full
-  repository URL (default: `auto`).
+  需要克隆 LibXR 时从哪里克隆：`auto`、`github`、base URL、完整仓库 URL 或本地仓库（默认：
+  `auto`）。从本地仓库克隆时，工具只对这次克隆放行 git 的 file 协议（git 2.38 起子模块默认禁止）。
+  Where LibXR is cloned from when a clone is needed: `auto`, `github`, a base URL, a full
+  repository URL or a local repository (default: `auto`). For a local repository the tool
+  allows git's file protocol for that clone only, which submodules forbid by default since
+  git 2.38.
 
   示例 / Examples:
   ```bash
   --git-source https://gitee.com/jiu-xiao/libxr
+  --git-source D:/mirrors/libxr
   ```
 
 - `--git-mirrors`

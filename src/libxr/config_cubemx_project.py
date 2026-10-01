@@ -70,32 +70,17 @@ def is_git_worktree_root(path):
         return False
 
 
-def _fmt_cmd(cmd):
-    """把命令写成日志中的一行：列表或元组的各项按 shell 规则引用后以空格连接，字符串原样返回。
-    Format a command as one line for logs: list or tuple items shell-quoted and space-joined, a
-    string as is.
-    """
-    if isinstance(cmd, (list, tuple)):
-        return " ".join(shlex.quote(str(x)) for x in cmd)
-    return str(cmd)
-
-
-def run_command(cmd, ignore_error=False):
-    """运行命令并返回标准输出；列表或元组不经 shell 运行（推荐），字符串经 shell 运行。
-    Run a command and return its stdout; a list or tuple runs without a shell (preferred), a
-    string through the shell.
+def run_command(cmd: list[str], ignore_error=False):
+    """不经 shell 运行命令 cmd（参数列表）并返回标准输出；日志中各参数按 shell 规则引用。
+    Run the command cmd, a list of arguments, without a shell and return its stdout; the log
+    shows the arguments shell-quoted.
 
     命令失败时，ignore_error 为 True 则记录警告并仍返回标准输出，否则记录错误并以退出码 1 结束进程。
     On failure, ignore_error logs a warning and still returns stdout; otherwise the error is
     logged and the process exits with code 1.
     """
-    if isinstance(cmd, (list, tuple)):
-        result = subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="replace")
-    else:
-        result = subprocess.run(
-            cmd, shell=True, capture_output=True, encoding="utf-8", errors="replace"
-        )
-    command_line = _fmt_cmd(cmd)
+    result = subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="replace")
+    command_line = " ".join(shlex.quote(str(argument)) for argument in cmd)
     if result.returncode == 0:
         logging.info(tr(f"[OK] {command_line}", f"[完成] {command_line}"))
         return result.stdout
@@ -111,16 +96,6 @@ def run_command(cmd, ignore_error=False):
         tr(f"[FAILED] {command_line}\n{result.stderr}", f"[失败] {command_line}\n{result.stderr}")
     )
     sys.exit(1)
-
-
-def find_ioc_file(directory):
-    """目录中按文件名排序的第一个 .ioc 文件的路径；没有时为 None。
-    The path of the first .ioc file in the directory by file name order; None when there is none.
-    """
-    for file in sorted(os.listdir(directory)):
-        if file.endswith(".ioc"):
-            return os.path.join(directory, file)
-    return None
 
 
 def _probe_environment() -> dict:
@@ -221,13 +196,22 @@ class LibXRSource:
         （例如用户自己的分叉）或与选中的源相同时为空。
         git -c options that fetch recorded_url from the chosen source instead; empty when
         recorded_url is not a GitHub address of LibXR (a user's fork, say) or is the chosen source.
+
+        git 2.38 起子模块默认不能从本地路径克隆；选中的源是本地仓库（路径或 file: 地址）时，参数中
+        另外放行 file 协议，只作用于这一条命令。
+        Since git 2.38 a submodule cannot be cloned from a local path by default; when the chosen
+        source is a local repository, a path or a file: URL, the options also allow the file
+        protocol for this one command.
         """
         if not LIBXR_URL_PATTERN.match(recorded_url):
             return []
         url = self.url()
         if url == recorded_url:
             return []
-        return ["-c", f"url.{url}.insteadOf={recorded_url}"]
+        options = ["-c", f"url.{url}.insteadOf={recorded_url}"]
+        if url.startswith("file:") or os.path.isdir(url):
+            options += ["-c", "protocol.file.allow=always"]
+        return options
 
 
 def create_gitignore_file(project_dir):
@@ -553,22 +537,52 @@ def _friendly_path_name(path: str) -> str:
     return base or abs_path
 
 
-def ensure_valid_cubemx_project(path: str):
-    """path 没有 Core/ 目录、不像 STM32CubeMX 工程时记录错误并以退出码 1 结束；提示中用
-    目录名代替 '.'。
-    Log an error and exit with code 1 when path has no Core/ directory and so does not look like
-    an STM32CubeMX project; the message shows the folder name instead of '.'.
+def _stop(english: str, chinese: str) -> None:
+    """按当前语言记录错误，并以退出码 1 结束。
+    Log the error in the current language and exit with code 1.
     """
-    display_name = _friendly_path_name(path)
-    core_dir = os.path.join(path, "Core")
-    if not os.path.isdir(core_dir):
-        logging.error(
-            tr(
-                f"{display_name} is not a valid STM32CubeMX project: missing Core/ directory",
-                f"{display_name}：不是有效的 STM32CubeMX 工程，缺少 Core/ 目录",
-            )
+    logging.error(tr(english, chinese))
+    sys.exit(1)
+
+
+def check_project(project_dir: str) -> str:
+    """检查 project_dir 是 CMake 形式的 STM32CubeMX 工程，返回其中唯一的 .ioc 文件的路径。
+    Check that project_dir is an STM32CubeMX project in CMake form and return the path of its
+    only .ioc file.
+
+    setup 在改动工程之前调用它。目录不存在、没有 Core/、.ioc 文件不是恰好一个，或者没有
+    CMakeLists.txt（CubeMX 生成的不是 CMake 工程）时记录错误并以退出码 1 结束；提示中用目录名
+    代替 '.'。
+    setup calls it before it changes the project. A missing directory, no Core/, other than
+    exactly one .ioc file, or no CMakeLists.txt (CubeMX generated something other than a CMake
+    project) logs an error and exits with code 1; the messages show the folder name instead
+    of '.'.
+    """
+    name = _friendly_path_name(project_dir)
+    if not os.path.isdir(project_dir):
+        _stop(f"Directory {name} does not exist", f"目录 {name} 不存在")
+    if not os.path.isdir(os.path.join(project_dir, "Core")):
+        _stop(
+            f"{name} is not a valid STM32CubeMX project: missing Core/ directory",
+            f"{name}：不是有效的 STM32CubeMX 工程，缺少 Core/ 目录",
         )
-        sys.exit(1)
+    ioc_files = sorted(entry for entry in os.listdir(project_dir) if entry.endswith(".ioc"))
+    if not ioc_files:
+        _stop(f"{name} holds no .ioc file", f"{name} 中没有 .ioc 文件")
+    if len(ioc_files) > 1:
+        _stop(
+            f"{name} holds several .ioc files ({', '.join(ioc_files)}); a directory holds one "
+            "CubeMX project",
+            f"{name} 中有多个 .ioc 文件（{'、'.join(ioc_files)}）；一个目录只放一个 CubeMX 工程",
+        )
+    if not os.path.isfile(os.path.join(project_dir, "CMakeLists.txt")):
+        _stop(
+            f"{name} has no CMakeLists.txt; set Toolchain / IDE to CMake in the Project Manager "
+            "of STM32CubeMX and generate the project again",
+            f"{name} 中没有 CMakeLists.txt；请在 STM32CubeMX 的 Project Manager 中把 "
+            "Toolchain / IDE 设为 CMake，然后重新生成工程",
+        )
+    return os.path.join(project_dir, ioc_files[0])
 
 
 def setup_project(
@@ -582,11 +596,12 @@ def setup_project(
     """加入 LibXR 子模块，再生成配置、C++ 代码和 CMakeLists.txt。
     Add the LibXR submodule, then generate the configuration, the C++ code and CMakeLists.txt.
 
-    commit 为空时以 libxr_version.py 中锁定的 commit 为默认值。需要克隆 LibXR 时，git_source 为
-    auto 则在 GitHub、内置镜像、XR_GIT_MIRRORS 和 git_mirrors（逗号分隔）中选出响应最快的源。
-    xrobot_enable 为 None 时沿用工程现在的选择：User/app_main.cpp 由 --xrobot 生成时继续生成
-    XRobot 代码。
-    With an empty commit, the commit locked in libxr_version.py is the default. When LibXR has to
+    改动工程之前先用 check_project() 检查工程。commit 为空时以 libxr_version.py 中锁定的 commit
+    为默认值。需要克隆 LibXR 时，git_source 为 auto 则在 GitHub、内置镜像、XR_GIT_MIRRORS 和
+    git_mirrors（逗号分隔）中选出响应最快的源。xrobot_enable 为 None 时沿用工程现在的选择：
+    User/app_main.cpp 由 --xrobot 生成时继续生成 XRobot 代码。
+    check_project() checks the project before anything changes. With an empty commit, the
+    commit locked in libxr_version.py is the default. When LibXR has to
     be cloned, git_source auto picks the fastest of GitHub, the built-in mirror,
     XR_GIT_MIRRORS and git_mirrors (comma-separated). With xrobot_enable None the project keeps
     its choice: XRobot code is generated again when User/app_main.cpp was generated with
@@ -606,6 +621,9 @@ def setup_project(
         sys.exit(1)
 
     project_dir = project_dir.rstrip("/")
+    # 先检查完工程再改动它。
+    # Check the whole project before changing anything.
+    ioc_file = check_project(project_dir)
 
     libxr_commit = commit.strip()
     default_libxr_commit = ""
@@ -637,15 +655,6 @@ def setup_project(
             )
         )
 
-    if not os.path.isdir(project_dir):
-        display_name = _friendly_path_name(project_dir)
-        logging.error(tr(f"Directory {display_name} does not exist", f"目录 {display_name} 不存在"))
-        sys.exit(1)
-
-    # 检查 STM32CubeMX 工程结构（必须有 Core/ 目录）。
-    # Validate STM32CubeMX project structure (must have Core/ directory)
-    ensure_valid_cubemx_project(project_dir)
-
     if xrobot_enable is None:
         xrobot_enable = project_uses_xrobot(project_dir)
         if xrobot_enable:
@@ -674,13 +683,6 @@ def setup_project(
         default_libxr_commit=default_libxr_commit if default_libxr_commit else None,
     )
 
-    # 查找 .ioc 文件。
-    # Find .ioc file
-    ioc_file = find_ioc_file(project_dir)
-    if not ioc_file:
-        logging.error(tr("No .ioc file found", "找不到 .ioc 文件"))
-        sys.exit(1)
-
     logging.info(tr(f"Found .ioc file: {ioc_file}", f"找到 .ioc 文件：{ioc_file}"))
 
     create_gitignore_file(project_dir)
@@ -707,7 +709,7 @@ def setup_project(
 
     integrate(project_dir)
 
-    logging.info(tr("[Pass] All tasks completed successfully!", "[通过] 全部任务已完成！"))
+    logging.info(tr("[Pass] All tasks completed.", "[通过] 全部任务已完成。"))
 
 
 if __name__ == "__main__":

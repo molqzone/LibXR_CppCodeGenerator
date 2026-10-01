@@ -245,6 +245,14 @@ class SwitchToolchain(TestCase):
         self.assertEqual(self.presets.read_text(encoding="utf-8"), before)
         self.assertIn("build", self.folders())
 
+    def test_invalid_presets_are_an_error(self):
+        self.presets.write_text("{ broken", encoding="utf-8")
+        with self.assertLogs(level="ERROR") as logs:
+            self.assertEqual(self.switch("clang"), 1)
+        self.assertIn("CMakePresets.json is not valid JSON: ", logs.output[0])
+        self.assertEqual(self.presets.read_text(encoding="utf-8"), "{ broken")
+        self.assertIn("build", self.folders())
+
     def test_a_missing_gcc_toolchain_changes_nothing(self):
         self.presets.write_text(json.dumps(presets("starm-clang.cmake")), encoding="utf-8")
         before = self.presets.read_text(encoding="utf-8")

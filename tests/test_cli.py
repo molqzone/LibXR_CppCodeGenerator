@@ -339,18 +339,28 @@ class LegacyCommands(TestCase):
         switch.assert_called_once_with(".", "clang", "newlib")
         self.assertEqual(self.run_old("xr_stm32_toolchain_switch", "-d", ".", "gcc")[0], 2)
 
-    def test_an_old_module_still_runs_as_a_script(self):
-        result = subprocess.run(
-            [sys.executable, "-m", "libxr.stm32_flash_generator", "STM32F103C8T6"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            env=dict(os.environ, XR_LANG="en"),
-            check=False,
-        )
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("xr_stm32_flash is now `libxr stm32 flash-info`", result.stderr)
-        self.assertIn("model: STM32F103C8T6", result.stdout)
+    def test_every_module_with_a_script_entry_runs_its_old_command(self):
+        # 每个带 `python -m` 入口的模块都运行一个旧命令；--help 不需要工程。
+        # Every module with a `python -m` entry runs an old command; --help needs no project.
+        entries = {}
+        for path in sorted((REPOSITORY / "src" / "libxr").glob("*.py")):
+            match = re.search(r'raise SystemExit\(run\("(\w+)"\)\)', path.read_text("utf-8"))
+            if match:
+                entries[path.stem] = match.group(1)
+        self.assertEqual(len(entries), 7)
+        for module, old in entries.items():
+            with self.subTest(module=module):
+                result = subprocess.run(
+                    [sys.executable, "-m", f"libxr.{module}", "--help"],
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    env=dict(os.environ, XR_LANG="en"),
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn(f"{old} is now `{legacy.COMMANDS[old].new}`", result.stderr)
+                self.assertIn(old, result.stdout)
 
 
 class UpdateNotice(TestCase):
