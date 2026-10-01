@@ -20,6 +20,7 @@ from fixtures import IOC, GeneratorTestCase, user_region
 from libxr import cli
 from libxr import generator_code_stm32 as generator
 from libxr.libxr_config_file import LibXRConfigError
+from libxr.stm32_flash_generator import flash_info_to_dict, layout_flash
 
 
 class EntrySource(GeneratorTestCase):
@@ -659,6 +660,83 @@ class GenerationRuns(GeneratorTestCase):
         self.assertIn(
             "WARNING:root:USB usb_otg_fs: ep0_packet_size 12 is not 8, 16, 32 or 64; using 8",
             logs.output,
+        )
+
+    def test_numeric_settings_are_checked_before_they_reach_the_code(self):
+        # 以前这些值原样写进 C++，到编译时才报错。
+        # These values used to go into the C++ as they were and fail only at compile time.
+        usb = {"USB": {"USB_OTG_FS": {}}}
+        for group, settings, peripherals, message in (
+            (
+                "USART",
+                {"usart1": {"tx_queue_size": "five"}},
+                {"USART": {"USART1": {}}},
+                "USART.usart1.tx_queue_size 'five' is not a positive integer",
+            ),
+            (
+                "I2C",
+                {"i2c1": {"buffer_size": -8}},
+                {"I2C": {"I2C1": {}}},
+                "I2C.i2c1.buffer_size -8 is not a positive integer",
+            ),
+            (
+                "ADC",
+                {"adc1": {"vref": "high"}},
+                {"ADC": {"ADC1": {"Channels": ["ADC_CHANNEL_0"]}}},
+                "ADC.adc1.vref 'high' is not a number",
+            ),
+            (
+                "USB",
+                {"usb_otg_fs": {"enable": True, "tx_fifo_size": "big"}},
+                usb,
+                "USB.usb_otg_fs.tx_fifo_size 'big' is not a positive integer",
+            ),
+            (
+                "USB",
+                {"usb_otg_fs": {"enable": True, "vid": 0x10000}},
+                usb,
+                "USB.usb_otg_fs.vid 65536 is not an integer from 0 to 65535",
+            ),
+        ):
+            with self.subTest(message=message):
+                self.setUp()
+                generator.libxr_settings[group] = settings
+                with self.assertRaisesMessage(ValueError, message):
+                    self.generate(self.project(peripherals=peripherals))
+
+    def test_numbers_written_as_strings_are_accepted(self):
+        generator.libxr_settings["USART"] = {"usart1": {"tx_queue_size": "7"}}
+        generator.libxr_settings["USB"]["usb_otg_fs"] = {
+            "enable": True,
+            "ep0_packet_size": "16",
+            "vid": "0x1D51",
+        }
+        code = self.generate(
+            self.project(peripherals={"USART": {"USART1": {}}, "USB": {"USB_OTG_FS": {}}})
+        )
+        self.assertIn("{nullptr, 0}, {nullptr, 0}, 7);", code)
+        self.assertIn("PacketSize0::SIZE_16", code)
+        self.assertIn("0x1D51, 0x6199, 0x100,", code)
+
+    def test_flash_pages_below_one_kilobyte_keep_their_size(self):
+        # STM32L0 的页是 128 字节；以前取整成 0 KB。
+        # STM32L0 pages are 128 bytes; they used to be truncated to 0 KB.
+        code = generator.generate_flash_map_cpp(flash_info_to_dict(layout_flash("STM32L071KBU6")))
+        self.assertIn("{0x08000000, 0x00000080},", code)
+        self.assertIn("{0x08000080, 0x00000080},", code)
+
+    def test_the_log_names_the_system_and_a_new_config_file(self):
+        user, logs = self.run_generator("demo", self.project())
+        self.assertIn("INFO:root:System: bare metal", logs)
+        path = os.path.join(str(user), "libxr_config.yaml")
+        self.assertIn(
+            f"INFO:root:{path} does not exist; creating it with the default settings", logs
+        )
+        _, logs = self.run_generator("demo", self.project(), config="config_version: 2\n")
+        self.assertIn(
+            f"WARNING:root:{path} has config_version 2, but this libxr supports version 1; "
+            "settings of a newer format may have no effect",
+            logs,
         )
 
 

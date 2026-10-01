@@ -520,6 +520,14 @@ trigger no rebuild. One log line at the end lists the files written, unchanged a
   watchdog threads (`thread_priority`) take 0-4 or the level names `IDLE`, `LOW`, `MEDIUM`,
   `HIGH` and `REALTIME`; the generated code uses the matching `LibXR::Thread::Priority`
   level, which LibXR converts by the RTOS priority count. Any other value stops generation.
+  缓冲区、队列、FIFO、栈深度、超时和终端尺寸必须是正整数，`dma_enable_min_size` 可以为 0，
+  USB 的 `vid`、`pid`、`bcd` 在 0 到 0xFFFF 之间，`vref` 和 `init_voltage` 必须是数字；不合要求时
+  生成失败，报错中写出键名。USB 的 `ep0_packet_size` 不是 8、16、32、64 时给出警告并改为 8。
+  Buffer, queue, FIFO, stack-depth, timeout and terminal sizes must be positive integers,
+  `dma_enable_min_size` may be 0, the USB `vid`, `pid` and `bcd` lie between 0 and 0xFFFF, and
+  `vref` and `init_voltage` must be numbers; otherwise generation stops with an error that
+  names the key. A USB `ep0_packet_size` other than 8, 16, 32 or 64 is warned about and
+  becomes 8.
 
 - `flash_map.hpp`：
   自动生成的 Flash 扇区表，供 Flash 抽象层使用。推算不出 MCU 型号的 Flash 布局时给出警告，

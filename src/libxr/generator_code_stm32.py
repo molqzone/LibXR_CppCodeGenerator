@@ -11,6 +11,7 @@ bodies of an existing app_main source file are kept.
 
 import copy
 import logging
+import math
 import os
 import re
 import sys
@@ -230,11 +231,13 @@ def load_configuration(file_path: str) -> dict:
             # Detect RTOS
             if "FreeRTOS" in config:
                 libxr_settings["SYSTEM"] = "FreeRTOS"
-                logging.info(tr("Detected FreeRTOS configuration", "检测到 FreeRTOS 配置"))
+                logging.info(tr("System: FreeRTOS", "系统：FreeRTOS"))
             elif "ThreadX" in config:
                 libxr_settings["SYSTEM"] = "ThreadX"
+                logging.info(tr("System: ThreadX", "系统：ThreadX"))
             else:
                 libxr_settings["SYSTEM"] = "None"
+                logging.info(tr("System: bare metal", "系统：裸机"))
 
             for key in [k for k, v in config["Peripherals"].items() if not v]:
                 logging.info(
@@ -318,14 +321,28 @@ def load_libxr_config(output_dir: str, config_source: str) -> None:
                 )
             )
     elif os.path.exists(config_path):
+        config_source = config_path
         document, saved_config = libxr_config_file.read(config_path)
     else:
-        logging.info(tr("Creating new library configuration file", "新建库配置文件"))
+        logging.info(
+            tr(
+                f"{config_path} does not exist; creating it with the default settings",
+                f"{config_path} 不存在，按默认设置新建",
+            )
+        )
         libxr_config_document = libxr_config_file.new_document()
         return
 
-    if saved_config.get("config_version", 1) > 1:
-        logging.warning(tr("Config file format is newer than expected", "配置文件格式比预期的新"))
+    version = saved_config.get("config_version", 1)
+    if isinstance(version, bool) or not isinstance(version, int) or version > 1:
+        logging.warning(
+            tr(
+                f"{config_source} has config_version {version!r}, but this libxr supports "
+                "version 1; settings of a newer format may have no effect",
+                f"{config_source} 的 config_version 是 {version!r}，本版本 libxr 只支持 1；"
+                "较新格式的设置可能不起作用",
+            )
+        )
     saved_config.pop("SYSTEM", None)
     libxr_settings = _deep_merge(libxr_settings, saved_config)
     libxr_config_document = document
@@ -769,15 +786,60 @@ _USB_INSTANCES = {
 }
 
 
-def _as_int(value, default: int) -> int:
-    """按 Python 整数字面量规则（含 0x 等前缀）把 value 转为 int；失败时返回 default。
-    Convert value to an int by Python integer literal rules, prefixes such as 0x included;
-    default when that fails.
+def _integer(key: str, value, minimum: int = 1, maximum: int | None = None) -> int:
+    """设置 key 的整数值；字符串按 Python 整数字面量解析（如 0x1D50）。
+    The integer value of the setting key; a string is read as a Python integer literal, such
+    as 0x1D50.
+
+    数值写进生成的 C++ 代码，所以在这里检查，而不是等到编译时。
+    The value goes into the generated C++ code, so it is checked here rather than at compile
+    time.
+
+    Raises:
+        ValueError: value 不是整数，或不在 minimum 到 maximum 之间；信息中写出 key。
+            value is not an integer, or lies outside minimum to maximum; the message names key.
     """
-    try:
-        return int(str(value), 0)
-    except (TypeError, ValueError):
-        return default
+    number = None
+    if not isinstance(value, bool):
+        if isinstance(value, int):
+            number = value
+        else:
+            try:
+                number = int(str(value).strip(), 0)
+            except ValueError:
+                number = None
+    if number is not None and number >= minimum and (maximum is None or number <= maximum):
+        return number
+    if maximum is not None:
+        english, chinese = (
+            f"an integer from {minimum} to {maximum}",
+            f"{minimum} 到 {maximum} 的整数",
+        )
+    elif minimum == 1:
+        english, chinese = "a positive integer", "正整数"
+    else:
+        english, chinese = "a non-negative integer", "非负整数"
+    raise ValueError(tr(f"{key} {value!r} is not {english}", f"{key} {value!r} 不是{chinese}"))
+
+
+def _number(key: str, value) -> float | int:
+    """设置 key 的数值（整数或小数）；字符串按小数解析。
+    The numeric value, integer or decimal, of the setting key; a string is read as a decimal.
+
+    Raises:
+        ValueError: value 不是有限的数；信息中写出 key。
+            value is not a finite number; the message names key.
+    """
+    if not isinstance(value, bool):
+        number = value
+        if not isinstance(value, (int, float)):
+            try:
+                number = float(str(value).strip())
+            except ValueError:
+                number = None
+        if number is not None and math.isfinite(number):
+            return number
+    raise ValueError(tr(f"{key} {value!r} is not a number", f"{key} {value!r} 不是数字"))
 
 
 def _usb_settings(instance: str) -> tuple[str, dict] | None:
@@ -790,16 +852,20 @@ def _usb_settings(instance: str) -> tuple[str, dict] | None:
     FIFO 大小、dma_section、CDC 的 FIFO 和队列长度，以及描述符（默认 1d50:6199 / 0x0100 /
     "XRUSB-DEMO-"，1d50:6199 的分配记录见
     https://github.com/openmoko/openmoko-usb-oui/commit/27f3846d77e0d0d10271b809b831f70040c6197a）。
-    ep0_packet_size 不是 8、16、32、64 时给出警告并改为 8。
+    ep0_packet_size 不是 8、16、32、64 时给出警告并改为 8；其余大小必须是正整数，vid、pid、bcd
+    必须在 0 到 0xFFFF 之间。
     A disabled instance only gets enable: false. An enabled instance gets its missing settings
     in a fixed order: packet size, buffer and FIFO sizes, dma_section, CDC FIFO and queue
     lengths, and the descriptor (default 1d50:6199 / 0x0100 / "XRUSB-DEMO-"; see the link
     above for the allocation of 1d50:6199). An ep0_packet_size other than 8, 16, 32 or 64 is
-    warned about and becomes 8.
+    warned about and becomes 8; the other sizes must be positive integers, and vid, pid and
+    bcd must lie between 0 and 0xFFFF.
 
     Raises:
-        ValueError: 已启用的实例设置了 cdc_count；复合 USB 设备应在 BSP 用户代码中定义。
-            An enabled instance sets cdc_count; a composite USB device belongs in BSP user code.
+        ValueError: 已启用的实例设置了 cdc_count（复合 USB 设备应在 BSP 用户代码中定义），或某个
+            大小或描述符数值无效。
+            An enabled instance sets cdc_count (a composite USB device belongs in BSP user code),
+            or a size or descriptor number is invalid.
     """
     name = _USB_INSTANCES.get((instance or "").upper())
     if name is None:
@@ -815,7 +881,10 @@ def _usb_settings(instance: str) -> tuple[str, dict] | None:
                 "USB 的 cdc_count 不是生成器选项；复合 USB 设备请在 BSP 用户代码中定义",
             )
         )
-    ep0 = _as_int(cfg.get("ep0_packet_size", 8), 8)
+    try:
+        ep0 = _integer("ep0_packet_size", cfg.get("ep0_packet_size", 8))
+    except ValueError:
+        ep0 = None
     if ep0 in (8, 16, 32, 64):
         cfg.setdefault("ep0_packet_size", ep0)
     else:
@@ -847,6 +916,18 @@ def _usb_settings(instance: str) -> tuple[str, dict] | None:
     }
     for key, value in defaults.items():
         cfg.setdefault(key, value)
+    for key in (
+        "tx_buffer_size",
+        "rx_buffer_size",
+        "rx_fifo_size",
+        "tx_fifo_size",
+        "cdc_tx_fifo_size",
+        "cdc_rx_fifo_size",
+        "cdc_queue_size",
+    ):
+        _integer(f"USB.{name.lower()}.{key}", cfg[key])
+    for key in ("vid", "pid", "bcd"):
+        _integer(f"USB.{name.lower()}.{key}", cfg[key], 0, 0xFFFF)
     return name, cfg
 
 
@@ -855,14 +936,15 @@ def generate_dma_resources(project_data: dict) -> str:
     Generate the definitions of the peripheral DMA buffers and return them as C++ code; without
     any buffer a one-line comment says so.
 
-    SPI/USART/UART/LPUART 为开启 DMA 的方向各生成一个缓冲区；I2C 和 ADC 各生成一个缓冲区，ADC 的
-    元素数为通道数乘以每通道元素数；已启用的 USB 实例生成端点缓冲区。缓冲区大小和 dma_section 取自
-    libxr_settings，缺少时写入默认值；dma_section 非空时声明带 __attribute__((section("...")))。
-    SPI/USART/UART/LPUART get one buffer per direction with DMA enabled; I2C and ADC get one
-    buffer each, the ADC one holding the channel count times the elements per channel; enabled
-    USB instances get endpoint buffers. Buffer sizes and dma_section come from libxr_settings,
-    which receives the defaults for missing values; a non-empty dma_section adds
-    __attribute__((section("..."))) to the declarations.
+    SPI 和 USART（含 UART、LPUART）为开启 DMA 的方向各生成一个缓冲区；I2C 和 ADC 各生成一个缓冲区，
+    ADC 的元素数为通道数乘以每通道元素数；已启用的 USB 实例生成端点缓冲区。缓冲区大小和 dma_section
+    取自 libxr_settings，缺少时写入默认值，大小必须是正整数；dma_section 非空时声明带
+    __attribute__((section("...")))。
+    SPI and USART, UART and LPUART included, get one buffer per direction with DMA enabled; I2C
+    and ADC get one buffer each, the ADC one holding the channel count times the elements per
+    channel; enabled USB instances get endpoint buffers. Buffer sizes and dma_section come from
+    libxr_settings, which receives the defaults for missing values, and sizes must be positive
+    integers; a non-empty dma_section adds __attribute__((section("..."))) to the declarations.
 
     有数据 cache 的目标使用按 cache 行对齐并补齐的存储，缓冲区两端不与其他数据共用 cache 行；数组
     长度不变，因此 DMA 长度和端点容量不变。
@@ -871,8 +953,8 @@ def generate_dma_resources(project_data: dict) -> str:
     lengths and endpoint capacities do not change.
 
     Raises:
-        ValueError: 已启用的 USB 实例设置了 cdc_count。
-            An enabled USB instance sets cdc_count.
+        ValueError: 已启用的 USB 实例设置了 cdc_count，或某个大小不是正整数。
+            An enabled USB instance sets cdc_count, or a size is not a positive integer.
     """
     dma_code = []
 
@@ -933,9 +1015,9 @@ def generate_dma_resources(project_data: dict) -> str:
         if p_type_base not in libxr_settings:
             libxr_settings[p_type_base] = {}
 
-        # SPI/USART/UART/LPUART 外设
-        # SPI/USART/UART/LPUART
-        if p_type_base in ["SPI", "USART", "UART", "LPUART"]:
+        # SPI 和 USART 外设；parse 把 USART、UART 和 LPUART 实例都放在 USART 下。
+        # SPI and USART; parse puts USART, UART and LPUART instances all under USART.
+        if p_type_base in ["SPI", "USART"]:
             for instance, config in instances.items():
                 # 检查 DMA 使能标志
                 # Check DMA enable flags
@@ -943,11 +1025,18 @@ def generate_dma_resources(project_data: dict) -> str:
                 rx_dma = config.get("DMA_RX", "DISABLE") == "ENABLE"
                 instance_lower = instance.lower()
                 instance_config = libxr_settings[p_type_base].setdefault(instance_lower, {})
-                tx_size = instance_config.setdefault(
-                    "tx_buffer_size", DMA_DEFAULT_SIZES.get(p_type_base, {}).get("tx", 32)
+                key = f"{p_type_base}.{instance_lower}"
+                tx_size = _integer(
+                    f"{key}.tx_buffer_size",
+                    instance_config.setdefault(
+                        "tx_buffer_size", DMA_DEFAULT_SIZES[p_type_base]["tx"]
+                    ),
                 )
-                rx_size = instance_config.setdefault(
-                    "rx_buffer_size", DMA_DEFAULT_SIZES.get(p_type_base, {}).get("rx", 32)
+                rx_size = _integer(
+                    f"{key}.rx_buffer_size",
+                    instance_config.setdefault(
+                        "rx_buffer_size", DMA_DEFAULT_SIZES[p_type_base]["rx"]
+                    ),
                 )
                 sec_str = section_attribute(instance_config)
 
@@ -969,8 +1058,11 @@ def generate_dma_resources(project_data: dict) -> str:
             for instance, config in instances.items():
                 instance_lower = instance.lower()
                 instance_config = libxr_settings[p_type_base].setdefault(instance_lower, {})
-                buf_size = instance_config.setdefault(
-                    "buffer_size", DMA_DEFAULT_SIZES[p_type_base]["buffer"]
+                buf_size = _integer(
+                    f"{p_type_base}.{instance_lower}.buffer_size",
+                    instance_config.setdefault(
+                        "buffer_size", DMA_DEFAULT_SIZES[p_type_base]["buffer"]
+                    ),
                 )
                 sec_str = section_attribute(instance_config)
 
@@ -1012,9 +1104,9 @@ def generate_dma_resources(project_data: dict) -> str:
                     continue
                 name, usb_cfg = usb
                 inst_lower = name.lower()
-                ep0 = usb_cfg["ep0_packet_size"]
-                tx_sz = _as_int(usb_cfg["tx_buffer_size"], 128)
-                rx_sz = _as_int(usb_cfg["rx_buffer_size"], 128)
+                ep0 = _integer("ep0_packet_size", usb_cfg["ep0_packet_size"])
+                tx_sz = _integer("tx_buffer_size", usb_cfg["tx_buffer_size"])
+                rx_sz = _integer("rx_buffer_size", usb_cfg["rx_buffer_size"])
                 dma_section = usb_cfg["dma_section"]
                 sec_str = f' __attribute__((section("{dma_section}")))' if dma_section else ""
 
@@ -1117,9 +1209,9 @@ class PeripheralFactory:
             "FDCAN": PeripheralFactory._generate_canfd,
             "CAN": PeripheralFactory._generate_can,
             "SPI": PeripheralFactory._generate_spi,
+            # parse 把 USART、UART 和 LPUART 实例都放在 USART 下。
+            # parse puts USART, UART and LPUART instances all under USART.
             "USART": PeripheralFactory._generate_uart,
-            "UART": PeripheralFactory._generate_uart,
-            "LPUART": PeripheralFactory._generate_uart,
             "I2C": PeripheralFactory._generate_i2c,
             "IWDG": PeripheralFactory._generate_iwdg,
             "USB": PeripheralFactory._generate_usb,
@@ -1143,7 +1235,7 @@ class PeripheralFactory:
             else config.get("Channels", [])
         )
         adc_config = libxr_settings["ADC"].setdefault(instance.lower(), {})
-        vref = adc_config.setdefault("vref", 3.3)
+        vref = _number(f"ADC.{instance.lower()}.vref", adc_config.setdefault("vref", 3.3))
 
         channels_code = f"  static STM32ADC {instance.lower()}(&h{instance.lower()}, {instance.lower()}_buf, {{{', '.join(conversions)}}}, {vref});\n"
 
@@ -1173,8 +1265,10 @@ class PeripheralFactory:
         if not channels:
             return "", ""
         dac_config = libxr_settings["DAC"].setdefault(instance.lower(), {})
-        init_voltage = dac_config.setdefault("init_voltage", 0.0)
-        vref = dac_config.setdefault("vref", 3.3)
+        init_voltage = _number(
+            f"DAC.{instance.lower()}.init_voltage", dac_config.setdefault("init_voltage", 0.0)
+        )
+        vref = _number(f"DAC.{instance.lower()}.vref", dac_config.setdefault("vref", 3.3))
         codes = []
         for out_name, channel_id in channels.items():
             if channel_id.startswith("DAC_OUT"):
@@ -1206,7 +1300,9 @@ class PeripheralFactory:
         rx_buf = f"{instance.lower()}_rx_buf" if rx_dma else "{nullptr, 0}"
 
         uart_config = libxr_settings["USART"].setdefault(instance.lower(), {})
-        tx_queue = uart_config.setdefault("tx_queue_size", 5)
+        tx_queue = _integer(
+            f"USART.{instance.lower()}.tx_queue_size", uart_config.setdefault("tx_queue_size", 5)
+        )
 
         code = (
             f"  static STM32UART {instance.lower()}(&h{instance.lower().replace('usart', 'uart')},\n"
@@ -1222,7 +1318,11 @@ class PeripheralFactory:
         defaults to 3.
         """
         i2c_config = libxr_settings["I2C"].setdefault(instance.lower(), {})
-        dma_min_size = i2c_config.setdefault("dma_enable_min_size", 3)
+        dma_min_size = _integer(
+            f"I2C.{instance.lower()}.dma_enable_min_size",
+            i2c_config.setdefault("dma_enable_min_size", 3),
+            0,
+        )
         _register_device(f"{instance.lower()}", "I2C")
         return (
             "main",
@@ -1263,7 +1363,9 @@ class PeripheralFactory:
         libxr_settings (default 5).
         """
         instance_cfg = _instance_settings("FDCAN", instance)
-        queue_size = instance_cfg.setdefault("queue_size", 5)
+        queue_size = _integer(
+            f"FDCAN.{instance.lower()}.queue_size", instance_cfg.setdefault("queue_size", 5)
+        )
 
         _register_device(f"{instance.lower()}", "FDCAN")
         return (
@@ -1280,7 +1382,9 @@ class PeripheralFactory:
         The queue length is queue_size under CAN in libxr_settings (default 5).
         """
         instance_cfg = _instance_settings("CAN", instance)
-        queue_size = instance_cfg.setdefault("queue_size", 5)
+        queue_size = _integer(
+            f"CAN.{instance.lower()}.queue_size", instance_cfg.setdefault("queue_size", 5)
+        )
 
         _register_device(
             f"{instance.lower()}",
@@ -1305,7 +1409,11 @@ class PeripheralFactory:
         rx_enabled = config.get("DMA_RX", "DISABLE") == "ENABLE"
 
         spi_config = libxr_settings["SPI"].setdefault(instance.lower(), {})
-        dma_min_size = spi_config.setdefault("dma_enable_min_size", 3)
+        dma_min_size = _integer(
+            f"SPI.{instance.lower()}.dma_enable_min_size",
+            spi_config.setdefault("dma_enable_min_size", 3),
+            0,
+        )
 
         tx_buf = f"{instance.lower()}_tx_buf" if tx_enabled else "{nullptr, 0}"
         rx_buf = f"{instance.lower()}_rx_buf" if rx_enabled else "{nullptr, 0}"
@@ -1328,8 +1436,11 @@ class PeripheralFactory:
         if not config.get("Enabled"):
             return "", ""
         iwdg_config = libxr_settings["IWDG"].setdefault(instance.lower(), {})
-        timeout_ms = iwdg_config.setdefault("timeout_ms", 1000)
-        feed_ms = iwdg_config.setdefault("feed_interval_ms", 250)
+        key = f"IWDG.{instance.lower()}"
+        timeout_ms = _integer(f"{key}.timeout_ms", iwdg_config.setdefault("timeout_ms", 1000))
+        feed_ms = _integer(
+            f"{key}.feed_interval_ms", iwdg_config.setdefault("feed_interval_ms", 250)
+        )
         code = (
             f"  static STM32Watchdog {instance.lower()}(&h{instance.lower()}, "
             f"{timeout_ms}, {feed_ms});\n"
@@ -1375,17 +1486,33 @@ class PeripheralFactory:
         speed = "HS" if name.endswith("_HS") else "FS"
         obj = f"usb_{speed.lower()}"  # 例如 usb_fs、usb_hs / e.g. usb_fs, usb_hs
 
-        ep0_sz = inst_cfg["ep0_packet_size"]
-        rx_buf_sz = _as_int(inst_cfg["rx_buffer_size"], 128)  # USB DMA 缓冲区 / USB DMA
-        tx_fifo_size = _as_int(inst_cfg["tx_fifo_size"], 128)  # EP1 硬件 FIFO / EP1 HW FIFO
+        ep0_sz = _integer("ep0_packet_size", inst_cfg["ep0_packet_size"])
+        # _usb_settings() 已检查这些数值，这里只取出整数。
+        # _usb_settings() has checked these numbers; this only reads the integers.
+        number = {
+            key: _integer(key, inst_cfg[key], 0)
+            for key in (
+                "rx_buffer_size",
+                "tx_fifo_size",
+                "rx_fifo_size",
+                "cdc_tx_fifo_size",
+                "cdc_rx_fifo_size",
+                "cdc_queue_size",
+                "vid",
+                "pid",
+                "bcd",
+            )
+        }
+        rx_buf_sz = number["rx_buffer_size"]  # USB DMA 缓冲区 / USB DMA
+        tx_fifo_size = number["tx_fifo_size"]  # EP1 硬件 FIFO / EP1 HW FIFO
         # OTG 共享的接收 FIFO / OTG shared RX FIFO
-        rx_fifo_size = _as_int(inst_cfg["rx_fifo_size"], 256 if is_otg else 128)
-        cdc_tx_fifo_size = _as_int(inst_cfg["cdc_tx_fifo_size"], 128)
-        cdc_rx_fifo_size = _as_int(inst_cfg["cdc_rx_fifo_size"], 128)
-        cdc_queue_size = _as_int(inst_cfg["cdc_queue_size"], 3)
-        vid = _as_int(inst_cfg["vid"], 0x1D50)
-        pid = _as_int(inst_cfg["pid"], 0x6199)
-        bcd = _as_int(inst_cfg["bcd"], 0x0100)
+        rx_fifo_size = number["rx_fifo_size"]
+        cdc_tx_fifo_size = number["cdc_tx_fifo_size"]
+        cdc_rx_fifo_size = number["cdc_rx_fifo_size"]
+        cdc_queue_size = number["cdc_queue_size"]
+        vid = number["vid"]
+        pid = number["pid"]
+        bcd = number["bcd"]
         manufacturer = str(inst_cfg["manufacturer"]).replace('"', '\\"')
         product = str(inst_cfg["product"]).replace('"', '\\"')
         serial = str(inst_cfg["serial"]).replace('"', '\\"')
@@ -1510,10 +1637,10 @@ def _generate_extern_declarations(project_data: dict) -> str:
     Generate the extern declarations of the HAL handles, sorted and without duplicates.
 
     包括非 SysTick 时基使用的 TIM、LPTIM 或 HRTIM 句柄和每个外设实例的句柄；USB 实例（不含
-    USB_DEVICE 等中间件）使用 PCD 句柄，USART/UART/LPUART 使用 UART_HandleTypeDef。
+    USB_DEVICE 等中间件）使用 PCD 句柄，USART 段（USART、UART 和 LPUART）使用 UART_HandleTypeDef。
     They cover the TIM, LPTIM or HRTIM handle of a timebase other than SysTick and the handle
     of every peripheral instance; USB instances, not middleware such as USB_DEVICE, use their
-    PCD handle, and USART/UART/LPUART use UART_HandleTypeDef.
+    PCD handle, and the USART section (USART, UART and LPUART) uses UART_HandleTypeDef.
     """
     externs = set()
 
@@ -1543,17 +1670,13 @@ def _generate_extern_declarations(project_data: dict) -> str:
             elif p_type == "DAC":
                 externs.add(f"extern DAC_HandleTypeDef h{instance.lower()};")
             else:
-                handle_type = (
-                    "UART_HandleTypeDef"
-                    if p_type in ["USART", "UART", "LPUART"]
-                    else f"{p_type}_HandleTypeDef"
-                )
-                if p_type in ["USART", "UART", "LPUART"]:
-                    externs.add(
-                        f"extern {handle_type} h{instance.lower().replace('usart', 'uart')};"
-                    )
+                if p_type == "USART":
+                    # USART、UART 和 LPUART 实例都在 USART 下，句柄类型都是 UART_HandleTypeDef。
+                    # USART, UART and LPUART instances are all under USART with UART_HandleTypeDef.
+                    handle = instance.lower().replace("usart", "uart")
+                    externs.add(f"extern UART_HandleTypeDef h{handle};")
                 else:
-                    externs.add(f"extern {handle_type} h{instance.lower()};")
+                    externs.add(f"extern {p_type}_HandleTypeDef h{instance.lower()};")
 
     return "/* External HAL Declarations */\n" + "\n".join(sorted(externs)) + "\n"
 
@@ -1798,9 +1921,8 @@ def _generate_core_system(project_data: dict) -> str:
         init_args = ""
     elif system_type == "FreeRTOS" or system_type == "ThreadX":
         level = _priority_level("software_timer.priority", timer_cfg["priority"])
-        init_args = (
-            f"static_cast<uint32_t>(LibXR::Thread::Priority::{level}), {timer_cfg['stack_depth']}"
-        )
+        stack_depth = _integer("software_timer.stack_depth", timer_cfg["stack_depth"])
+        init_args = f"static_cast<uint32_t>(LibXR::Thread::Priority::{level}), {stack_depth}"
     else:
         logging.error(
             tr(f"Unsupported system type: {system_type}", f"不支持的系统类型：{system_type}")
@@ -1847,13 +1969,17 @@ def configure_watchdog(project_data: dict) -> str:
 
     wdg_config = libxr_settings.setdefault("Watchdog", {})
     run_as_thread = wdg_config.setdefault("run_as_thread", False)
-    feed_interval = wdg_config.setdefault("feed_interval_ms", 250)
+    feed_interval = _integer(
+        "Watchdog.feed_interval_ms", wdg_config.setdefault("feed_interval_ms", 250)
+    )
 
     for name in watchdog_instances:
         code += f"""  {name}.Feed();
 """
         if run_as_thread:
-            thread_stack = wdg_config.setdefault("thread_stack_depth", 1024)
+            thread_stack = _integer(
+                "Watchdog.thread_stack_depth", wdg_config.setdefault("thread_stack_depth", 1024)
+            )
             level = _priority_level(
                 "Watchdog.thread_priority", wdg_config.setdefault("thread_priority", 3)
             )
@@ -1910,16 +2036,21 @@ def configure_terminal(project_data: dict) -> str:
     if terminal_source != "":
         term_config = libxr_settings.setdefault("Terminal", {})
         params = [
-            term_config.setdefault("read_buff_size", 32),
-            term_config.setdefault("max_line_size", 32),
-            term_config.setdefault("max_arg_number", 5),
-            term_config.setdefault("max_history_number", 5),
+            _integer(f"Terminal.{key}", term_config.setdefault(key, default))
+            for key, default in (
+                ("read_buff_size", 32),
+                ("max_line_size", 32),
+                ("max_arg_number", 5),
+                ("max_history_number", 5),
+            )
         ]
 
         run_as_thread = term_config.setdefault("run_as_thread", False)
 
         if run_as_thread:
-            thread_stack_depth = term_config.setdefault("thread_stack_depth", 1024)
+            thread_stack_depth = _integer(
+                "Terminal.thread_stack_depth", term_config.setdefault("thread_stack_depth", 1024)
+            )
             level = _priority_level(
                 "Terminal.thread_priority", term_config.setdefault("thread_priority", 3)
             )
@@ -2106,6 +2237,10 @@ def generate_flash_map_cpp(flash_info: dict) -> str:
     Convert a Flash layout dictionary into C++ code: the constexpr array FLASH_SECTORS and the
     sector count FLASH_SECTOR_NUMBER.
 
+    扇区大小按字节写出；STM32L0、L1 的页小于 1 KB（如 0.125 KB 即 128 字节）。
+    Sector sizes are written in bytes; STM32L0 and L1 pages are below 1 KB, such as 0.125 KB,
+    that is 128 bytes.
+
     Args:
         flash_info: flash_info_to_dict() 的输出；每个扇区有十六进制的 address 和 size_kb。
             The output of flash_info_to_dict(); each sector has a hexadecimal address and
@@ -2119,8 +2254,8 @@ def generate_flash_map_cpp(flash_info: dict) -> str:
 
     for s in flash_info["sectors"]:
         address = int(s["address"], 16)
-        size_kb = int(s["size_kb"])
-        lines.append(f"  {{0x{address:08X}, 0x{(size_kb * 1024):08X}}},")
+        size = round(float(s["size_kb"]) * 1024)
+        lines.append(f"  {{0x{address:08X}, 0x{size:08X}}},")
 
     lines.append("};\n")
     lines.append(
