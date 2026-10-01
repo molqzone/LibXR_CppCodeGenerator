@@ -413,7 +413,7 @@ Parses `.ioc` files and creates `.config.yaml` with a readable summary.
 Generates STM32 application code from YAML.
 
 ```bash
-usage: libxr gen [-h] -i INPUT [-d DIRECTORY] -o OUTPUT [--xrobot] [--libxr-config LIBXR_CONFIG]
+usage: libxr gen [-h] -i INPUT [-d DIRECTORY] -o OUTPUT [--xrobot] [--libxr-config LIBXR_CONFIG] [--verbose]
 ```
 
 #### 🔧 Required
@@ -438,11 +438,22 @@ usage: libxr gen [-h] -i INPUT [-d DIRECTORY] -o OUTPUT [--xrobot] [--libxr-conf
 
 - `--libxr-config`：
 
-  自定义 libxr_config.yaml 路径(可为本地或远程)；无法找到、读取或解析时生成失败
-  Path or URL to runtime config YAML; generation fails if it cannot be found,
-  read or parsed
+  自定义 libxr_config.yaml 路径(可为本地或远程，远程下载时限 30 秒)；无法找到、读取或解析时生成失败
+  Path or URL to runtime config YAML (a download times out after 30 s); generation fails if
+  it cannot be found, read or parsed
+
+- `--verbose`：
+
+  输出调试日志；生成失败时同时打印调用栈
+  Enable debug logging; a failed generation also prints the traceback
 
 #### 📦 Outputs
+
+全部文件先在内存中生成，没有错误时才写出，且只写内容有变化的文件；内容不变的文件保持原来的
+修改时间，不会触发重新编译。结束时用一行日志列出写入、未变化和删除的文件。
+All files are generated in memory first and written only when nothing failed, and only the
+files whose content changed are written; unchanged files keep their modification time and
+trigger no rebuild. One log line at the end lists the files written, unchanged and removed.
 
 - `app_main.cpp`：
   主入口文件，包含所有初始化逻辑。`/* User Code Begin N */` 与 `/* User Code End N */`
@@ -463,10 +474,18 @@ usage: libxr gen [-h] -i INPUT [-d DIRECTORY] -o OUTPUT [--xrobot] [--libxr-conf
   and keys the generator does not use (such as `generator:`) are kept. A file
   that cannot be read or parsed stops generation instead of being reset to
   defaults.
+  外设实例的键为小写实例名（如 `spi1`、`can1`）；以前版本写成大写的 CAN/FDCAN 键（如 `CAN1`）
+  在生成时改为小写并提示。
+  Peripheral instances are keyed by their lower-case name (such as `spi1` or `can1`); the
+  upper-case CAN/FDCAN keys of earlier versions (such as `CAN1`) are renamed on generation
+  with a notice.
 
 - `flash_map.hpp`：
-  自动生成的 Flash 扇区表，供 Flash 抽象层使用
-  Auto-generated flash sector layout for use with Flash abstraction layer
+  自动生成的 Flash 扇区表，供 Flash 抽象层使用。推算不出 MCU 型号的 Flash 布局时给出警告，
+  不生成该文件，`app_main.cpp` 也不 include 它，以前生成的 `flash_map.hpp` 被删除。
+  Auto-generated flash sector layout for use with Flash abstraction layer. When no flash
+  layout can be derived for the MCU, a warning is logged, the file is not generated,
+  `app_main.cpp` does not include it, and a previously generated `flash_map.hpp` is deleted.
 
 ---
 

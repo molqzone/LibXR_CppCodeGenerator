@@ -118,6 +118,8 @@ def cmd_gen(args: argparse.Namespace) -> None:
     libxr gen: generate code from the configuration YAML by the platform of the -d project
     directory, the current directory by default.
     """
+    if args.verbose:
+        configure_output(logging.DEBUG)
     if not os.path.isdir(args.directory):
         logging.error(
             tr(f"Directory does not exist: {args.directory}", f"目录不存在：{args.directory}")
@@ -295,6 +297,9 @@ def _add_gen(commands) -> None:
             "Optional path or URL to libxr_config.yaml",
             "libxr_config.yaml 的路径或 URL（可选）",
         ),
+    )
+    parser.add_argument(
+        "--verbose", action="store_true", help=tr("Enable debug logging", "输出调试日志")
     )
 
 

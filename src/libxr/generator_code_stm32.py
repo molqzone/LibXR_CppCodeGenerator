@@ -9,6 +9,7 @@ It also generates app_main.h and flash_map.hpp and updates libxr_config.yaml; th
 bodies of an existing app_main source file are kept.
 """
 
+import copy
 import logging
 import os
 import re
@@ -31,7 +32,10 @@ registered_devices = {"power_manager": "PowerManager"}
 # 每个登记的名字由什么产生，用于冲突诊断。
 # What produced each registered name, for collision diagnostics.
 registered_origins = {}
-libxr_settings = {
+# 生效设置的默认值；每次生成都从这里重新开始，再合并 libxr_config.yaml。
+# Defaults of the effective settings; every generation starts again from here and then merges
+# libxr_config.yaml.
+DEFAULT_SETTINGS = {
     "terminal_source": "",
     "software_timer": {"priority": 2, "stack_depth": 1024},
     "SPI": {},
@@ -50,14 +54,33 @@ libxr_settings = {
     },
     "SYSTEM": "None",
 }
+# 生效的设置：DEFAULT_SETTINGS 合并 libxr_config.yaml，生成过程中再补上缺少的默认值。
+# The effective settings: DEFAULT_SETTINGS merged with libxr_config.yaml, completed with
+# missing defaults during generation.
+libxr_settings = copy.deepcopy(DEFAULT_SETTINGS)
 # 已加载的 libxr_config.yaml 的往返文档（含注释和用户的键）。
 # Round-trip document of the loaded libxr_config.yaml (comments, user keys).
 libxr_config_document = None
+# 从 URL 下载 libxr_config.yaml 的时限（秒）。
+# Time limit in seconds for downloading libxr_config.yaml from a URL.
+CONFIG_DOWNLOAD_TIMEOUT = 30
 
 
 # --------------------------
 # 配置初始化 / Configuration Initialization
 # --------------------------
+def reset_settings() -> None:
+    """把生效的设置恢复为 DEFAULT_SETTINGS，并丢掉已加载的 libxr_config.yaml 文档，使同一进程中
+    的下一次生成不带上一次的设置。
+    Restore the effective settings to DEFAULT_SETTINGS and drop the loaded libxr_config.yaml
+    document, so the next generation in the same process carries nothing over.
+    """
+    global libxr_config_document
+    libxr_settings.clear()
+    libxr_settings.update(copy.deepcopy(DEFAULT_SETTINGS))
+    libxr_config_document = None
+
+
 def initialize_registry(use_xrobot: bool) -> None:
     """清空生成对象的登记表；use_xrobot 为真时先登记 power_manager（PowerManager）。
     Reset the registry of generated objects; with use_xrobot, power_manager (PowerManager) is
@@ -173,13 +196,11 @@ def load_configuration(file_path: str) -> dict:
     Read the project YAML, check the required Mcu, GPIO and Peripherals sections and return
     its content.
 
-    同时按 FreeRTOS 或 ThreadX 段设置 libxr_settings 的 SYSTEM，把 software_timer 和
-    terminal_source 写入 libxr_settings，并删除空的外设条目。文件不存在、YAML 语法错误、内容
-    不是映射或缺少必需段时记录错误并以状态 1 退出。
-    It also sets SYSTEM in libxr_settings from the FreeRTOS or ThreadX section, copies
-    software_timer and terminal_source into libxr_settings, and deletes empty peripheral
-    entries. A missing file, a YAML syntax error, content that is not a mapping or a missing
-    section logs an error and exits with status 1.
+    同时按 FreeRTOS 或 ThreadX 段设置 libxr_settings 的 SYSTEM，并删除空的外设条目。文件不存在、
+    YAML 语法错误、内容不是映射或缺少必需段时记录错误并以状态 1 退出。
+    It also sets SYSTEM in libxr_settings from the FreeRTOS or ThreadX section and deletes
+    empty peripheral entries. A missing file, a YAML syntax error, content that is not a
+    mapping or a missing section logs an error and exits with status 1.
     """
     try:
         with open(file_path, encoding="utf-8") as f:
@@ -215,26 +236,11 @@ def load_configuration(file_path: str) -> dict:
             else:
                 libxr_settings["SYSTEM"] = "None"
 
-            # 软件定时器配置
-            # Software timer config
-            if "software_timer" in config:
-                libxr_settings["software_timer"].update(config["software_timer"])
-
-            # 终端来源
-            # Terminal source
-            if "terminal_source" in config:
-                libxr_settings["terminal_source"] = config["terminal_source"]
-
-            if "Peripherals" in config:
-                empty_keys = [k for k, v in config["Peripherals"].items() if not v or v == {}]
-                for k in empty_keys:
-                    logging.info(
-                        tr(
-                            f"Skipping empty peripheral config: {k}",
-                            f"跳过空的外设配置：{k}",
-                        )
-                    )
-                    del config["Peripherals"][k]
+            for key in [k for k, v in config["Peripherals"].items() if not v]:
+                logging.info(
+                    tr(f"Skipping empty peripheral config: {key}", f"跳过空的外设配置：{key}")
+                )
+                del config["Peripherals"][key]
 
             return config
     except FileNotFoundError:
@@ -258,12 +264,14 @@ def load_libxr_config(output_dir: str, config_source: str) -> None:
     Merge libxr_config.yaml in output_dir, or the path or URL given by --libxr-config, into the
     effective settings.
 
-    文件中的 SYSTEM 被忽略，它由工程 YAML 决定。没有配置文件时保留默认设置并使用新的空文档。
-    已存在但无法读取或解析的配置会中止生成，而不是换用默认值。
-    SYSTEM from the file is ignored because the project YAML decides it. Without a
-    configuration file the defaults stay and a new, empty document is used. A configuration
-    that exists but cannot be read or parsed stops generation instead of falling back to the
-    defaults.
+    文件中的 SYSTEM 被忽略，它由工程 YAML 决定；config_version 大于 1 时给出警告。URL 的下载
+    时限为 CONFIG_DOWNLOAD_TIMEOUT 秒。没有配置文件时保留默认设置并使用新的空文档。已存在但
+    无法读取或解析的配置会中止生成，而不是换用默认值。
+    SYSTEM from the file is ignored because the project YAML decides it; a config_version
+    above 1 is warned about. A URL download times out after CONFIG_DOWNLOAD_TIMEOUT seconds.
+    Without a configuration file the defaults stay and a new, empty document is used. A
+    configuration that exists but cannot be read or parsed stops generation instead of falling
+    back to the defaults.
 
     Raises:
         LibXRConfigError: 配置无法下载、找到、读取或解析，或其值的类型与默认设置冲突。
@@ -282,7 +290,9 @@ def load_libxr_config(output_dir: str, config_source: str) -> None:
                 )
             )
             try:
-                with urllib.request.urlopen(config_source) as response:
+                with urllib.request.urlopen(
+                    config_source, timeout=CONFIG_DOWNLOAD_TIMEOUT
+                ) as response:
                     text = response.read().decode("utf-8")
             except (OSError, UnicodeDecodeError) as error:
                 raise LibXRConfigError(
@@ -309,15 +319,13 @@ def load_libxr_config(output_dir: str, config_source: str) -> None:
             )
     elif os.path.exists(config_path):
         document, saved_config = libxr_config_file.read(config_path)
-        if saved_config.get("config_version", 1) > 1:
-            logging.warning(
-                tr("Config file format is newer than expected", "配置文件格式比预期的新")
-            )
     else:
         logging.info(tr("Creating new library configuration file", "新建库配置文件"))
         libxr_config_document = libxr_config_file.new_document()
         return
 
+    if saved_config.get("config_version", 1) > 1:
+        logging.warning(tr("Config file format is newer than expected", "配置文件格式比预期的新"))
     saved_config.pop("SYSTEM", None)
     libxr_settings = _deep_merge(libxr_settings, saved_config)
     libxr_config_document = document
@@ -352,10 +360,35 @@ def _report_dropped_device_aliases(aliases) -> None:
         logging.warning(f"  {pair}")
 
 
-def save_libxr_config(config_path: str) -> None:
-    """把生效的设置写入 config_path，去掉空的段和旧的 device_aliases 表。
-    Write the effective settings to config_path, dropping empty sections and the legacy
-    device_aliases table.
+def save_libxr_config(config_path: str) -> bool:
+    """把 libxr_config_text() 写入 config_path；内容相同时不写。写入时为 True。
+    Write libxr_config_text() to config_path, unless the file already holds it; True when
+    written.
+    """
+    return _write_if_changed(config_path, libxr_config_text())
+
+
+def _write_if_changed(path: str, text: str) -> bool:
+    """以 UTF-8 和 LF 换行把 text 写入 path；文件内容已相同时不写，修改时间不变。写入时为 True。
+    Write text to path as UTF-8 with LF line endings; a file that already holds it is left
+    alone, keeping its modification time. True when written.
+    """
+    data = text.encode("utf-8")
+    try:
+        with open(path, "rb") as stream:
+            if stream.read() == data:
+                return False
+    except FileNotFoundError:
+        pass
+    with open(path, "wb") as stream:
+        stream.write(data)
+    return True
+
+
+def libxr_config_text() -> str:
+    """libxr_config.yaml 的新内容：生效的设置，去掉空的段和旧的 device_aliases 表。
+    The new content of libxr_config.yaml: the effective settings without empty sections and
+    without the legacy device_aliases table.
 
     生成器不解释的键（例如 ``generator`` 版本固定项）和注释被保留；device_aliases 中的别名以警告
     列出。
@@ -375,17 +408,20 @@ def save_libxr_config(config_path: str) -> None:
     if document is None:
         document = libxr_config_file.new_document()
     libxr_config_file.update(document, cleaned_config)
-    libxr_config_file.write(config_path, document)
+    return libxr_config_file.dump(document)
 
 
 def _deep_merge(base: dict, update: dict) -> dict:
-    """把 update 递归合并进 base 并返回 base；映射逐键合并，其他值直接覆盖。
-    Merge update into base recursively and return base; mappings are merged key by key and
-    other values overwrite.
+    """把 update 递归合并进 base 并返回 base；映射逐键合并，其他值直接覆盖，base 中映射对应的
+    null 视为空映射。
+    Merge update into base recursively and return base; mappings are merged key by key, other
+    values overwrite, and a null meeting a mapping in base counts as an empty mapping.
 
     Raises:
-        LibXRConfigError: update 中的映射对应 base 中的非映射值。
-            A mapping in update meets a non-mapping value in base.
+        LibXRConfigError: update 中的映射对应 base 中的非映射值，或 update 中的非映射值对应 base
+            中的映射。
+            A mapping in update meets a non-mapping value in base, or a non-mapping value in
+            update meets a mapping in base.
     """
     for key, value in update.items():
         if isinstance(value, dict):
@@ -400,6 +436,18 @@ def _deep_merge(base: dict, update: dict) -> dict:
                         f"配置键 '{key}' 的类型冲突：应为 {expected}，实际是映射",
                     )
                 )
+        elif isinstance(base.get(key), dict):
+            if value is None:
+                # 空的段（例如只写了 "I2C:"）等同于空映射。
+                # An empty section such as a bare "I2C:" counts as an empty mapping.
+                continue
+            actual = type(value).__name__
+            raise LibXRConfigError(
+                tr(
+                    f"Config type conflict for key '{key}': expected a mapping, got {actual}",
+                    f"配置键 '{key}' 的类型冲突：应为映射，实际是 {actual}",
+                )
+            )
         else:
             base[key] = value
     return base
@@ -710,6 +758,97 @@ DMA_DEFAULT_SIZES = {
     "ADC": {"buffer": 32},
 }
 
+# CubeMX 的 USB 实例名到规范名；USB（FSDEV）视为 USB_FS。
+# CubeMX USB instance names to their normalized names; USB (FSDEV) is USB_FS.
+_USB_INSTANCES = {
+    "USB": "USB_FS",
+    "USB_FS": "USB_FS",
+    "USB_HS": "USB_HS",
+    "USB_OTG_FS": "USB_OTG_FS",
+    "USB_OTG_HS": "USB_OTG_HS",
+}
+
+
+def _as_int(value, default: int) -> int:
+    """按 Python 整数字面量规则（含 0x 等前缀）把 value 转为 int；失败时返回 default。
+    Convert value to an int by Python integer literal rules, prefixes such as 0x included;
+    default when that fails.
+    """
+    try:
+        return int(str(value), 0)
+    except (TypeError, ValueError):
+        return default
+
+
+def _usb_settings(instance: str) -> tuple[str, dict] | None:
+    """USB 实例的规范名和它在 libxr_settings["USB"] 中的设置；其他实例名（如 USB_DEVICE 中间件）
+    为 None。
+    The normalized name of a USB instance and its settings in libxr_settings["USB"]; None for
+    any other instance name, such as the USB_DEVICE middleware.
+
+    未启用的实例只补上 enable: false。已启用的实例按固定顺序补上缺少的设置：包大小、缓冲区和
+    FIFO 大小、dma_section、CDC 的 FIFO 和队列长度，以及描述符（默认 1d50:6199 / 0x0100 /
+    "XRUSB-DEMO-"，1d50:6199 的分配记录见
+    https://github.com/openmoko/openmoko-usb-oui/commit/27f3846d77e0d0d10271b809b831f70040c6197a）。
+    ep0_packet_size 不是 8、16、32、64 时给出警告并改为 8。
+    A disabled instance only gets enable: false. An enabled instance gets its missing settings
+    in a fixed order: packet size, buffer and FIFO sizes, dma_section, CDC FIFO and queue
+    lengths, and the descriptor (default 1d50:6199 / 0x0100 / "XRUSB-DEMO-"; see the link
+    above for the allocation of 1d50:6199). An ep0_packet_size other than 8, 16, 32 or 64 is
+    warned about and becomes 8.
+
+    Raises:
+        ValueError: 已启用的实例设置了 cdc_count；复合 USB 设备应在 BSP 用户代码中定义。
+            An enabled instance sets cdc_count; a composite USB device belongs in BSP user code.
+    """
+    name = _USB_INSTANCES.get((instance or "").upper())
+    if name is None:
+        return None
+    cfg = libxr_settings.setdefault("USB", {}).setdefault(name.lower(), {})
+    cfg.setdefault("enable", False)
+    if not cfg["enable"]:
+        return name, cfg
+    if "cdc_count" in cfg:
+        raise ValueError(
+            tr(
+                "USB cdc_count is not a generator option; define composite USB in BSP user code",
+                "USB 的 cdc_count 不是生成器选项；复合 USB 设备请在 BSP 用户代码中定义",
+            )
+        )
+    ep0 = _as_int(cfg.get("ep0_packet_size", 8), 8)
+    if ep0 in (8, 16, 32, 64):
+        cfg.setdefault("ep0_packet_size", ep0)
+    else:
+        logging.warning(
+            tr(
+                f"USB {name.lower()}: ep0_packet_size {cfg['ep0_packet_size']} is not 8, 16, 32 "
+                "or 64; using 8",
+                f"USB {name.lower()}：ep0_packet_size {cfg['ep0_packet_size']} 不是 8、16、32 "
+                "或 64，改用 8",
+            )
+        )
+        cfg["ep0_packet_size"] = 8
+    is_otg = name.startswith("USB_OTG_")
+    defaults = {
+        "tx_buffer_size": 128,
+        "rx_buffer_size": 128,
+        "rx_fifo_size": 256 if is_otg else 128,
+        "tx_fifo_size": 128,
+        "dma_section": "",
+        "cdc_tx_fifo_size": 128,
+        "cdc_rx_fifo_size": 128,
+        "cdc_queue_size": 3,
+        "vid": 0x1D50,
+        "pid": 0x6199,
+        "bcd": 0x0100,
+        "manufacturer": "XRobot",
+        "product": f"STM32 XRUSB {instance} CDC Demo",
+        "serial": "XRUSB-DEMO-",
+    }
+    for key, value in defaults.items():
+        cfg.setdefault(key, value)
+    return name, cfg
+
 
 def generate_dma_resources(project_data: dict) -> str:
     """生成外设 DMA 缓冲区的定义，返回 C++ 代码文本；没有缓冲区时返回一行说明注释。
@@ -736,21 +875,17 @@ def generate_dma_resources(project_data: dict) -> str:
             An enabled USB instance sets cdc_count.
     """
     dma_code = []
-    # 默认的段设置
-    # Default section settings
-    DEFAULT_SECTIONS = {
-        "DMA": "",
-        "BDMA": "",
-    }
 
-    def get_buf_section(user_section: str, dma_type: str) -> str:
-        """缓冲区的段名：有用户设置时用它，否则用 dma_type 的默认段（DMA 和 BDMA 均为空）。
-        The section name of a buffer: the user setting when there is one, otherwise the default
-        section of dma_type (empty for both DMA and BDMA).
+    def section_attribute(instance_config: dict) -> str:
+        """实例设置中 dma_section 对应的段属性文本；没有设置时为空字符串，并把 dma_section 记为
+        空字符串，使 libxr_config.yaml 列出这一项。
+        The section attribute text for dma_section in the instance settings; an empty string
+        when it is not set, and dma_section is then recorded as an empty string so that
+        libxr_config.yaml lists it.
         """
-        if user_section:  # 用户配置优先 / User configuration takes priority
-            return user_section
-        return DEFAULT_SECTIONS.get(dma_type, "")
+        dma_section = instance_config.get("dma_section") or ""
+        instance_config["dma_section"] = dma_section
+        return f' __attribute__((section("{dma_section}")))' if dma_section else ""
 
     def buffer_declaration(data_type: str, name: str, count, section: str) -> str:
         """生成一个 DMA 缓冲区的声明，按 __DCACHE_PRESENT 分为两种写法。
@@ -806,11 +941,6 @@ def generate_dma_resources(project_data: dict) -> str:
                 # Check DMA enable flags
                 tx_dma = config.get("DMA_TX", "DISABLE") == "ENABLE"
                 rx_dma = config.get("DMA_RX", "DISABLE") == "ENABLE"
-                # 使用配置的 DMA 类型，没有时回退为 "DMA"
-                # Use configured DMA type if available, fallback to "DMA"
-                dma_type = config.get("DMA_TX_TYPE", config.get("DMA_RX_TYPE", "DMA"))
-                # 用于变量名的实例名
-                # Instance name for variable
                 instance_lower = instance.lower()
                 instance_config = libxr_settings[p_type_base].setdefault(instance_lower, {})
                 tx_size = instance_config.setdefault(
@@ -819,13 +949,7 @@ def generate_dma_resources(project_data: dict) -> str:
                 rx_size = instance_config.setdefault(
                     "rx_buffer_size", DMA_DEFAULT_SIZES.get(p_type_base, {}).get("rx", 32)
                 )
-                # 读取 dma_section 配置，没有时设为默认值
-                # Get dma_section config or assign default
-                dma_section = instance_config.get("dma_section", None)
-                if not dma_section:
-                    dma_section = get_buf_section("", dma_type)
-                    instance_config["dma_section"] = dma_section
-                sec_str = f' __attribute__((section("{dma_section}")))' if dma_section else ""
+                sec_str = section_attribute(instance_config)
 
                 buf_code = []
                 if tx_dma:
@@ -843,19 +967,12 @@ def generate_dma_resources(project_data: dict) -> str:
         # I2C/ADC
         elif p_type_base in ["I2C", "ADC"]:
             for instance, config in instances.items():
-                # 选段用的类型标签
-                # type tag for section picking
-                dma_type = config.get("DMA_RX_TYPE", "DMA")
                 instance_lower = instance.lower()
                 instance_config = libxr_settings[p_type_base].setdefault(instance_lower, {})
                 buf_size = instance_config.setdefault(
                     "buffer_size", DMA_DEFAULT_SIZES[p_type_base]["buffer"]
                 )
-                dma_section = instance_config.get("dma_section", None)
-                if not dma_section:
-                    dma_section = get_buf_section("", dma_type)
-                    instance_config["dma_section"] = dma_section
-                sec_str = f' __attribute__((section("{dma_section}")))' if dma_section else ""
+                sec_str = section_attribute(instance_config)
 
                 # ADC 缓冲区为 uint16_t，I2C 为 uint8_t
                 # ADC buffer is uint16_t, I2C is uint8_t
@@ -887,86 +1004,18 @@ def generate_dma_resources(project_data: dict) -> str:
                     )
 
         elif p_type_base == "USB":
-            # 为每个 USB 端点生成缓冲区变量（所在段由 dma_section 决定）
-            # Generate buffer variables for each USB EP (controlled by dma_section)
-            for instance, cfg in instances.items():
-                # 规范化实例名
-                # Normalize instance name
-                inst_u = (instance or "USB_FS").upper()
-                inst_u = (
-                    inst_u.replace("USBOTG", "USB_OTG_")
-                    .replace("OTGFS", "OTG_FS")
-                    .replace("OTGHS", "OTG_HS")
-                )
-                if inst_u == "USB":
-                    inst_u = "USB_FS"
-                is_otg = inst_u.startswith("USB_OTG_")
-                inst_lower = inst_u.lower()
-
-                # 从 libxr_settings 读取 USB 配置，缺少时设为默认值（与 _generate_usb 一致）
-                # Read or set default USB config from libxr_settings (consistent with _generate_usb)
-                usb_cfg = libxr_settings.setdefault("USB", {}).setdefault(inst_lower, {})
-
-                def _as_int(v, d):
-                    """按 Python 整数字面量规则（含 0x 等前缀）把 v 转为 int；失败时返回 d。
-                    Convert v to an int by Python integer literal rules, prefixes such as 0x
-                    included; d when that fails.
-                    """
-                    try:
-                        return int(str(v), 0)
-                    except Exception:
-                        return d
-
-                enable = usb_cfg.setdefault("enable", cfg.get("enable", False))
-                if not enable:
-                    logging.info(
-                        tr(
-                            f"Skipping disabled USB instance: {instance}",
-                            f"跳过未启用的 USB 实例：{instance}",
-                        )
-                    )
+            # 为每个已启用的 USB 实例生成端点缓冲区（所在段由 dma_section 决定）。
+            # Endpoint buffers for each enabled USB instance, in the section dma_section names.
+            for instance in instances:
+                usb = _usb_settings(instance)
+                if usb is None or not usb[1]["enable"]:
                     continue
-
-                if "cdc_count" in usb_cfg or "cdc_count" in cfg:
-                    raise ValueError(
-                        tr(
-                            "USB cdc_count is not a generator option; define composite USB in "
-                            "BSP user code",
-                            "USB 的 cdc_count 不是生成器选项；复合 USB 设备请在 BSP 用户代码中定义",
-                        )
-                    )
-
-                # EP0 包大小，必要时回退为默认值
-                # EP0 packet size, fallback to defaults if needed
-                ep0 = _as_int(
-                    usb_cfg.get(
-                        "ep0_packet_size", cfg.get("ep0_packet_size", cfg.get("packet_size", 8))
-                    ),
-                    8,
-                )
-                if ep0 not in (8, 16, 32, 64):
-                    ep0 = 8
-                usb_cfg.setdefault("ep0_packet_size", ep0)
-
-                tx_sz = usb_cfg.setdefault(
-                    "tx_buffer_size", _as_int(cfg.get("tx_buffer_size", 128), 128)
-                )
-                rx_sz = usb_cfg.setdefault(
-                    "rx_buffer_size", _as_int(cfg.get("rx_buffer_size", 128), 128)
-                )
-                usb_cfg.setdefault(
-                    "rx_fifo_size",
-                    _as_int(
-                        cfg.get("rx_fifo_size", 256 if is_otg else 128), 256 if is_otg else 128
-                    ),
-                )
-                usb_cfg.setdefault("tx_fifo_size", _as_int(cfg.get("tx_fifo_size", 128), 128))
-
-                # 段名（与 UART 相同）
-                # Section name (same as UART)
-                dma_section = usb_cfg.get("dma_section", cfg.get("dma_section", ""))
-                if "dma_section" not in usb_cfg:
-                    usb_cfg["dma_section"] = dma_section
+                name, usb_cfg = usb
+                inst_lower = name.lower()
+                ep0 = usb_cfg["ep0_packet_size"]
+                tx_sz = _as_int(usb_cfg["tx_buffer_size"], 128)
+                rx_sz = _as_int(usb_cfg["rx_buffer_size"], 128)
+                dma_section = usb_cfg["dma_section"]
                 sec_str = f' __attribute__((section("{dma_section}")))' if dma_section else ""
 
                 # 每个变量单独声明，避免属性只作用于最后一个变量
@@ -1018,6 +1067,30 @@ def generate_dma_resources(project_data: dict) -> str:
 # --------------------------
 # 外设生成 / Peripheral Generation
 # --------------------------
+def _instance_settings(group: str, instance: str) -> dict:
+    """libxr_settings[group] 中实例的设置，键为小写的实例名；不存在时创建。
+    The settings of an instance in libxr_settings[group], keyed by the lower-case instance
+    name; created when missing.
+
+    旧版本按 CubeMX 的写法保存的键（如 CAN 下的 CAN1）改为小写，并记录一条提示。
+    A key that older versions saved as CubeMX writes it, such as CAN1 under CAN, is renamed to
+    lower case with a notice.
+    """
+    settings = libxr_settings.setdefault(group, {})
+    key = instance.lower()
+    for old_key in [k for k in settings if k != key and str(k).lower() == key]:
+        value = settings.pop(old_key)
+        if key not in settings:
+            settings[key] = value
+        logging.info(
+            tr(
+                f"libxr_config.yaml: renamed {group}.{old_key} to {group}.{key}",
+                f"libxr_config.yaml：已把 {group}.{old_key} 改为 {group}.{key}",
+            )
+        )
+    return settings.setdefault(key, {})
+
+
 class PeripheralFactory:
     """按外设类型生成 LibXR 外设对象的构造代码，并登记生成的对象。
     Generate the construction code of LibXR peripheral objects by peripheral type and register
@@ -1189,7 +1262,7 @@ class PeripheralFactory:
         Generate the STM32CANFD object; the queue length is queue_size under FDCAN in
         libxr_settings (default 5).
         """
-        instance_cfg = libxr_settings["FDCAN"].setdefault(instance, {})
+        instance_cfg = _instance_settings("FDCAN", instance)
         queue_size = instance_cfg.setdefault("queue_size", 5)
 
         _register_device(f"{instance.lower()}", "FDCAN")
@@ -1206,7 +1279,7 @@ class PeripheralFactory:
         队列长度取 libxr_settings 中 CAN 下的 queue_size（默认 5）。
         The queue length is queue_size under CAN in libxr_settings (default 5).
         """
-        instance_cfg = libxr_settings["CAN"].setdefault(instance, {})
+        instance_cfg = _instance_settings("CAN", instance)
         queue_size = instance_cfg.setdefault("queue_size", 5)
 
         _register_device(
@@ -1249,20 +1322,14 @@ class PeripheralFactory:
         """生成已启用 IWDG 的 STM32Watchdog 对象；未启用时不生成代码。
         Generate the STM32Watchdog object of an enabled IWDG; a disabled one produces no code.
 
-        超时和喂狗间隔先取 libxr_settings，再取工程 YAML 中的 Configuration，默认为 1000 ms 和
-        250 ms。
-        Timeout and feed interval come from libxr_settings, then from Configuration in the
-        project YAML, and default to 1000 ms and 250 ms.
+        超时和喂狗间隔取自 libxr_settings，默认为 1000 ms 和 250 ms。
+        Timeout and feed interval come from libxr_settings and default to 1000 ms and 250 ms.
         """
         if not config.get("Enabled"):
             return "", ""
         iwdg_config = libxr_settings["IWDG"].setdefault(instance.lower(), {})
-        timeout_ms = iwdg_config.setdefault(
-            "timeout_ms", config.get("Configuration", {}).get("timeout_ms", 1000)
-        )
-        feed_ms = iwdg_config.setdefault(
-            "feed_interval_ms", config.get("Configuration", {}).get("feed_interval_ms", 250)
-        )
+        timeout_ms = iwdg_config.setdefault("timeout_ms", 1000)
+        feed_ms = iwdg_config.setdefault("feed_interval_ms", 250)
         code = (
             f"  static STM32Watchdog {instance.lower()}(&h{instance.lower()}, "
             f"{timeout_ms}, {feed_ms});\n"
@@ -1276,58 +1343,25 @@ class PeripheralFactory:
         Generate the USB device object with its CDC serial port and write the final USB settings
         to libxr_settings.
 
-        实例名规范为 USB_FS、USB_HS、USB_OTG_FS 或 USB_OTG_HS，其他名字按 USB_FS 处理。设备对象
-        usb_fs 或 usb_hs 引用 generate_dma_resources() 定义的端点缓冲区，本方法不定义缓冲区。
-        CDC 串口（如 usb_otg_fs_cdc）使用 EP1 收发数据、EP2 发送通知，并登记为 UART。未启用的实例
-        不生成代码。
-        The instance name is normalized to USB_FS, USB_HS, USB_OTG_FS or USB_OTG_HS; other names
-        are treated as USB_FS. The device object, usb_fs or usb_hs, references the endpoint
-        buffers that generate_dma_resources() defines; this method defines no buffer. The CDC
-        serial port, for example usb_otg_fs_cdc, uses EP1 for data and EP2 for notifications
-        and is registered as UART. A disabled instance produces no code.
+        实例名和设置来自 _usb_settings()；其他实例名（如 USB_DEVICE 中间件）和未启用的实例不生成
+        代码。设备对象 usb_fs 或 usb_hs 引用 generate_dma_resources() 定义的端点缓冲区，本方法
+        不定义缓冲区。CDC 串口（如 usb_otg_fs_cdc）使用 EP1 收发数据、EP2 发送通知，并登记为
+        UART。
+        The instance name and settings come from _usb_settings(); other instance names, such as
+        the USB_DEVICE middleware, and disabled instances produce no code. The device object,
+        usb_fs or usb_hs, references the endpoint buffers that generate_dma_resources()
+        defines; this method defines no buffer. The CDC serial port, for example usb_otg_fs_cdc,
+        uses EP1 for data and EP2 for notifications and is registered as UART.
 
         Raises:
             ValueError: 设置了 cdc_count；复合 USB 设备应在 BSP 用户代码中定义。
                 cdc_count is set; a composite USB device belongs in BSP user code.
         """
-        cfg_in = config or {}
-
-        # 规范化实例名（与 extern 声明一致）
-        # Normalize instance name (consistent with extern declarations)
-        inst_u = (instance or "USB_FS").upper()
-        inst_u = (
-            inst_u.replace("USBOTG", "USB_OTG_")
-            .replace("OTGFS", "OTG_FS")
-            .replace("OTGHS", "OTG_HS")
-        )
-        if inst_u == "USB":
-            inst_u = "USB_FS"
-        if inst_u not in {"USB_FS", "USB_HS", "USB_OTG_FS", "USB_OTG_HS"}:
-            inst_u = "USB_FS"
-
-        is_otg = inst_u.startswith("USB_OTG_")
-        speed = "HS" if inst_u.endswith("_HS") else "FS"
-        inst_lower = inst_u.lower()  # 例如 usb_fs、usb_otg_fs / Example: usb_fs / usb_otg_fs
-        obj = f"usb_{speed.lower()}"  # 例如 usb_fs、usb_hs / Example: usb_fs / usb_hs
-
-        # 更新设置（与其他模块一致）
-        # Update settings (consistent with other modules)
-        usb_root = libxr_settings.setdefault("USB", {})
-        inst_cfg = usb_root.setdefault(inst_lower, {})
-
-        def _as_int(v, d):
-            """按 Python 整数字面量规则（含 0x 等前缀）把 v 转为 int；失败时返回 d。
-            Convert v to an int by Python integer literal rules, prefixes such as 0x included;
-            d when that fails.
-            """
-            try:
-                return int(str(v), 0)  # 支持 0x（十六进制）写法 / Support 0x (hex) style
-            except Exception:
-                return d
-
-        # 启用开关
-        # Enable switch
-        inst_cfg.setdefault("enable", cfg_in.get("enable", False))
+        usb = _usb_settings(instance)
+        if usb is None:
+            return "", ""
+        name, inst_cfg = usb
+        inst_lower = name.lower()  # 例如 usb_fs、usb_otg_fs / e.g. usb_fs, usb_otg_fs
         if not inst_cfg["enable"]:
             logging.info(
                 tr(
@@ -1337,97 +1371,21 @@ class PeripheralFactory:
             )
             return "", ""
 
-        # 包大小和 FIFO 设置
-        # Packet size and FIFO setup
-        ep0 = _as_int(
-            cfg_in.get(
-                "ep0_packet_size", cfg_in.get("packet_size", inst_cfg.get("ep0_packet_size", 8))
-            ),
-            8,
-        )
-        if ep0 not in (8, 16, 32, 64):
-            ep0 = 8
-        inst_cfg.setdefault("ep0_packet_size", ep0)
+        is_otg = name.startswith("USB_OTG_")
+        speed = "HS" if name.endswith("_HS") else "FS"
+        obj = f"usb_{speed.lower()}"  # 例如 usb_fs、usb_hs / e.g. usb_fs, usb_hs
 
-        # DMA 缓冲区大小
-        # DMA buffer sizes
-        inst_cfg.setdefault(
-            "tx_buffer_size",
-            _as_int(cfg_in.get("tx_buffer_size", inst_cfg.get("tx_buffer_size", 128)), 128),
-        )
-        inst_cfg.setdefault(
-            "rx_buffer_size",
-            _as_int(cfg_in.get("rx_buffer_size", inst_cfg.get("rx_buffer_size", 128)), 128),
-        )
-
-        # USB 硬件 FIFO 大小
-        # USB HW FIFO sizes
-        inst_cfg.setdefault(
-            "tx_fifo_size",
-            _as_int(cfg_in.get("tx_fifo_size", inst_cfg.get("tx_fifo_size", 128)), 128),
-        )
-        inst_cfg.setdefault(
-            "rx_fifo_size",
-            _as_int(
-                cfg_in.get("rx_fifo_size", inst_cfg.get("rx_fifo_size", 256 if is_otg else 128)),
-                256 if is_otg else 128,
-            ),
-        )
-        # CDC 的 FIFO
-        # CDC FIFO
-        inst_cfg.setdefault(
-            "cdc_tx_fifo_size",
-            _as_int(cfg_in.get("cdc_tx_fifo_size", inst_cfg.get("cdc_tx_fifo_size", 128)), 128),
-        )
-        inst_cfg.setdefault(
-            "cdc_rx_fifo_size",
-            _as_int(cfg_in.get("cdc_rx_fifo_size", inst_cfg.get("cdc_rx_fifo_size", 128)), 128),
-        )
-        inst_cfg.setdefault(
-            "cdc_queue_size",
-            _as_int(cfg_in.get("cdc_queue_size", inst_cfg.get("cdc_queue_size", 3)), 3),
-        )
-        if "cdc_count" in cfg_in or "cdc_count" in inst_cfg:
-            raise ValueError(
-                tr(
-                    "USB cdc_count is not a generator option; define composite USB in "
-                    "BSP user code",
-                    "USB 的 cdc_count 不是生成器选项；复合 USB 设备请在 BSP 用户代码中定义",
-                )
-            )
-        # DMA 段名
-        # DMA section name
-        inst_cfg.setdefault(
-            "dma_section", cfg_in.get("dma_section", inst_cfg.get("dma_section", ""))
-        )
-
-        # 描述符信息，默认为 1d50:6199 / 0x0100 / "XRUSB-DEMO-"；1d50:6199 的分配记录：
-        # Descriptor information, defaults 1d50:6199 / 0x0100 / "XRUSB-DEMO-"; 1d50:6199 allocation:
-        # https://github.com/openmoko/openmoko-usb-oui/commit/27f3846d77e0d0d10271b809b831f70040c6197a
-        inst_cfg.setdefault("vid", _as_int(cfg_in.get("vid", inst_cfg.get("vid", 0x1D50)), 0x1D50))
-        inst_cfg.setdefault("pid", _as_int(cfg_in.get("pid", inst_cfg.get("pid", 0x6199)), 0x6199))
-        inst_cfg.setdefault("bcd", _as_int(cfg_in.get("bcd", inst_cfg.get("bcd", 0x0100)), 0x0100))
-        inst_cfg.setdefault(
-            "manufacturer", cfg_in.get("manufacturer", inst_cfg.get("manufacturer", "XRobot"))
-        )
-        inst_cfg.setdefault(
-            "product",
-            cfg_in.get("product", inst_cfg.get("product", f"STM32 XRUSB {instance} CDC Demo")),
-        )
-        inst_cfg.setdefault("serial", cfg_in.get("serial", inst_cfg.get("serial", "XRUSB-DEMO-")))
-
-        # 从设置中取最终值，用于生成代码
-        # Get the final value from settings for code generation
-        ep0_sz = int(inst_cfg["ep0_packet_size"])
-        rx_buf_sz = int(inst_cfg["rx_buffer_size"])  # USB DMA 缓冲区 / USB DMA
-        tx_fifo_size = int(inst_cfg["tx_fifo_size"])  # EP1 硬件 FIFO / EP1 HW FIFO
-        rx_fifo_size = int(inst_cfg["rx_fifo_size"])  # OTG 共享的接收 FIFO / OTG shared RX FIFO
-        cdc_tx_fifo_size = int(inst_cfg["cdc_tx_fifo_size"])
-        cdc_rx_fifo_size = int(inst_cfg["cdc_rx_fifo_size"])
-        cdc_queue_size = int(inst_cfg["cdc_queue_size"])
-        vid = int(inst_cfg["vid"])
-        pid = int(inst_cfg["pid"])
-        bcd = int(inst_cfg["bcd"])
+        ep0_sz = inst_cfg["ep0_packet_size"]
+        rx_buf_sz = _as_int(inst_cfg["rx_buffer_size"], 128)  # USB DMA 缓冲区 / USB DMA
+        tx_fifo_size = _as_int(inst_cfg["tx_fifo_size"], 128)  # EP1 硬件 FIFO / EP1 HW FIFO
+        # OTG 共享的接收 FIFO / OTG shared RX FIFO
+        rx_fifo_size = _as_int(inst_cfg["rx_fifo_size"], 256 if is_otg else 128)
+        cdc_tx_fifo_size = _as_int(inst_cfg["cdc_tx_fifo_size"], 128)
+        cdc_rx_fifo_size = _as_int(inst_cfg["cdc_rx_fifo_size"], 128)
+        cdc_queue_size = _as_int(inst_cfg["cdc_queue_size"], 3)
+        vid = _as_int(inst_cfg["vid"], 0x1D50)
+        pid = _as_int(inst_cfg["pid"], 0x6199)
+        bcd = _as_int(inst_cfg["bcd"], 0x0100)
         manufacturer = str(inst_cfg["manufacturer"]).replace('"', '\\"')
         product = str(inst_cfg["product"]).replace('"', '\\"')
         serial = str(inst_cfg["serial"]).replace('"', '\\"')
@@ -1512,11 +1470,11 @@ class PeripheralFactory:
         return "main", "\n".join(code)
 
 
-def _generate_header_includes(use_xrobot: bool = False) -> str:
-    """生成 app_main 的 #include 行和 ``using namespace LibXR;``；启用 XRobot 时另外 include
-    xrobot_main.hpp。
-    Generate the #include lines of app_main and ``using namespace LibXR;``; with XRobot,
-    xrobot_main.hpp is included as well.
+def _generate_header_includes(use_xrobot: bool = False, flash_map: bool = True) -> str:
+    """生成 app_main 的 #include 行和 ``using namespace LibXR;``；flash_map 为真时 include
+    flash_map.hpp，启用 XRobot 时另外 include xrobot_main.hpp。
+    Generate the #include lines of app_main and ``using namespace LibXR;``; flash_map.hpp is
+    included when flash_map is set, and xrobot_main.hpp as well with XRobot.
     """
     headers = [
         '#include "app_main.h"\n',
@@ -1537,8 +1495,9 @@ def _generate_header_includes(use_xrobot: bool = False) -> str:
         '#include "stm32_uart.hpp"',
         '#include "stm32_usb_dev.hpp"',
         '#include "stm32_watchdog.hpp"',
-        '#include "flash_map.hpp"',
     ]
+    if flash_map:
+        headers.append('#include "flash_map.hpp"')
 
     if use_xrobot:
         headers.append('#include "xrobot_main.hpp"')
@@ -1550,11 +1509,11 @@ def _generate_extern_declarations(project_data: dict) -> str:
     """生成 HAL 句柄的 extern 声明，按字母顺序排列且不重复。
     Generate the extern declarations of the HAL handles, sorted and without duplicates.
 
-    包括非 SysTick 时基使用的 TIM、LPTIM 或 HRTIM 句柄和每个外设实例的句柄；USB 使用 PCD 句柄，
-    USART/UART/LPUART 使用 UART_HandleTypeDef。
+    包括非 SysTick 时基使用的 TIM、LPTIM 或 HRTIM 句柄和每个外设实例的句柄；USB 实例（不含
+    USB_DEVICE 等中间件）使用 PCD 句柄，USART/UART/LPUART 使用 UART_HandleTypeDef。
     They cover the TIM, LPTIM or HRTIM handle of a timebase other than SysTick and the handle
-    of every peripheral instance; USB uses its PCD handle and USART/UART/LPUART use
-    UART_HandleTypeDef.
+    of every peripheral instance; USB instances, not middleware such as USB_DEVICE, use their
+    PCD handle, and USART/UART/LPUART use UART_HandleTypeDef.
     """
     externs = set()
 
@@ -1576,11 +1535,11 @@ def _generate_extern_declarations(project_data: dict) -> str:
     for p_type, instances in peripherals.items():
         for instance in instances:
             if p_type == "USB":
-                # 新的 USB 协议栈使用 PCD 句柄（例如 hpcd_USB_FS / hpcd_USB_HS）
-                # New USB stack uses PCD handle (e.g., hpcd_USB_FS / hpcd_USB_HS)
-                if instance == "USB":
-                    instance = "USB_FS"
-                externs.add(f"extern PCD_HandleTypeDef hpcd_{instance};")
+                # USB 使用 PCD 句柄，例如 hpcd_USB_FS、hpcd_USB_OTG_HS。
+                # USB uses its PCD handle, e.g. hpcd_USB_FS or hpcd_USB_OTG_HS.
+                name = _USB_INSTANCES.get(instance.upper())
+                if name is not None:
+                    externs.add(f"extern PCD_HandleTypeDef hpcd_{name};")
             elif p_type == "DAC":
                 externs.add(f"extern DAC_HandleTypeDef h{instance.lower()};")
             else:
@@ -1892,10 +1851,9 @@ def configure_terminal(project_data: dict) -> str:
     # 用户指定的终端来源
     # User-specified terminal source
     if terminal_source != "":
-        dev = terminal_source.lower()
         # 设备必须已登记且类型为 UART，否则记录警告并跳过
         # Device must be registered and of type UART, otherwise log a warning and skip
-        if registered_devices.get(dev) != "UART":
+        if registered_devices.get(terminal_source) != "UART":
             logging.warning(
                 tr(
                     f"terminal_source '{terminal_source}' is not registered as UART, terminal "
@@ -1904,10 +1862,9 @@ def configure_terminal(project_data: dict) -> str:
                 )
             )
             return code
-        dev = terminal_source.upper()
         code += (
-            f"  STDIO::read_ = {dev.lower()}.read_port_;\n"
-            f"  STDIO::write_ = {dev.lower()}.write_port_;\n"
+            f"  STDIO::read_ = {terminal_source}.read_port_;\n"
+            f"  STDIO::write_ = {terminal_source}.write_port_;\n"
         )
 
     if terminal_source != "":
@@ -2029,15 +1986,18 @@ APP_MAIN_NOTICE = (
 )
 
 
-def generate_full_code(project_data: dict, use_xrobot: bool, existing_code: str) -> str:
+def generate_full_code(
+    project_data: dict, use_xrobot: bool, existing_code: str, flash_map: bool = True
+) -> str:
     """生成 app_main 源文件的完整内容，并填回已有代码中 User Code 区域的内容。
     Generate the full content of the app_main source file and put back the User Code bodies of
     the existing code.
 
     启用 XRobot 时为每个生成的对象输出 XR_REGISTER，并在 User Code 3 之后调用 XROBOT_MAIN()；
-    否则 User Code 3 的默认内容是一个无限休眠的循环。
+    否则 User Code 3 的默认内容是一个无限休眠的循环。flash_map 为假时不 include flash_map.hpp。
     With XRobot every generated object gets an XR_REGISTER line and XROBOT_MAIN() is called
     after User Code 3; otherwise the default body of User Code 3 is a loop that sleeps forever.
+    Without flash_map, flash_map.hpp is not included.
 
     Raises:
         ValueError: 生成的对象名冲突，或 GPIO 名字、User Code 标记、遗留的 XROBOT_MAIN() 调用
@@ -2050,7 +2010,7 @@ def generate_full_code(project_data: dict, use_xrobot: bool, existing_code: str)
     user_code_def_3 = "" if use_xrobot else "  while(true) {\n    Thread::Sleep(UINT32_MAX);\n  }\n"
     components = [
         APP_MAIN_NOTICE,
-        _generate_header_includes(use_xrobot),
+        _generate_header_includes(use_xrobot, flash_map),
         "/* User Code Begin 1 */",
         "/* User Code End 1 */",
         "// NOLINTBEGIN",
@@ -2083,16 +2043,10 @@ def generate_full_code(project_data: dict, use_xrobot: bool, existing_code: str)
     return _preserve_generated_regions(existing_code, generated)
 
 
-def generate_app_main_header(output_dir: str) -> None:
-    """在 output_dir 中生成声明 app_main() 的 app_main.h；内容相同时不写文件。
-    Generate app_main.h, which declares app_main(), in output_dir; an identical file is not
-    rewritten.
-    """
-    header_path = os.path.join(output_dir, "app_main.h")
-    content = (
-        GENERATED_NOTICE
-        + "\n"
-        + """#ifdef __cplusplus
+APP_MAIN_HEADER = (
+    GENERATED_NOTICE
+    + "\n"
+    + """#ifdef __cplusplus
 extern "C" {
 #endif
 
@@ -2102,16 +2056,7 @@ void app_main(void);
 }
 #endif
 """
-    )
-
-    current = None
-    if os.path.exists(header_path):
-        with open(header_path, encoding="utf-8") as f:
-            current = f.read()
-    if current != content:
-        with open(header_path, "w", encoding="utf-8", newline="\n") as f:
-            f.write(content)
-        logging.info(tr(f"Generated header: {header_path}", f"已生成头文件：{header_path}"))
+)
 
 
 def generate_flash_map_cpp(flash_info: dict) -> str:
@@ -2142,66 +2087,65 @@ def generate_flash_map_cpp(flash_info: dict) -> str:
     return "\n".join(lines)
 
 
-def inject_flash_layout(project_data: dict, output_dir: str) -> None:
-    """按 project_data['Mcu']['Type'] 生成 Flash 布局，存入 libxr_settings 的 FlashLayout，并在
-    output_dir 中生成 flash_map.hpp。
-    Generate the Flash layout of project_data['Mcu']['Type'], store it as FlashLayout in
-    libxr_settings, and generate flash_map.hpp in output_dir.
+def flash_layout(project_data: dict) -> dict | None:
+    """project_data['Mcu']['Type'] 的 Flash 布局，即 flash_info_to_dict() 的输出。
+    The Flash layout of project_data['Mcu']['Type'], as flash_info_to_dict() returns it.
 
-    缺少 MCU 型号或生成失败时只记录警告，生成继续进行；output_dir 为空时不写 flash_map.hpp。
-    A missing MCU type or a failure only logs a warning and generation goes on; an empty
-    output_dir writes no flash_map.hpp.
+    缺少 MCU 型号或推算不出布局时记录警告并返回 None；这时不生成 flash_map.hpp，app_main 也不
+    include 它。
+    A missing MCU type or a layout that cannot be derived logs a warning and gives None;
+    flash_map.hpp is then not generated and app_main does not include it.
     """
-    try:
-        from libxr.stm32_flash_generator import flash_info_to_dict, layout_flash
+    from libxr.stm32_flash_generator import flash_info_to_dict, layout_flash
 
-        mcu_model = project_data.get("Mcu", {}).get("Type", "").strip()
-        if not mcu_model:
-            logging.warning(
-                tr(
-                    "Cannot find MCU name, skipping FlashLayout generation",
-                    "找不到 MCU 型号，跳过 FlashLayout 生成",
-                )
-            )
-            return
-
-        flash_info = layout_flash(mcu_model)
-        flash_dict = flash_info_to_dict(flash_info)
-        libxr_settings["FlashLayout"] = flash_dict
-        logging.info(
-            tr(
-                f"FlashLayout is generated and injected, MCU: {mcu_model}",
-                f"已生成并写入 FlashLayout，MCU：{mcu_model}",
-            )
-        )
-
-        cpp_code = generate_flash_map_cpp(flash_dict)
-        if output_dir:
-            hpp_path = os.path.join(output_dir, "flash_map.hpp")
-            with open(hpp_path, "w", encoding="utf-8", newline="\n") as f:
-                f.write(f"""#pragma once
-{GENERATED_NOTICE}
-// MCU: {mcu_model}
-
-#include "main.h"
-
-""")
-                f.write(cpp_code)
-            logging.info(
-                tr(
-                    f"Flash layout map written to: {hpp_path}",
-                    f"Flash 布局映射已写入：{hpp_path}",
-                )
-            )
-    except ImportError as e:
+    mcu_model = (project_data.get("Mcu", {}).get("Type") or "").strip()
+    if not mcu_model:
         logging.warning(
             tr(
-                f"Cannot import FlashLayout generator: {e}",
-                f"无法导入 FlashLayout 生成器：{e}",
+                "Cannot find the MCU type; flash_map.hpp is not generated",
+                "找不到 MCU 型号；不生成 flash_map.hpp",
             )
         )
-    except Exception as e:
-        logging.warning(tr(f"Cannot generate FlashLayout: {e}", f"无法生成 FlashLayout：{e}"))
+        return None
+    try:
+        return flash_info_to_dict(layout_flash(mcu_model))
+    except ValueError as error:
+        logging.warning(
+            tr(
+                f"Cannot derive the flash layout of {mcu_model}: {error}; flash_map.hpp is not "
+                "generated",
+                f"无法推算 {mcu_model} 的 Flash 布局：{error}；不生成 flash_map.hpp",
+            )
+        )
+        return None
+
+
+def flash_map_header(flash_info: dict, mcu_model: str) -> str:
+    """flash_map.hpp 的内容：生成说明、MCU 型号和 generate_flash_map_cpp() 的代码。
+    The content of flash_map.hpp: the generated-file notice, the MCU type and the code of
+    generate_flash_map_cpp().
+    """
+    return (
+        f'#pragma once\n{GENERATED_NOTICE}\n// MCU: {mcu_model}\n\n#include "main.h"\n\n'
+        + generate_flash_map_cpp(flash_info)
+    )
+
+
+def _remove_generated(path: str) -> bool:
+    """删除 libxr gen 生成的文件 path（第二行是生成说明）；不存在或不是生成的文件时不删。删除时
+    为 True。
+    Delete path when libxr gen generated it, its second line being the generated-file notice;
+    a missing file or one written by hand stays. True when deleted.
+    """
+    try:
+        with open(path, encoding="utf-8") as stream:
+            lines = stream.read().splitlines()
+    except (FileNotFoundError, UnicodeDecodeError):
+        return False
+    if GENERATED_NOTICE not in lines[:2]:
+        return False
+    os.remove(path)
+    return True
 
 
 def check_generator_pin() -> None:
@@ -2233,58 +2177,95 @@ def check_generator_pin() -> None:
 def generate(
     input_path: str, output_path: str, use_xrobot: bool = False, libxr_config: str = ""
 ) -> None:
-    """生成 output_path 指定的 app_main 源文件，以及同一目录中的 flash_map.hpp、
-    libxr_config.yaml 和 app_main.h。
-    Generate the app_main source file output_path, and flash_map.hpp, libxr_config.yaml and
-    app_main.h in the same directory.
+    """生成 output_path 指定的 app_main 源文件，以及同一目录中的 app_main.h、flash_map.hpp 和
+    libxr_config.yaml。
+    Generate the app_main source file output_path, and app_main.h, flash_map.hpp and
+    libxr_config.yaml in the same directory.
 
-    libxr_config 是 libxr_config.yaml 的路径或 URL，为空时读取输出目录中的文件。已有输出文件中
-    User Code 区域的内容被保留；出错时记录错误并以状态 1 退出。
-    libxr_config is the path or URL of libxr_config.yaml; when empty, the file in the output
-    directory is read. The User Code bodies of an existing output file are kept; an error is
-    logged and exits with status 1.
+    每次从默认设置开始，合并 libxr_config（libxr_config.yaml 的路径或 URL，为空时读取输出目录中
+    的文件）。全部文件先在内存中生成，没有错误时才写出，并且只写内容有变化的文件，其余文件的修改
+    时间不变。推算不出 Flash 布局时删除以前生成的 flash_map.hpp。已有输出文件中 User Code 区域的
+    内容被保留。出错时记录错误（调试日志另记调用栈）并以状态 1 退出。
+    Every run starts from the default settings and merges libxr_config, the path or URL of
+    libxr_config.yaml, or the file in the output directory when empty. All files are generated
+    in memory first and written only when nothing failed, and only the files whose content
+    changed are written, so the others keep their modification time. When no Flash layout can
+    be derived, a previously generated flash_map.hpp is deleted. The User Code bodies of an
+    existing output file are kept. An error is logged, with the traceback at debug level, and
+    exits with status 1.
     """
     try:
         # 只给出文件名时写入当前目录。
         # A bare file name writes into the current directory.
         output_dir = os.path.dirname(output_path) or os.curdir
 
-        # 加载配置
-        # Load configurations
+        reset_settings()
         project_data = load_configuration(input_path)
         load_libxr_config(output_dir, libxr_config)
         check_generator_pin()
         initialize_registry(use_xrobot)
 
-        # 生成代码
-        # Generate code
         existing_code = ""
         if os.path.exists(output_path):
             with open(output_path, encoding="utf-8") as f:
                 existing_code = f.read()
 
-        output_code = generate_full_code(project_data, use_xrobot, existing_code)
+        layout = flash_layout(project_data)
+        files = {
+            os.path.basename(output_path): generate_full_code(
+                project_data, use_xrobot, existing_code, flash_map=layout is not None
+            ),
+            "app_main.h": APP_MAIN_HEADER,
+        }
+        if layout is None:
+            libxr_settings.pop("FlashLayout", None)
+            files["flash_map.hpp"] = None
+        else:
+            libxr_settings["FlashLayout"] = layout
+            files["flash_map.hpp"] = flash_map_header(layout, project_data["Mcu"]["Type"].strip())
+        files["libxr_config.yaml"] = libxr_config_text()
 
-        # 写出输出文件
-        # Write output
         os.makedirs(output_dir, exist_ok=True)
-        with open(output_path, "w", encoding="utf-8", newline="\n") as f:
-            f.write(output_code)
-
-        inject_flash_layout(project_data, output_dir)
-
-        config_path = os.path.join(output_dir, "libxr_config.yaml")
-
-        save_libxr_config(config_path)
-
-        logging.info(tr(f"Successfully generated: {output_dir}", f"生成成功：{output_dir}"))
-
-        generate_app_main_header(output_dir)
-        logging.info(tr("Generated header file: app_main.h", "已生成头文件：app_main.h"))
+        written, unchanged, removed = [], [], []
+        for name, text in files.items():
+            path = os.path.join(output_dir, name)
+            if text is None:
+                if _remove_generated(path):
+                    removed.append(name)
+            elif _write_if_changed(path, text):
+                written.append(name)
+            else:
+                unchanged.append(name)
+        _report_files(output_dir, written, unchanged, removed)
 
     except Exception as e:
         logging.error(tr(f"Generation failed: {str(e)}", f"生成失败：{str(e)}"))
+        logging.debug(tr("Traceback:", "调用栈："), exc_info=True)
         sys.exit(1)
+
+
+def _report_files(output_dir: str, written: list, unchanged: list, removed: list) -> None:
+    """用一行日志列出 output_dir 中写入、未变化和删除的文件。
+    Log in one line which files of output_dir were written, unchanged or deleted.
+    """
+    english = []
+    chinese = []
+    if written:
+        english.append("wrote " + ", ".join(written))
+        chinese.append("已写入 " + "、".join(written))
+    if unchanged:
+        english.append("unchanged " + ", ".join(unchanged))
+        chinese.append("未变化 " + "、".join(unchanged))
+    if removed:
+        english.append("removed " + ", ".join(removed))
+        chinese.append("已删除 " + "、".join(removed))
+    directory = os.path.normpath(output_dir)
+    logging.info(
+        tr(
+            f"Generated {directory}: " + "; ".join(english),
+            f"已生成 {directory}：" + "；".join(chinese),
+        )
+    )
 
 
 if __name__ == "__main__":

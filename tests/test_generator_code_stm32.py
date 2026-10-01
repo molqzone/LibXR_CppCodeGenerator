@@ -14,10 +14,12 @@ import textwrap
 import unittest
 from pathlib import Path
 
+import yaml
 from fixtures import IOC, GeneratorTestCase, user_region
 
 from libxr import cli
 from libxr import generator_code_stm32 as generator
+from libxr.libxr_config_file import LibXRConfigError
 
 
 class EntrySource(GeneratorTestCase):
@@ -522,6 +524,101 @@ def generate_with_hash_seed(root: Path, seed: str) -> dict:
         for path in sorted(project.rglob("*"))
         if path.is_file() and path.suffix != ".ioc"
     }
+
+
+class GenerationRuns(GeneratorTestCase):
+    """完整的生成：每次从默认设置开始，只写有变化的文件，推算不出 Flash 布局时不留旧文件。
+    Full generations: each starts from the default settings, writes only changed files, and
+    leaves no stale flash map when no layout can be derived.
+    """
+
+    def setUp(self):
+        super().setUp()
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+
+    def run_generator(self, name, project, config=None):
+        """在 root/<name> 中由 project 生成（config 为 libxr_config.yaml 的初始内容），返回
+        User 目录和日志。
+        Generate from project in root/<name>, config being the initial content of
+        libxr_config.yaml; return the User directory and the log.
+        """
+        directory = self.root / name
+        user = directory / "User"
+        user.mkdir(parents=True, exist_ok=True)
+        (directory / "cubemx.yaml").write_text(yaml.safe_dump(project), encoding="utf-8")
+        if config is not None:
+            (user / "libxr_config.yaml").write_text(config, encoding="utf-8")
+        with self.assertLogs(level="INFO") as logs:
+            generator.generate(str(directory / "cubemx.yaml"), str(user / "app_main.cpp"))
+        return user, logs.output
+
+    def config(self, user):
+        """User 目录中 libxr_config.yaml 的内容。
+        The content of libxr_config.yaml in the User directory.
+        """
+        return yaml.safe_load((user / "libxr_config.yaml").read_text(encoding="utf-8"))
+
+    def test_a_second_project_does_not_inherit_settings(self):
+        self.run_generator("first", self.project(peripherals={"CAN": {"CAN1": {}}}))
+        user, _ = self.run_generator("second", self.project())
+        self.assertNotIn("CAN", self.config(user))
+
+    def test_unchanged_files_are_not_rewritten(self):
+        user, _ = self.run_generator("demo", self.project())
+        times = {path.name: path.stat().st_mtime_ns for path in user.iterdir()}
+        _, logs = self.run_generator("demo", self.project())
+        self.assertEqual({path.name: path.stat().st_mtime_ns for path in user.iterdir()}, times)
+        self.assertEqual(
+            logs[-1],
+            f"INFO:root:Generated {os.path.normpath(user)}: unchanged app_main.cpp, app_main.h, "
+            "flash_map.hpp, libxr_config.yaml",
+        )
+
+    def test_without_a_flash_layout_the_old_map_is_removed(self):
+        self.run_generator("demo", self.project())
+        user, logs = self.run_generator("demo", self.project(mcu="STM32X999ZZT6"))
+        self.assertFalse((user / "flash_map.hpp").exists())
+        self.assertNotIn("flash_map.hpp", (user / "app_main.cpp").read_text(encoding="utf-8"))
+        self.assertNotIn("FlashLayout", self.config(user))
+        self.assertIn("removed flash_map.hpp", logs[-1])
+
+    def test_can_settings_move_to_lower_case_keys(self):
+        user, logs = self.run_generator(
+            "demo",
+            self.project(peripherals={"CAN": {"CAN1": {}}}),
+            config="CAN:\n  CAN1:\n    queue_size: 7\n",
+        )
+        self.assertIn(
+            "static STM32CAN can1(&hcan1, 7);", (user / "app_main.cpp").read_text(encoding="utf-8")
+        )
+        self.assertEqual(self.config(user)["CAN"], {"can1": {"queue_size": 7}})
+        self.assertIn("INFO:root:libxr_config.yaml: renamed CAN.CAN1 to CAN.can1", logs)
+
+    def test_config_values_of_the_wrong_type_are_rejected(self):
+        for update, problem in (
+            ({"USART": 5}, "expected a mapping, got int"),
+            ({"terminal_source": {"usart1": {}}}, "expected str, got a mapping"),
+        ):
+            with self.subTest(update=update), self.assertRaises(LibXRConfigError) as error:
+                generator._deep_merge({"USART": {}, "terminal_source": ""}, update)
+            self.assertIn(problem, str(error.exception))
+        # 空的段等同于空映射。
+        # An empty section counts as an empty mapping.
+        self.assertEqual(
+            generator._deep_merge({"I2C": {"i2c1": {}}}, {"I2C": None}), {"I2C": {"i2c1": {}}}
+        )
+
+    def test_an_invalid_ep0_packet_size_falls_back_to_8(self):
+        generator.libxr_settings["USB"]["usb_otg_fs"] = {"enable": True, "ep0_packet_size": 12}
+        with self.assertLogs(level="WARNING") as logs:
+            code = self.generate(self.project(peripherals={"USB": {"USB_OTG_FS": {}}}))
+        self.assertIn("PacketSize0::SIZE_8", code)
+        self.assertIn(
+            "WARNING:root:USB usb_otg_fs: ep0_packet_size 12 is not 8, 16, 32 or 64; using 8",
+            logs.output,
+        )
 
 
 class HashSeedIndependence(GeneratorTestCase):
