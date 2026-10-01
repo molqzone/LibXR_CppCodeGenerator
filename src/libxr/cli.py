@@ -423,9 +423,8 @@ def _add_stm32_cubemx_gen(commands) -> None:
         default="auto",
         help=tr(
             "CubeMX launch mode (default: auto: java -jar for a .jar or an installation with "
-            "STM32CubeMX.jar and its jre, else direct)",
-            "CubeMX 启动方式（默认 auto：.jar 或带 STM32CubeMX.jar 和 jre 的安装用 java -jar 启动，"
-            "其余直接启动）",
+            "its jre, else direct)",
+            "CubeMX 启动方式（默认 auto：.jar 或带 jre 的安装用 java -jar 启动，其余直接启动）",
         ),
     )
     parser.add_argument(

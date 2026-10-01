@@ -25,6 +25,7 @@ import sys
 import tempfile
 import threading
 import time
+import zipfile
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 
@@ -40,8 +41,10 @@ ACCESS_BRIDGE_OPTION = (
     "-Djavax.accessibility.assistive_technologies=com.sun.java.accessibility.AccessBridge"
 )
 
-# CubeMX 6.17 中对话框的文字（plugins/projectmanager.jar 和 plugins/updater.jar）。
-# Dialog texts of CubeMX 6.17 (plugins/projectmanager.jar and plugins/updater.jar).
+# CubeMX 6.17 和 6.18 中对话框的文字（plugins 中的 projectmanager.jar、filemanager.jar 和
+# updater.jar）。
+# Dialog texts of CubeMX 6.17 and 6.18 (projectmanager.jar, filemanager.jar and updater.jar in
+# plugins).
 FIRMWARE_TITLE = "New STM32Cube firmware version available"
 FIRMWARE_TEXTS = (
     "Continue now or Migrate Project ?",
@@ -54,6 +57,9 @@ CONFIRM_MIGRATION_TEXT = "Do you confirm this migration ?"
 DOWNLOAD_TEXTS = ("Download now or Continue ?", "Do you want to download this now ?")
 LICENSE_TITLES = ("License Agreement", "Licensing Agreement")
 LICENSE_AGREE = "I have read, and I agree to the terms of this license agreement"
+# myST 登录（6.17 的 userauth.jar；6.18 下载不再要求登录）和代理认证（User Login）。
+# The myST login (userauth.jar of 6.17; 6.18 downloads without a login) and proxy
+# authentication (User Login).
 LOGIN_TEXTS = ("myST login", "User Login", "User Authentication Manager")
 
 
@@ -965,17 +971,23 @@ def _java_user_state_options() -> list[str]:
 
 
 def _bundled_cubemx(cubemx_cmd: str) -> tuple[str, str] | None:
-    """CubeMX 可执行文件同目录中的 (STM32CubeMX.jar, 自带 JRE 的 java)；不全时为 None。
-    The (STM32CubeMX.jar, java of the bundled JRE) next to a CubeMX executable; None when either
-    is missing.
+    """CubeMX 安装中的 (jar, 自带 JRE 的 java)：jar 是可执行文件旁边的 STM32CubeMX.jar，没有时是
+    可执行文件本身（CubeMX 6.18 起 jar 嵌在 STM32CubeMX.exe 中）；找不到 jar 或 JRE 时为 None。
+    The (jar, java of the bundled JRE) of a CubeMX installation: the jar is STM32CubeMX.jar next
+    to the executable, or else the executable itself (from CubeMX 6.18 the jar is embedded in
+    STM32CubeMX.exe); None when the jar or the JRE is missing.
     """
     if _is_java_archive(cubemx_cmd):
         return None
     folder = os.path.dirname(os.path.abspath(cubemx_cmd))
-    jar = os.path.join(folder, "STM32CubeMX.jar")
     java = os.path.join(folder, "jre", "bin", "java.exe" if os.name == "nt" else "java")
-    if os.path.isfile(jar) and os.path.isfile(java):
+    if not os.path.isfile(java):
+        return None
+    jar = os.path.join(folder, "STM32CubeMX.jar")
+    if os.path.isfile(jar):
         return jar, java
+    if zipfile.is_zipfile(cubemx_cmd):
+        return os.path.abspath(cubemx_cmd), java
     return None
 
 
@@ -1008,18 +1020,18 @@ def build_cubemx_command(
     """组成让 STM32CubeMX 执行 script_path 脚本的命令行。
     Build the command line that makes STM32CubeMX run the script at script_path.
 
-    launch_mode 为 java，或为 auto 且能找到 .jar（cubemx_cmd 本身，或安装目录中的
-    STM32CubeMX.jar 和自带 JRE）时，用 java -jar 启动，并带上启动器配置中的 JVM 参数；Windows 上
-    同时打开 Java Access Bridge，以便读取和回答对话框。否则直接启动，其中 .py 文件用当前 Python
-    解释器运行。silent 为 True 时追加 -s。
-    With launch_mode java, or auto when a .jar is found (cubemx_cmd itself, or STM32CubeMX.jar
-    with the bundled JRE in its installation), CubeMX is started through java -jar with the JVM
-    options of its launcher configuration; on Windows the Java Access Bridge is enabled too, so
-    dialogs can be read and answered. Otherwise CubeMX is started directly, a .py file with the
-    current Python interpreter. silent appends -s.
+    launch_mode 为 java，或为 auto 且能找到 .jar（cubemx_cmd 本身，或带自带 JRE 的安装中的 jar，
+    见 _bundled_cubemx）时，用 java -jar 启动，并带上启动器配置中的 JVM 参数；Windows 上同时打开
+    Java Access Bridge，以便读取和回答对话框。否则直接启动，其中 .py 文件用当前 Python 解释器
+    运行。silent 为 True 时追加 -s。
+    With launch_mode java, or auto when a .jar is found (cubemx_cmd itself, or the jar of an
+    installation with its bundled JRE, see _bundled_cubemx), CubeMX is started through java -jar
+    with the JVM options of its launcher configuration; on Windows the Java Access Bridge is
+    enabled too, so dialogs can be read and answered. Otherwise CubeMX is started directly, a .py
+    file with the current Python interpreter. silent appends -s.
 
-    Windows 上的 STM32CubeMX.exe 只是启动器：它启动 Java 后立即返回，不等待生成结束。
-    On Windows, STM32CubeMX.exe is only a launcher: it starts Java and returns at once, without
+    Windows 上的 STM32CubeMX.exe 是启动器：它启动 Java 后立即返回，不等待生成结束。
+    On Windows, STM32CubeMX.exe is a launcher: it starts Java and returns at once, without
     waiting for the generation.
 
     Raises:
@@ -1041,10 +1053,10 @@ def build_cubemx_command(
     if use_java and not is_jar and bundled is None:
         raise ValueError(
             tr(
-                "Java launch mode requires an STM32CubeMX .jar path, or an installation with "
-                "STM32CubeMX.jar and its jre folder next to the executable.",
-                "java 启动方式需要 STM32CubeMX 的 .jar 路径，或可执行文件旁边有 STM32CubeMX.jar "
-                "和 jre 目录的安装。",
+                "Java launch mode requires an STM32CubeMX .jar path, or an installation with its "
+                "jre folder and STM32CubeMX.jar (or a jar embedded in the executable).",
+                "java 启动方式需要 STM32CubeMX 的 .jar 路径，或带 jre 目录和 STM32CubeMX.jar"
+                "（或可执行文件内嵌 jar）的安装。",
             )
         )
 

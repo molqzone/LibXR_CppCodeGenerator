@@ -12,6 +12,7 @@ import tempfile
 import textwrap
 import time
 import unittest
+import zipfile
 from pathlib import Path
 from unittest import mock
 
@@ -154,8 +155,8 @@ class CommandLine(CubeMXTestCase):
         )
         with self.assertRaisesMessage(
             ValueError,
-            "Java launch mode requires an STM32CubeMX .jar path, or an installation with "
-            "STM32CubeMX.jar and its jre folder next to the executable.",
+            "Java launch mode requires an STM32CubeMX .jar path, or an installation with its "
+            "jre folder and STM32CubeMX.jar (or a jar embedded in the executable).",
         ):
             build_cubemx_command(exe, script, launch_mode="java", java_cmd=sys.executable)
 
@@ -182,6 +183,17 @@ class CommandLine(CubeMXTestCase):
             command[command.index("-jar") :],
             ["-jar", str(install / "STM32CubeMX.jar"), "-q", "script.txt"],
         )
+
+        # CubeMX 6.18 起没有单独的 STM32CubeMX.jar，jar 嵌在可执行文件中。
+        # From CubeMX 6.18 there is no separate STM32CubeMX.jar; the jar is in the executable.
+        (install / "STM32CubeMX.jar").unlink()
+        with self.assertLogs(level="WARNING"):
+            self.assertEqual(build_cubemx_command(str(exe), "script.txt")[0], str(exe))
+        with zipfile.ZipFile(exe, "w") as archive:
+            archive.writestr("META-INF/MANIFEST.MF", "Main-Class: Demo\n")
+        command = build_cubemx_command(str(exe), "script.txt")
+        self.assertEqual(command[0], str(java))
+        self.assertEqual(command[command.index("-jar") :], ["-jar", str(exe), "-q", "script.txt"])
 
     def test_several_ioc_files_need_an_explicit_one(self):
         (self.project / "other.ioc").write_text("", encoding="utf-8")
