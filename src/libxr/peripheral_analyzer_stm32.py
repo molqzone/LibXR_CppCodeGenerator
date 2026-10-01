@@ -67,7 +67,7 @@ class ConfigurationManager:
         )
         self.dma_types: dict[str, str] = {}
         self.dma_requests: dict[str, str] = {}
-        self.dma_configs: defaultdict[str, list[dict]] = defaultdict(list)
+        self.dma_configs: dict[str, dict] = {}
         self.freertos_config: dict[str, Any] = {
             "Tasks": {},
             "Heap": None,
@@ -87,11 +87,13 @@ class ConfigurationManager:
         Return the final structure written to YAML: Platform, GPIO, Peripherals, DMA, Timebase
         and Mcu.
 
-        Platform 为 stm32，libxr gen 据此选择生成器。记录到 ThreadX 内存分配方式时加入 ThreadX
-        段；FreeRTOS 有任务、堆大小或功能开关时加入 FreeRTOS 段。
+        Platform 为 stm32，libxr gen 据此选择生成器。识别到 ThreadX（CubeMX 的 THREADX 中间件，或
+        记录了内存分配方式）时加入 ThreadX 段；识别到 FreeRTOS（CubeMX 的 FREERTOS 中间件或
+        X-CUBE-FREERTOS 扩展包）时加入 FreeRTOS 段。libxr gen 按这两段选择 LibXR 的系统。
         Platform is stm32, from which libxr gen selects the generator. A ThreadX section is added
-        when a ThreadX allocation method was found, and a FreeRTOS section when FreeRTOS has
-        tasks, a heap size or feature flags.
+        when ThreadX is recognized (the CubeMX THREADX middleware, or a recorded allocation
+        method), and a FreeRTOS section when FreeRTOS is (the CubeMX FREERTOS middleware or the
+        X-CUBE-FREERTOS pack). libxr gen selects the LibXR system from these sections.
         """
         cleaned_data = {
             "Platform": "stm32",
@@ -105,16 +107,12 @@ class ConfigurationManager:
             "Mcu": self.mcu_config,
         }
 
-        # 记录到内存分配方式时才加入 ThreadX 段。
-        # Add ThreadX only if an allocation method was found
         cleaned_data_threadx = self._clean_threadx()
-        if cleaned_data_threadx["AllocationMethod"]:
+        if self.threadx_config.get("Enabled") or cleaned_data_threadx["AllocationMethod"]:
             cleaned_data["ThreadX"] = cleaned_data_threadx
 
-        # 任务、堆大小或功能开关有一项非空时才加入 FreeRTOS 段。
-        # Add FreeRTOS only if any fields exist
         cleaned_freertos = self._clean_freertos()
-        if any([cleaned_freertos["Tasks"], cleaned_freertos["Heap"], cleaned_freertos["Features"]]):
+        if cleaned_freertos["Enabled"]:
             cleaned_data["FreeRTOS"] = cleaned_freertos
 
         return cleaned_data
@@ -156,7 +154,7 @@ class ConfigurationManager:
         """
         return {k: v for k, v in config.items() if v not in (None, "", [], {})}
 
-    def _clean_dma_configs(self) -> dict[str, list]:
+    def _clean_dma_configs(self) -> dict[str, dict]:
         """DMA 配置中非空的条目。
         The DMA configurations that are not empty.
         """
@@ -204,7 +202,9 @@ class PeripheralParser:
     parsing, and a parse method that each subclass implements.
     """
 
-    _PIN_PROPERTY_PATTERN = re.compile(r"^((?:P[A-K]\d+)[^.]*)\.(Signal|GPIO_Label|GPIO_PuPd)$")
+    # 端口字母到 Z：STM32N6 有 PN～PQ 端口。
+    # Port letters up to Z: STM32N6 has ports PN to PQ.
+    _PIN_PROPERTY_PATTERN = re.compile(r"^((?:P[A-Z]\d+)[^.]*)\.(Signal|GPIO_Label|GPIO_PuPd)$")
     _PERIPHERAL_ROOT_PATTERN = re.compile(
         r"^((?:USART|LPUART|UART|I2C|SPI|TIM|LPTIM|HRTIM|ADC|DAC|FDCAN|CAN|USB)\d*)"
     )
@@ -296,7 +296,7 @@ class PeripheralParser:
         Normalize a CubeMX pin token to the physical PxN name, e.g. PC14-OSC32_IN becomes PC14;
         a token that does not match is returned unchanged.
         """
-        match = re.match(r"^(P[A-K]\d+)", pin)
+        match = re.match(r"^(P[A-Z]\d+)", pin)
         return match.group(1) if match else pin
 
     @staticmethod
@@ -405,6 +405,25 @@ class PeripheralParser:
         self.config.pin_registry[pin][field] = val
         if "GPXTI" in value:
             self.config.pin_registry[pin]["GPXTI"] = True
+
+    def _pin_modes(self) -> dict[str, set[str]]:
+        """每个外设实例在其引脚上记录的 CubeMX 模式名，例如 {"USART1": {"Synchronous Slave"}}。
+        The CubeMX mode names recorded on the pins of each peripheral instance, e.g.
+        {"USART1": {"Synchronous Slave"}}.
+
+        .ioc 把外设的工作模式写在引脚的 <引脚>.Mode 上，实例取同一引脚 <引脚>.Signal 中的外设名。
+        The .ioc file records the mode of a peripheral on its pins as <pin>.Mode; the instance
+        is the peripheral in <pin>.Signal of the same pin.
+        """
+        modes: defaultdict[str, set[str]] = defaultdict(set)
+        for key, value in self.raw_map.items():
+            pin, _, prop = key.rpartition(".")
+            if prop != "Mode" or not re.match(r"^P[A-Z]\d+", pin):
+                continue
+            signal = self.raw_map.get(f"{pin}.Signal")
+            if signal:
+                modes[self._signal_root(signal)].add(str(value).strip())
+        return modes
 
     def parse(self, p_type: str) -> None:
         """解析 p_type 类外设的配置，由子类实现；基类调用时抛出 NotImplementedError。
@@ -564,19 +583,24 @@ class ADCParser(PeripheralParser):
     """
 
     _CHANNEL_PATTERN = re.compile(r"^ADC_CHANNEL_[A-Z0-9_]+$")
+    # ADCx.Channel-N\#ChannelRegularConversion，读入时 \# 已去掉；N 从 0 起，即 rank N+1。
+    # ADCx.Channel-N\#ChannelRegularConversion with \# removed on reading; N counts from 0,
+    # so it is rank N+1.
+    _REGULAR_CHANNEL_KEY = re.compile(r"^Channel-(\d+)ChannelRegularConversion$")
 
     def parse(self, p_type: str) -> None:
-        """先读取 ADCx.* 属性，再把 VP_*.Signal 虚拟引脚映射为内部通道，最后对通道去重。
+        """先读取 ADCx.* 属性，再把 VP_*.Signal 虚拟引脚映射为内部通道，最后整理通道列表。
         Read ADCx.* properties, then map VP_*.Signal virtual pins to internal channels, then
-        deduplicate the channels.
+        put the channel lists in order.
         """
+        self._regular: defaultdict[str, dict[int, str]] = defaultdict(dict)
         for key, value in self.raw_map.items():
             if self._ioc_root_startswith(key, "ADC"):
                 self._parse_adc_property(key, value)
         for key, value in self.raw_map.items():
             if self._ioc_root_startswith(key, "VP_") and key.endswith(".Signal"):
                 self._parse_vp_adc_signal(key, value)
-        self._deduplicate_channels()
+        self._finish_channels()
 
     def _map_internal_channel(self, value: str) -> str | None:
         """把 VP_* 虚拟引脚的 ADC 内部信号映射为 HAL 通道宏；无法识别时为 None。
@@ -636,13 +660,13 @@ class ADCParser(PeripheralParser):
         """读取一个 ADCx.<setting> 属性并写入该 ADC 实例。
         Read one ADCx.<setting> property into that ADC instance.
 
-        ChannelRegularConversion 的通道加入规则转换列表；ContinuousConvMode 存为布尔值
-        ContinuousMode；DMARegular 和 DMAContinuousRequests 归一为 "ENABLE" / "DISABLE" 存入
-        DMA；EOCSelection 原样保存。
-        Channels of ChannelRegularConversion join the regular conversion list;
-        ContinuousConvMode is stored as the boolean ContinuousMode; DMARegular and
-        DMAContinuousRequests are normalized to "ENABLE" / "DISABLE" in DMA; EOCSelection is
-        stored as is.
+        Channel-N#ChannelRegularConversion 记为第 N 个规则通道，同组的 Rank、SamplingTime 等
+        属性不读；ContinuousConvMode 存为布尔值 ContinuousMode；DMARegular 和
+        DMAContinuousRequests 归一为 "ENABLE" / "DISABLE" 存入 DMA；EOCSelection 原样保存。
+        Channel-N#ChannelRegularConversion is recorded as regular channel N, while Rank,
+        SamplingTime and the other properties of the group are not read; ContinuousConvMode is
+        stored as the boolean ContinuousMode; DMARegular and DMAContinuousRequests are
+        normalized to "ENABLE" / "DISABLE" in DMA; EOCSelection is stored as is.
 
         CommonPathInternal（如 "null|ADC_CHANNEL_TEMPSENSOR_ADC1|null|null"）按 | 拆分，去掉
         null 后以大写列表保存，供之后选择温度传感器宏，选择不依赖 MCU 系列。
@@ -666,7 +690,11 @@ class ADCParser(PeripheralParser):
             return "ENABLE" if str(v).strip().upper() == "ENABLE" else "DISABLE"
 
         if "ChannelRegularConversion" in setting:
-            self._process_conversion_entry(adc_name, value)
+            match = self._REGULAR_CHANNEL_KEY.match(setting)
+            if match and self._is_valid_channel(value.strip()):
+                self._regular[adc_name][int(match.group(1))] = value.strip()
+            elif match:
+                logging.debug(f"Ignored invalid ADC channel: {key}={value}")
         elif setting == "ContinuousConvMode":
             self.config.peripherals["ADC"][adc_name]["ContinuousMode"] = value == "ENABLE"
         elif setting == "DMARegular" or setting == "DMAContinuousRequests":
@@ -715,25 +743,6 @@ class ADCParser(PeripheralParser):
             # Only add to Channels (not RegularConversions)
             self._add_unique_entry(adc_name, "Channels", mapped_channel)
 
-    def _process_conversion_entry(self, adc_name: str, raw_value: str) -> None:
-        """拆分逗号分隔的 ChannelRegularConversion 值；符合 ADC_CHANNEL_* 格式的通道同时加入
-        Channels 和 RegularConversions，其余非空项记录 debug 日志后忽略。
-        Split a comma-separated ChannelRegularConversion value; channels of the ADC_CHANNEL_*
-        form join both Channels and RegularConversions, and other non-empty items are logged
-        at debug level and ignored.
-        """
-        for entry in raw_value.split(","):
-            cleaned_entry = entry.strip()
-            # 用正则表达式检查条目格式。
-            # Validate entry format using regex
-            if self._is_valid_channel(cleaned_entry):
-                # 显式配置的规则转换通道同时加入两个列表。
-                # Regular conversions explicitly configured go to both lists
-                self._add_unique_entry(adc_name, "Channels", cleaned_entry)
-                self._add_unique_entry(adc_name, "RegularConversions", cleaned_entry)
-            elif cleaned_entry:
-                logging.debug(f"Ignored invalid ADC entry: {cleaned_entry}")
-
     def _is_valid_channel(self, entry: str) -> bool:
         """entry 为 ADC_CHANNEL_ 后接大写字母、数字或下划线时为真。
         True when entry is ADC_CHANNEL_ followed by upper-case letters, digits or underscores.
@@ -761,33 +770,36 @@ class ADCParser(PeripheralParser):
         if value not in target_list:
             target_list.append(value)
 
-    def _deduplicate_channels(self) -> None:
-        """对每个 ADC 实例的 Channels 和 RegularConversions 保序去重，并优先带后缀的温度传感器宏。
-        Deduplicate Channels and RegularConversions of each ADC instance in order, preferring
-        suffixed temperature sensor macros.
+    def _finish_channels(self) -> None:
+        """写出每个 ADC 实例的 RegularConversions 和 Channels。
+        Write RegularConversions and Channels of each ADC instance.
 
-        通道列表或 CommonPathInternal 中出现 ADC_CHANNEL_TEMPSENSOR_ADCn 时，去掉通用的
-        ADC_CHANNEL_TEMPSENSOR。
+        RegularConversions 按 rank 排列，即 Channel-N 的 N 按数值排序；.ioc 的 key 按文本排序，
+        Channel-10 排在 Channel-2 之前。同一通道排在多个 rank 时每次都保留，数量与 CubeMX 的
+        NbrOfConversion 一致，DMA 模式下第 i 项就是 DMA 缓冲区的第 i 格。Channels 是规则通道加上
+        虚拟引脚的内部通道，保序去重，供轮询模式使用。
+        RegularConversions follows the ranks, that is N of Channel-N in numeric order; the .ioc
+        keys are sorted as text, with Channel-10 before Channel-2. A channel in several ranks
+        is kept every time, so the count matches NbrOfConversion of CubeMX and in DMA mode item
+        i is slot i of the DMA buffer. Channels is the regular channels plus the internal
+        channels of virtual pins, in order without repeats, for polling mode.
+
+        通道列表或 CommonPathInternal 中出现 ADC_CHANNEL_TEMPSENSOR_ADCn 时，Channels 去掉通用的
+        ADC_CHANNEL_TEMPSENSOR，RegularConversions 把它换成带后缀的宏。
         When ADC_CHANNEL_TEMPSENSOR_ADCn appears in a channel list or in CommonPathInternal,
-        the generic ADC_CHANNEL_TEMPSENSOR is removed.
+        Channels drops the generic ADC_CHANNEL_TEMPSENSOR and RegularConversions replaces it
+        with the suffixed macro.
         """
-        for adc_cfg in self.config.peripherals["ADC"].values():
-            # 保序去重。
-            # Basic dedupe
-            chs = list(dict.fromkeys(adc_cfg.get("Channels", [])))
-            regs = list(dict.fromkeys(adc_cfg.get("RegularConversions", [])))
-
+        for adc_name, adc_cfg in self.config.peripherals["ADC"].items():
+            regs = [channel for _, channel in sorted(self._regular.get(adc_name, {}).items())]
+            chs = list(dict.fromkeys(regs + adc_cfg.get("Channels", [])))
             cp_list = adc_cfg.get("CommonPathInternal", []) or []
-            # 在通道列表和 CommonPathInternal 中查找带后缀的温度传感器宏。
-            # Detect any suffixed TempSensor macro from any source
-            has_suffixed = any(
-                re.match(r"ADC_CHANNEL_TEMPSENSOR_ADC\d+$", x) for x in (chs + regs + cp_list)
+            suffixed = next(
+                (x for x in chs + cp_list if re.match(r"ADC_CHANNEL_TEMPSENSOR_ADC\d+$", x)), None
             )
-
-            if has_suffixed:
+            if suffixed:
                 chs = [x for x in chs if x != "ADC_CHANNEL_TEMPSENSOR"]
-                regs = [x for x in regs if x != "ADC_CHANNEL_TEMPSENSOR"]
-
+                regs = [suffixed if x == "ADC_CHANNEL_TEMPSENSOR" else x for x in regs]
             adc_cfg["Channels"] = chs
             adc_cfg["RegularConversions"] = regs
 
@@ -945,18 +957,46 @@ class USARTParser(PeripheralParser):
     Reads USART, UART and LPUART instances, including instances named only by pin signals.
     """
 
+    # CubeMX 模式库（db/mcu/IP/USART-*_Modes.xml 的 HalMode）中不使用 UART 句柄的模式，以及它们
+    # 的 HAL 句柄类型；其余模式（异步、单线半双工、LIN、多处理器、RS485）都使用 UART 句柄。
+    # The modes of the CubeMX mode database (HalMode in db/mcu/IP/USART-*_Modes.xml) that do
+    # not use a UART handle, with their HAL handle types; every other mode (asynchronous,
+    # single-wire half duplex, LIN, multiprocessor, RS485) uses the UART handle.
+    _OTHER_HANDLES = {
+        "Synchronous": "USART",
+        "Synchronous Slave": "USART",
+        "IrDA": "IRDA",
+        "SmartCard": "SMARTCARD",
+        "SmartCard_With_Clock": "SMARTCARD",
+    }
+    # <实例>.VirtualMode 的值对应的模式名。
+    # The mode names of the values of <instance>.VirtualMode.
+    _VIRTUAL_MODES = {
+        "VM_ASYNC": "Asynchronous",
+        "VM_SYNC": "Synchronous",
+        "VM_IRDA": "IrDA",
+        "VM_LIN": "LIN",
+        "VM_SMARTCARD": "SmartCard",
+    }
+
     def parse(self, p_type: str) -> None:
         """读取 USART、UART 和 LPUART 配置；只有引脚信号的实例也会创建。
         Read USART, UART and LPUART configurations; an instance with only pin signals is created
         too.
 
-        第一遍读取 USARTx/UARTx/LPUARTx.* 属性中的波特率、字长、校验、停止位和模式；第二遍从
-        含 _TX 或 _RX 的引脚信号推断实例名，创建尚未出现的实例。
-        The first pass reads baud rate, word length, parity, stop bits and mode from
+        第一遍读取 USARTx/UARTx/LPUARTx.* 属性中的波特率、字长、校验、停止位和 VirtualMode；第二遍
+        从含 _TX 或 _RX 的引脚信号推断实例名，创建尚未出现的实例。最后由引脚上的模式和
+        VirtualMode 定出模式：同步、IrDA、SmartCard 模式的实例在 CubeMX 生成的代码中没有 UART
+        句柄，记录一条警告后去掉，其余实例写入 Mode。
+        The first pass reads baud rate, word length, parity, stop bits and VirtualMode from
         USARTx/UARTx/LPUARTx.* properties; the second pass derives instance names from pin
-        signals containing _TX or _RX and creates the instances not seen yet.
+        signals containing _TX or _RX and creates the instances not seen yet. Finally the mode
+        comes from the pin modes and VirtualMode: an instance in synchronous, IrDA or SmartCard
+        mode has no UART handle in the code CubeMX generates and is dropped with a warning; the
+        other instances get Mode.
         """
         found_instances = set()
+        virtual_modes: dict[str, str] = {}
 
         # 第一遍：按 USART/UART/LPUART 的属性 key 正常解析。
         # First pass: normal parsing from USART/UART/LPUART property keys
@@ -979,8 +1019,8 @@ class USARTParser(PeripheralParser):
                     self.config.peripherals[p_type][uart_name]["Parity"] = value
                 elif "StopBits" in prop:
                     self.config.peripherals[p_type][uart_name]["StopBits"] = value
-                elif "Mode" in prop:
-                    self._handle_operation_mode(p_type, uart_name, value)
+                elif prop.startswith("VirtualMode"):
+                    virtual_modes[uart_name] = str(value).strip()
 
         # 第二遍：根据 GPIO 引脚信号推断缺少的 UART 实例。
         # Second pass: infer missing UART instances based on GPIO signals
@@ -997,6 +1037,24 @@ class USARTParser(PeripheralParser):
                     logging.debug(f"Inferred USART instance from pin: {uart_root}")
                     self._ensure_uart_instance(p_type, uart_root)
 
+        pin_modes = self._pin_modes()
+        for name in list(self.config.peripherals[p_type]):
+            other = sorted(m for m in pin_modes.get(name, ()) if m in self._OTHER_HANDLES)
+            mode = other[0] if other else self._VIRTUAL_MODES.get(virtual_modes.get(name, ""))
+            if mode in self._OTHER_HANDLES:
+                del self.config.peripherals[p_type][name]
+                handle = self._OTHER_HANDLES[mode]
+                logging.warning(
+                    tr(
+                        f"{name} is not generated: {mode} mode uses {handle}_HandleTypeDef, "
+                        "and LibXR's STM32UART needs a UART handle",
+                        f"{name} 不会生成：{mode} 模式使用 {handle}_HandleTypeDef，LibXR 的 "
+                        "STM32UART 需要 UART 句柄",
+                    )
+                )
+            elif mode:
+                self.config.peripherals[p_type][name]["Mode"] = mode
+
     def _ensure_uart_instance(self, p_type: str, uart_name: str) -> None:
         """UART/USART/LPUART 实例不存在时创建，模式为 Asynchronous，其余字段为空。
         Create the UART/USART/LPUART instance when it does not exist, with mode Asynchronous
@@ -1011,18 +1069,6 @@ class USARTParser(PeripheralParser):
                 "Mode": "Asynchronous",
                 "DMA": {},
             }
-
-    def _handle_operation_mode(self, p_type: str, uart_name: str, value: str) -> None:
-        """值中含 IrDA、LIN 或 SmartCard 时把模式设为该名字；其他值保留原模式。
-        Set the mode to IrDA, LIN or SmartCard when the value contains that name; any other
-        value keeps the current mode.
-        """
-        if "IrDA" in value:
-            self.config.peripherals[p_type][uart_name]["Mode"] = "IrDA"
-        elif "LIN" in value:
-            self.config.peripherals[p_type][uart_name]["Mode"] = "LIN"
-        elif "SmartCard" in value:
-            self.config.peripherals[p_type][uart_name]["Mode"] = "SmartCard"
 
 
 # --------------------------
@@ -1041,11 +1087,14 @@ class I2CParser(PeripheralParser):
 
         属性按 key 的最后一段匹配：ClockSpeed 转为数值，DualAddressMode 转为布尔值，Timing
         存为字符串，DutyCycle 和 AddressingMode 原样保存。引脚信号属于 FMPI2C 等名字不以 I2C
-        开头的外设时，记录一次警告后跳过，因为 LibXR 没有它们的驱动。
+        开头的外设时，记录一次警告后跳过，因为 LibXR 没有它们的驱动。引脚处于 SMBus 模式的实例
+        在 CubeMX 生成的代码中只有 SMBUS 句柄，记录一条警告后去掉。
         Properties match on the last token of the key: ClockSpeed becomes a number,
         DualAddressMode a boolean and Timing a string; DutyCycle and AddressingMode are stored
         as is. Pin signals of a peripheral whose name does not start with I2C, such as FMPI2C,
-        are logged once as a warning and skipped, as LibXR has no driver for them.
+        are logged once as a warning and skipped, as LibXR has no driver for them. An instance
+        whose pins are in an SMBus mode has only an SMBUS handle in the code CubeMX generates
+        and is dropped with a warning.
         """
         unsupported: set[str] = set()
         for key, value in self.raw_map.items():
@@ -1103,6 +1152,22 @@ class I2CParser(PeripheralParser):
                 self.config.peripherals[p_type][i2c_name]["DualAddressMode"] = value == "ENABLE"
             elif "Timing" in prop:
                 self.config.peripherals[p_type][i2c_name]["Timing"] = str(value)
+
+        # 引脚模式为 SMBus-two-wire-Interface 或 SMBus-Alert-mode 的实例使用 SMBUS 句柄。
+        # An instance whose pins are in SMBus-two-wire-Interface or SMBus-Alert-mode uses the
+        # SMBUS handle.
+        pin_modes = self._pin_modes()
+        for name in list(self.config.peripherals[p_type]):
+            if any(mode.startswith("SMBus") for mode in pin_modes.get(name, ())):
+                del self.config.peripherals[p_type][name]
+                logging.warning(
+                    tr(
+                        f"{name} is not generated: SMBus mode uses SMBUS_HandleTypeDef, and "
+                        "LibXR's STM32I2C needs an I2C handle",
+                        f"{name} 不会生成：SMBus 模式使用 SMBUS_HandleTypeDef，LibXR 的 STM32I2C "
+                        "需要 I2C 句柄",
+                    )
+                )
 
     def _ensure_i2c_instance(self, p_type: str, i2c_name: str) -> None:
         """I2C 实例不存在时创建：7 位寻址，双地址关闭，引脚未定。
@@ -1573,14 +1638,22 @@ class ThreadXParser(PeripheralParser):
         以 TX_APP_MEM_POOL_SIZE 结尾的 key 为 MemPoolSize；以 AZRTOS_APP_MEM_ALLOCATION_METHOD
         结尾的 key 为 AllocationMethod（1 为 Static，0 为 Dynamic）；含
         ThreadXCcRTOSJjThreadXJjCore 的 key（ThreadX Core 组件选择）为布尔值 CorePresent；
-        AZRTOS.ThreadX.<任务>.StackSize 为任务栈大小。大小值带 B 后缀。
+        AZRTOS.ThreadX.<任务>.StackSize 为任务栈大小。大小值带 B 后缀。工程用了 CubeMX 内置的
+        THREADX 中间件（如 STM32H5）时 Enabled 为真：Mcu.IPn 为 THREADX，或有 THREADX.* key；参数
+        全为默认值时 .ioc 中只有前者。
         A key ending in TX_APP_MEM_POOL_SIZE gives MemPoolSize; one ending in
         AZRTOS_APP_MEM_ALLOCATION_METHOD gives AllocationMethod (1 is Static, 0 Dynamic); a key
         containing ThreadXCcRTOSJjThreadXJjCore, the ThreadX Core component selection, gives
         the boolean CorePresent; AZRTOS.ThreadX.<task>.StackSize gives a task stack size. Sizes
-        carry a B suffix.
+        carry a B suffix. A project with the THREADX middleware built into CubeMX (as on
+        STM32H5) has Enabled true: a Mcu.IPn is THREADX, or THREADX.* keys exist; with every
+        parameter at its default the .ioc file has only the former.
         """
         for key, value in self.raw_map.items():
+            if self._has_ioc_prefix(key, "THREADX") or (
+                self._ioc_key_startswith(key, "Mcu.IP") and value == "THREADX"
+            ):
+                self.config.threadx_config["Enabled"] = True
             if key.endswith("TX_APP_MEM_POOL_SIZE"):
                 self.config.threadx_config["MemPoolSize"] = byte_size(value)
 
@@ -1687,14 +1760,33 @@ class FreeRTOSParser(PeripheralParser):
     Reads FreeRTOS tasks, heap size and INCLUDE_ feature flags.
     """
 
+    # STM32C0、H5、N6、U0、U3、U5、WBA 等系列的 FreeRTOS 来自这个扩展包，不是 FREERTOS 中间件。
+    # FreeRTOS of STM32C0, H5, N6, U0, U3, U5, WBA and other families comes from this pack, not
+    # from the FREERTOS middleware.
+    _PACK = "STMicroelectronics.X-CUBE-FREERTOS"
+
     def parse(self, p_type: str) -> None:
         """读取 FREERTOS.* 条目：Tasks* 为任务定义，configTOTAL_HEAP_SIZE（或含 HeapSize 的
         key）为堆大小（带 B 后缀），key 含 INCLUDE_ 时为功能开关；有任何条目时 Enabled 为真。
         Read FREERTOS.* entries: Tasks* holds task definitions, configTOTAL_HEAP_SIZE (or a
         key containing HeapSize) the heap size with a B suffix, and a key containing INCLUDE_ a
         feature flag; any entry makes Enabled true.
+
+        Mcu.IPn 为 FREERTOS 时 Enabled 也为真。工程用了 X-CUBE-FREERTOS 扩展包（Mcu.ThirdPartyN
+        为该包）时同样如此，堆大小取包的 configTOTAL_HEAP_SIZE；这类工程的任务写在用户代码中，
+        .ioc 里没有。
+        A Mcu.IPn of FREERTOS also makes Enabled true. So does the X-CUBE-FREERTOS pack (a
+        Mcu.ThirdPartyN naming it), with the heap size from configTOTAL_HEAP_SIZE of the pack;
+        the tasks of such a project live in user code, not in the .ioc file.
         """
         for key, value in self.raw_map.items():
+            if (
+                self._ioc_key_startswith(key, "Mcu.ThirdParty")
+                and str(value).startswith(self._PACK)
+            ) or (self._ioc_key_startswith(key, "Mcu.IP") and value == "FREERTOS"):
+                self.config.freertos_config["Enabled"] = True
+            elif key.startswith(f"{self._PACK}.") and key.endswith(".configTOTAL_HEAP_SIZE"):
+                self.config.freertos_config["Heap"] = byte_size(value)
             if not self._ioc_root_startswith(key, "FREERTOS"):
                 continue
 
@@ -1758,7 +1850,15 @@ def parse_ioc_file(ioc_path: str) -> dict[str, Any] | None:
     try:
         with open(ioc_path, encoding="utf-8") as f:
             raw_map = _extract_key_value_pairs(f)
-    except (OSError, UnicodeDecodeError) as e:
+    except UnicodeDecodeError as e:
+        logging.error(
+            tr(
+                f"{ioc_path} is not UTF-8 text (byte {e.start + 1}); save it as UTF-8",
+                f"{ioc_path} 不是 UTF-8 编码（第 {e.start + 1} 个字节）；请以 UTF-8 保存",
+            )
+        )
+        return None
+    except OSError as e:
         logging.error(tr(f"File processing failed: {str(e)}", f"文件处理失败：{str(e)}"))
         return None
 
@@ -2002,19 +2102,13 @@ def parse_project(directory: str, output: str | None = None, summary: bool = Tru
     Parse the single .ioc file in directory and write the YAML; print a summary when summary is
     set.
 
-    输出路径默认为该目录下的 .config.yaml。目录不存在、没有 .ioc 文件或有多个 .ioc 文件时
-    以状态 1 退出。
-    The output defaults to .config.yaml in that directory. A missing directory, no .ioc file
-    or several .ioc files exit with status 1.
+    输出路径默认为该目录下的 .config.yaml。调用方（libxr parse 和 setup）已确认目录存在且含有
+    .ioc 文件；有多个 .ioc 文件时以状态 1 退出。
+    The output defaults to .config.yaml in that directory. The callers, libxr parse and setup,
+    have checked that the directory exists and holds an .ioc file; several .ioc files exit with
+    status 1.
     """
-    if not os.path.isdir(directory):
-        logging.error(tr(f"Invalid input directory: {directory}", f"无效的输入目录：{directory}"))
-        sys.exit(1)
-
     ioc_files = sorted(f for f in os.listdir(directory) if f.endswith(".ioc"))
-    if not ioc_files:
-        logging.error(tr("No .ioc files found in target directory", "目标目录中没有 .ioc 文件"))
-        sys.exit(1)
     if len(ioc_files) > 1:
         # 一个目录对应一个 CubeMX 工程；多个 .ioc 会写进同一个输出文件。
         # One directory is one CubeMX project; several .ioc files would share the output.

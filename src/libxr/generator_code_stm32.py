@@ -1235,8 +1235,12 @@ class PeripheralFactory:
         enabled, Channels otherwise.
 
         参考电压取 libxr_settings 中的 vref（默认 3.3）；每个通道引用 <adc>_<channel> 登记为 ADC。
+        同一通道排在多个 rank 时，第一次的引用沿用该名字，之后的加上 rank 后缀，例如
+        adc1_adc_channel_8_rank12。
         The reference voltage is vref from libxr_settings (default 3.3); each channel reference
-        <adc>_<channel> is registered as ADC.
+        <adc>_<channel> is registered as ADC. When a channel is in several ranks, its first
+        reference keeps that name and later ones get a rank suffix, for example
+        adc1_adc_channel_8_rank12.
         """
         conversions = (
             config.get("RegularConversions", [])
@@ -1248,13 +1252,17 @@ class PeripheralFactory:
 
         channels_code = f"  static STM32ADC {instance.lower()}(&h{instance.lower()}, {instance.lower()}_buf, {{{', '.join(conversions)}}}, {vref});\n"
 
-        index = 0
-
-        for channel in conversions:
-            channels_code += f"  static auto& {instance.lower()}_{channel.lower()} = {instance.lower()}.GetChannel({index});\n"
-            channels_code += f"  UNUSED({instance.lower()}_{channel.lower()});\n"
-            _register_device(f"{instance.lower()}_{channel.lower()}", "ADC")
-            index = index + 1
+        names = set()
+        for index, channel in enumerate(conversions):
+            name = f"{instance.lower()}_{channel.lower()}"
+            if name in names:
+                name = f"{name}_rank{index + 1}"
+            names.add(name)
+            channels_code += (
+                f"  static auto& {name} = {instance.lower()}.GetChannel({index});\n"
+                f"  UNUSED({name});\n"
+            )
+            _register_device(name, "ADC")
 
         return "adc", channels_code
 
