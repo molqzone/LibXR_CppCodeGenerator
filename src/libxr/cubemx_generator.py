@@ -59,15 +59,17 @@ LOGIN_TEXTS = ("myST login", "User Login", "User Authentication Manager")
 
 @dataclass(frozen=True)
 class Dialog:
-    """从 CubeMX 读出的一个对话框：标题、正文（各行文字）、按钮和单选框/复选框的名称。
-    A dialog read from CubeMX: its title, its text (one line per label), and the names of its
-    buttons and of its radio buttons and check boxes.
+    """从 CubeMX 读出的一个对话框：标题、正文（各行文字）、按钮和单选框/复选框的名称，以及
+    是否带进度条。
+    A dialog read from CubeMX: its title, its text (one line per label), the names of its
+    buttons and of its radio buttons and check boxes, and whether it shows a progress bar.
     """
 
     title: str
     text: str = ""
     buttons: tuple[str, ...] = ()
     choices: tuple[str, ...] = ()
+    progress: bool = False
 
     def describe(self) -> str:
         """对话框的标题、正文和按钮，用于报错。
@@ -81,12 +83,17 @@ class Dialog:
 
 @dataclass(frozen=True)
 class DialogAnswer:
-    """对一个对话框的回答：先选中 select（单选框或复选框，可为空），再点击 click 按钮。
-    The answer to a dialog: select (a radio button or check box, may be empty), then click.
+    """对一个对话框的回答：先选中 select（单选框或复选框，可为空），再点击 click 按钮；click
+    为空表示等待对话框自行关闭（WAIT）。
+    The answer to a dialog: select (a radio button or check box, may be empty), then click; an
+    empty click means waiting for the dialog to close by itself (WAIT).
     """
 
     click: str
     select: str = ""
+
+
+WAIT = DialogAnswer(click="")
 
 
 class DialogStopped(RuntimeError):
@@ -119,6 +126,10 @@ def answer_dialog(
     firmware package: Download when download is set. A license agreement: agree and finish when
     download is set. An ST account login and any other dialog always stop.
 
+    带进度条的对话框（下载、解压、生成）只是显示进度，回答 WAIT，等它自行关闭。
+    A dialog with a progress bar (download, unpacking, generation) only shows progress; the
+    answer is WAIT until it closes by itself.
+
     Raises:
         DialogStopped: 这个对话框不按参数回答。
             The options do not answer this dialog.
@@ -135,6 +146,9 @@ def answer_dialog(
             + "\n"
             + dialog.describe()
         )
+
+    if dialog.progress:
+        return WAIT
 
     if dialog.title in LICENSE_TITLES or LICENSE_AGREE in dialog.choices:
         button = _first(dialog.buttons, "Finish", "OK", "Accept", "Next", "Install")
@@ -312,6 +326,9 @@ class _AccessBridge:
         bridge.releaseJavaObject.argtypes = [ctypes.c_int32, context]
         bridge.releaseJavaObject.restype = None
         self.bridge = bridge
+        # read 取得的 Java 对象引用，由 release 释放。
+        # The Java object references taken by read, freed by release.
+        self.held: list[tuple[int, int]] = []
         bridge.Windows_run()
 
     def pump(self, seconds: float) -> None:
@@ -340,12 +357,15 @@ class _AccessBridge:
         root = ctypes.c_int64()
         if not self.bridge.getAccessibleContextFromHWND(hwnd, ctypes.byref(vm), ctypes.byref(root)):
             return None
+        self.held.append((vm.value, root.value))
         nodes: list[tuple[str, str, int]] = []
         self._walk(vm.value, root.value, nodes, depth=0)
         if not nodes or nodes[0][0] != "dialog":
             return None
         labels = [name for role, name, _ in nodes if role in ("label", "text") and name]
-        buttons = {name: (vm.value, ctx) for role, name, ctx in nodes if role == "push button"}
+        buttons = {
+            name: (vm.value, ctx) for role, name, ctx in nodes if role == "push button" and name
+        }
         choices = {
             name: (vm.value, ctx)
             for role, name, ctx in nodes
@@ -356,8 +376,18 @@ class _AccessBridge:
             text="\n".join(labels),
             buttons=tuple(buttons),
             choices=tuple(choices),
+            progress=any(role == "progress bar" for role, _, _ in nodes),
         )
         return dialog, {**choices, **buttons}
+
+    def release(self) -> None:
+        """释放 read 取得的全部 Java 对象引用；之后不能再使用 read 给出的目标。
+        Free every Java object reference taken by read; the targets read gave are no longer
+        usable afterwards.
+        """
+        for vm, context in self.held:
+            self.bridge.releaseJavaObject(vm, context)
+        self.held.clear()
 
     def _walk(self, vm: int, context: int, nodes: list, depth: int) -> None:
         """深度优先收集 (角色, 名称, context)，最多 12 层、每层 64 个子项。
@@ -372,6 +402,7 @@ class _AccessBridge:
         for index in range(min(info.childrenCount, 64)):
             child = self.bridge.getAccessibleChildFromContext(vm, context, index)
             if child:
+                self.held.append((vm, child))
                 self._walk(vm, child, nodes, depth + 1)
 
     def click(self, target: tuple[int, int]) -> bool:
@@ -559,7 +590,11 @@ class _DialogWatchThread(threading.Thread):
         self.stop_event = stop_event
         self.done = done
         self.error: DialogStopped | None = None
+        # 已回答的窗口及回答时刻；正在等待的进度窗口及下次查看的时刻。
+        # Answered windows with the time of the answer; progress windows being waited on with
+        # the time of the next look.
         self.answered: dict[int, float] = {}
+        self.waiting: dict[int, float] = {}
 
     def run(self) -> None:
         """按平台监视对话框，直到 done 置位。
@@ -603,8 +638,16 @@ class _DialogWatchThread(threading.Thread):
                 self.done.wait(0.25)
             if self.error is not None:
                 continue
-            for hwnd, title in _windows_dialog_windows(self.process_id):
-                if time.monotonic() - self.answered.get(hwnd, -10.0) < 3.0:
+            windows = _windows_dialog_windows(self.process_id)
+            # 已关闭窗口的句柄可能被新窗口重用，不再记着它们。
+            # The handle of a closed window may be reused by a new one, so it is forgotten.
+            present = {hwnd for hwnd, _ in windows}
+            for seen in (self.answered, self.waiting):
+                for hwnd in [hwnd for hwnd in seen if hwnd not in present]:
+                    del seen[hwnd]
+            for hwnd, title in windows:
+                now = time.monotonic()
+                if now - self.answered.get(hwnd, -10.0) < 3.0 or now < self.waiting.get(hwnd, 0.0):
                     continue
                 if hwnd in self.answered:
                     self._fail(
@@ -616,34 +659,67 @@ class _DialogWatchThread(threading.Thread):
                         )
                     )
                     break
-                read = bridge.read(hwnd) if bridge is not None else None
-                if read is None:
-                    self._fail(
-                        DialogStopped(
-                            tr(
-                                "STM32CubeMX shows a dialog that cannot be read:",
-                                "STM32CubeMX 显示了无法读取的对话框：",
-                            )
-                            + f' "{title}"'
-                        )
-                    )
+                if bridge is None:
+                    self._fail(self._unreadable(title))
                     break
-                dialog, targets = read
                 try:
-                    answer = self.answer(dialog)
-                except DialogStopped as error:
-                    self._fail(error)
-                    break
-                if answer.select:
-                    bridge.click(targets[answer.select])
-                bridge.click(targets[answer.click])
-                self.answered[hwnd] = time.monotonic()
+                    if not self._handle(bridge, hwnd, title):
+                        break
+                finally:
+                    bridge.release()
+
+    def _handle(self, bridge: _AccessBridge, hwnd: int, title: str) -> bool:
+        """读出并回答窗口 hwnd 中的对话框；回答不了时记录错误并返回 False。
+        Read and answer the dialog in the window hwnd; when it cannot be answered, record the
+        error and return False.
+        """
+        read = bridge.read(hwnd)
+        if read is None:
+            self._fail(self._unreadable(title))
+            return False
+        dialog, targets = read
+        LOGGER.debug(dialog.describe())
+        try:
+            answer = self.answer(dialog)
+        except DialogStopped as error:
+            self._fail(error)
+            return False
+        if not answer.click:
+            # 进度对话框：过一会儿再看它是否已关闭或变成需要回答的对话框。
+            # A progress dialog: look again later whether it has closed or now needs an answer.
+            if hwnd not in self.waiting:
                 LOGGER.info(
                     tr(
-                        f'Answered STM32CubeMX dialog "{dialog.title}": {answer.click}',
-                        f"已回答 STM32CubeMX 对话框“{dialog.title}”：{answer.click}",
+                        f'Waiting for STM32CubeMX: "{dialog.title}"',
+                        f"等待 STM32CubeMX：“{dialog.title}”",
                     )
                 )
+            self.waiting[hwnd] = time.monotonic() + 2.0
+            return True
+        if answer.select:
+            bridge.click(targets[answer.select])
+        bridge.click(targets[answer.click])
+        self.answered[hwnd] = time.monotonic()
+        LOGGER.info(
+            tr(
+                f'Answered STM32CubeMX dialog "{dialog.title}": {answer.click}',
+                f"已回答 STM32CubeMX 对话框“{dialog.title}”：{answer.click}",
+            )
+        )
+        return True
+
+    @staticmethod
+    def _unreadable(title: str) -> DialogStopped:
+        """无法读取内容的对话框造成的停止。
+        The stop caused by a dialog whose content cannot be read.
+        """
+        return DialogStopped(
+            tr(
+                "STM32CubeMX shows a dialog that cannot be read:",
+                "STM32CubeMX 显示了无法读取的对话框：",
+            )
+            + f' "{title}"'
+        )
 
     def _watch_x11(self) -> None:
         """Linux：发现 CubeMX 的对话框就停止，报出它的标题。

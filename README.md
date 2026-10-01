@@ -290,6 +290,7 @@ CubeMX still shows dialogs in script mode. libxr recognizes the common ones and 
 | --- | --- |
 | 工程由另一版本的 CubeMX 保存（`New STM32Cube firmware version available`）<br>Project saved by another CubeMX version | `--firmware keep`：Continue，沿用工程原来的固件包 / keep the project's firmware package<br>`--firmware migrate`：Migrate，迁移到当前 CubeMX 和固件包 / migrate to the current CubeMX and firmware package<br>未给出时停止 / stop when not given |
 | 缺少固件包、下载确认、固件包许可协议<br>Missing firmware package, download confirmation, package license | `--download`：下载并接受许可协议 / download and accept the license<br>未给出时停止 / stop when not given |
+| 下载、解压等进度窗口<br>Progress windows (download, unpacking) | 等待它关闭 / wait until it closes |
 | ST 账号登录 / ST account login | 停止 / stop |
 | 其他对话框 / Any other dialog | 停止 / stop |
 

@@ -21,6 +21,7 @@ from libxr.cubemx_generator import (
     ACCESS_BRIDGE_OPTION,
     FIRMWARE_TITLE,
     LICENSE_AGREE,
+    WAIT,
     Dialog,
     DialogAnswer,
     DialogStopped,
@@ -351,6 +352,16 @@ class DialogAnswers(TestCase):
             self.answer(self.LICENSE, download=True), DialogAnswer("Finish", select=LICENSE_AGREE)
         )
         self.assertIn("Pass --download to accept it", self.answer(self.LICENSE))
+
+    def test_a_progress_dialog_is_waited_on(self):
+        progress = Dialog(
+            "Downloading selected software packages",
+            "Connection to HTTP Server ...\nDownload and Unzip selected Files",
+            ("OK", "Cancel", "Pause"),
+            progress=True,
+        )
+        self.assertEqual(self.answer(progress), WAIT)
+        self.assertEqual(self.answer(progress, firmware="keep", download=True), WAIT)
 
     def test_a_login_or_an_unknown_dialog_always_stops(self):
         self.assertIn(
