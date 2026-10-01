@@ -29,9 +29,39 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: python -m pip install ruff
+      # A new ruff release may format differently; move the pin on purpose.
+      - run: python -m pip install ruff==0.16.9
       - run: ruff format --check src tests scripts
       - run: ruff check src tests scripts
+
+  libxr-version:
+    name: Pin the LibXR commit
+    runs-on: ubuntu-latest
+    outputs:
+      commit: ${{ steps.pin.outputs.commit }}
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # The package and the STM32 target test share this one file, so the
+      # published default LibXR commit is the one that was tested.
+      - name: Write libxr_version.py
+        id: pin
+        run: |
+          python ./scripts/gen_libxr_version.py
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import runpy
+          print("commit=" + runpy.run_path("src/libxr/libxr_version.py")["LibXRInfo"].COMMIT)
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: libxr-version
+          path: src/libxr/libxr_version.py
+          if-no-files-found: error
 
   release-version:
     name: Check release tag matches package version
@@ -99,7 +129,9 @@ jobs:
   stm32-target-test:
     name: STM32 Target (${{ matrix.target }})
     runs-on: ubuntu-latest
-    needs: discover-stm32-targets
+    needs:
+      - discover-stm32-targets
+      - libxr-version
     container:
       image: ghcr.io/xrobot-org/docker-image-stm32:main
       options: --user 0
@@ -111,10 +143,13 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
+    - uses: actions/download-artifact@v4
+      with:
+        name: libxr-version
+        path: src/libxr
+
     - name: Install Python Package
-      run: |
-        python ./scripts/gen_libxr_version.py
-        pip install .
+      run: pip install .
 
     - name: Compiler Version Check
       run: |
@@ -132,12 +167,8 @@ jobs:
       shell: bash
       run: |
         if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
-          # Releases pin the LibXR master commit (scripts/gen_libxr_version.py);
-          # a same-named LibXR tag is used only when one exists.
-          ref="${GITHUB_REF_NAME}"
-          if ! git ls-remote --exit-code --tags https://github.com/xrobot-org/libxr.git "refs/tags/${ref}" >/dev/null; then
-            ref="master"
-          fi
+          # A release tests the LibXR commit that the package pins.
+          ref="${{ needs.libxr-version.outputs.commit }}"
         else
           ref="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
           if ! git ls-remote --exit-code --heads https://github.com/xrobot-org/libxr.git "refs/heads/${ref}" >/dev/null; then
@@ -154,6 +185,7 @@ jobs:
   build:
     name: Build & Test (${{ matrix.os }} - Python ${{ matrix.python-version }})
     runs-on: ${{ matrix.os }}
+    needs: libxr-version
 
     strategy:
       matrix:
@@ -170,53 +202,21 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: "pip"
 
-      - name: Install dependencies (Linux/macOS)
-        if: runner.os != 'Windows'
+      - name: Install build tools
         run: |
           python -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          pip install build twine
+          python -m pip install build twine
 
-      - name: Install dependencies (Windows)
-        if: runner.os == 'Windows'
-        run: |
-          python -m pip install --upgrade pip
-          if (Test-Path "requirements.txt") { pip install -r requirements.txt }
-          pip install build twine
+      - uses: actions/download-artifact@v4
+        with:
+          name: libxr-version
+          path: src/libxr
 
       - name: Build Package
-        run: |
-          python ./scripts/gen_libxr_version.py
-          python -m build
+        run: python -m build
 
       - name: Check Package Metadata
-        run: |
-          twine check dist/*
-
-      - name: Rename built package files (Linux/macOS)
-        if: runner.os != 'Windows'
-        run: |
-          for file in dist/*.whl dist/*.tar.gz; do
-            if [[ -f "$file" ]]; then
-              new_name=$(echo "$file" | sed -E "s/^dist\/libxr-([0-9]+\.[0-9]+\.[0-9]+)-py([0-9]+)-none-any\.(whl|tar.gz)$/dist\/libxr-\1-py\2-none-any.\3/")
-              if [[ "$file" != "$new_name" ]]; then
-                mv "$file" "$new_name"
-              fi
-            fi
-          done
-          ls -lh dist/
-
-      - name: Rename built package files (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          Get-ChildItem -Path dist/* -Include *.whl, *.tar.gz | ForEach-Object {
-            $newName = $_.Name -replace '^libxr-([0-9]+\.[0-9]+\.[0-9]+)-py([0-9]+)-none-any\.(whl|tar.gz)', 'libxr-$1-py$2-none-any.$3'
-            if ($_.Name -ne $newName) {
-              Rename-Item -Path $_.FullName -NewName $newName
-            }
-          }
-          Get-ChildItem -Path dist/
+        run: twine check dist/*
 
       # Every matrix entry builds the same pure-Python distribution; publish
       # exactly one of them so artifacts cannot replace each other.
@@ -228,7 +228,7 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
-      - name: Install built package (Linux/macOS)
+      - name: Install built package (Linux)
         if: runner.os != 'Windows'
         run: |
           pip install dist/*.whl || pip install dist/*.tar.gz
@@ -255,7 +255,7 @@ jobs:
           repository: xrobot-org/bsp_stm32f103
           path: bsp_test
 
-      - name: Python Compatibility Check (Linux/macOS)
+      - name: Python Compatibility Check (Linux)
         if: runner.os != 'Windows'
         run: |
           cd bsp_test

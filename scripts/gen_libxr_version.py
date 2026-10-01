@@ -14,7 +14,7 @@ import subprocess
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 
 
-def get_remote_commit(url, ref="refs/heads/main"):
+def get_remote_commit(url, ref="refs/heads/master"):
     """用 git ls-remote 查询远端仓库 url 中 ref 指向的 commit。
     The commit that ref points to in the remote repository at url, from git ls-remote.
 
@@ -33,11 +33,9 @@ def get_remote_commit(url, ref="refs/heads/main"):
 
 
 if __name__ == "__main__":
-    url = "https://github.com/xrobot-org/libxr.git"
-    ref = "refs/heads/master"
-    commit = get_remote_commit(url, ref)
+    commit = get_remote_commit("https://github.com/xrobot-org/libxr.git")
     out_path = os.path.join(os.path.dirname(__file__), "..", "src", "libxr", "libxr_version.py")
     out_path = os.path.abspath(out_path)
-    with open(out_path, "w") as f:
+    with open(out_path, "w", encoding="utf-8", newline="\n") as f:
         f.write(f"class LibXRInfo:\n    COMMIT = '{commit}'\n")
     logging.info(f"Wrote commit {commit} to {out_path}")
