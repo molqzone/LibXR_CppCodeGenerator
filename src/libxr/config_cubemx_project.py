@@ -711,6 +711,6 @@ def setup_project(
 
 
 if __name__ == "__main__":
-    from libxr.cli import legacy
+    from libxr.legacy import run
 
-    raise SystemExit(legacy("xr_cubemx_cfg"))
+    raise SystemExit(run("xr_cubemx_cfg"))

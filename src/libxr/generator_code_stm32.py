@@ -2288,6 +2288,6 @@ def generate(
 
 
 if __name__ == "__main__":
-    from libxr.cli import legacy
+    from libxr.legacy import run
 
-    raise SystemExit(legacy("xr_gen_code_stm32"))
+    raise SystemExit(run("xr_gen_code_stm32"))

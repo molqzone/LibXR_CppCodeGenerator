@@ -121,11 +121,16 @@ command ends.
 
 ### 旧命令 / Old commands
 
-6.0.0 之前的 `xr_*` 命令仍可使用：运行时先提示对应的新命令，再以同样的参数执行。旧命令将在
-7.0.0 删除。
+6.0.0 之前的 `xr_*` 命令仍可使用：运行时先提示对应的新命令，参数及其含义与原来相同。例如
+`xr_parse` 仍必须给出 `-d`，`xr_gen_code` 仍按输入 YAML 所在目录识别工程，`xr_cubemx_cfg`
+没有 `--xrobot` 时不使用 XRobot，`xr_cubemx_generate --auto-confirm` 相当于
+`libxr stm32 cubemx-gen --firmware migrate --download`。旧命令将在 7.0.0 删除。
 
-The `xr_*` commands of earlier versions still work: they name their new command, then run it
-with the same arguments. They are removed in 7.0.0.
+The `xr_*` commands of earlier versions still work: they name their new command and keep their
+arguments with the same meaning. For example, `xr_parse` still needs `-d`, `xr_gen_code` still
+finds the project in the directory of the input YAML, `xr_cubemx_cfg` without `--xrobot` does
+not use XRobot, and `xr_cubemx_generate --auto-confirm` means
+`libxr stm32 cubemx-gen --firmware migrate --download`. They are removed in 7.0.0.
 
 | 旧命令 Old | 新命令 New |
 | --- | --- |
@@ -166,21 +171,19 @@ the installed version differs from it.
 Automatically configures an STM32CubeMX project.
 
 ```bash
-usage: libxr stm32 setup [-h] -d DIRECTORY [-t TERMINAL] [--xrobot | --no-xrobot] [--commit COMMIT]
+usage: libxr stm32 setup [-h] [-d DIRECTORY] [-t TERMINAL] [--xrobot | --no-xrobot] [--commit COMMIT]
                          [--git-source GIT_SOURCE] [--git-mirrors GIT_MIRRORS]
 ```
 
 解析 `.ioc` 文件，生成 YAML 和 C++ 驱动代码，补丁中断处理函数，并初始化项目结构
 Parses `.ioc`, generates YAML and C++ code, patches interrupt handlers, and initializes the project structure.
 
-#### 🔧 必选参数 (Required)
+#### ⚙️ 可选参数 (Optional)
 
 - `-d, --directory <DIRECTORY>`：
 
-  STM32CubeMX 工程路径
-  Path to the STM32CubeMX project.
-
-#### ⚙️ 可选参数 (Optional)
+  STM32CubeMX 工程路径，默认为当前目录
+  Path to the STM32CubeMX project, the current directory by default.
 
 - `-t, --terminal <TERMINAL>`：
 
@@ -266,7 +269,7 @@ default commit, its gitlink is staged and ready to commit.
 最小脚本模式命令示例 / Minimal example:
 
 ```bash
-libxr stm32 cubemx-gen -d .
+libxr stm32 cubemx-gen
 ```
 
 Windows 示例：指定 CubeMX，沿用工程原来的固件包，并保存日志 / Windows example: name CubeMX, keep the project's firmware package and save the logs:
@@ -326,7 +329,7 @@ On Windows, libxr reads dialogs and clicks their buttons through the Java Access
 Run STM32CubeMX script-mode generation as a standalone step.
 
 ```bash
-usage: libxr stm32 cubemx-gen [-h] -d DIRECTORY [--ioc IOC] [--cubemx-cmd CUBEMX_CMD] [--java-cmd JAVA_CMD]
+usage: libxr stm32 cubemx-gen [-h] [-d DIRECTORY] [--ioc IOC] [--cubemx-cmd CUBEMX_CMD] [--java-cmd JAVA_CMD]
                               [--launch-mode {auto,direct,java}] [--generate-code-dir GENERATE_CODE_DIR]
                               [--expect-path EXPECT_PATH] [--log-dir LOG_DIR] [--script-path SCRIPT_PATH]
                               [--keep-script] [--silent] [--firmware {keep,migrate}] [--download] [--timeout TIMEOUT]
@@ -371,19 +374,17 @@ CI that runs CubeMX needs a desktop environment prepared the same way.
 Parses `.ioc` files from STM32CubeMX projects and exports structured YAML.
 
 ```bash
-usage: libxr parse [-h] -d DIRECTORY [-o OUTPUT] [--verbose]
+usage: libxr parse [-h] [-d DIRECTORY] [-o OUTPUT] [--verbose]
 ```
 
 解析 `.ioc` 文件为 `.config.yaml`，并在终端输出解析摘要
 Parses `.ioc` files and creates `.config.yaml` with a readable summary.
 
-#### 🔧 必选参数 (Required)
+#### ⚙️ 可选参数 (Optional)
 
 - `-d, --directory <DIRECTORY>`
-  `.ioc` 文件所在目录路径
-  Path to the input directory containing `.ioc` files.
-
-#### ⚙️ 可选参数 (Optional)
+  `.ioc` 文件所在目录路径，默认为当前目录
+  Path to the directory containing the `.ioc` file, the current directory by default.
 
 - `-o, --output <FILE>`
   YAML 输出路径，默认为 DIRECTORY 下的 `.config.yaml`。目录中有多个 `.ioc` 文件时报错。

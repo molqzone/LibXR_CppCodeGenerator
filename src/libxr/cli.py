@@ -2,16 +2,15 @@
 The libxr command: generate LibXR-based C++ code for projects of different platforms.
 
 parse 和 gen 按工程所属的平台选择解析器和生成器（PLATFORMS）；只属于一个平台的命令在平台名
-之下，例如 libxr stm32 setup。旧的 xr_* 命令仍可使用，运行时提示对应的新命令，7.0.0 删除。
+之下，例如 libxr stm32 setup。旧的 xr_* 命令见 libxr.legacy。
 parse and gen choose the parser and the generator by the platform of the project (PLATFORMS);
 commands that belong to one platform sit under its name, such as libxr stm32 setup. The old
-xr_* commands still work, name their new command when they run, and are removed in 7.0.0.
+xr_* commands are in libxr.legacy.
 """
 
 from __future__ import annotations
 
 import argparse
-import functools
 import logging
 import os
 import sys
@@ -233,10 +232,11 @@ def _add_parse(commands) -> None:
     parser.add_argument(
         "-d",
         "--directory",
-        required=True,
+        default=".",
         help=tr(
-            "project directory (an STM32CubeMX project holds one .ioc file)",
-            "工程目录（STM32CubeMX 工程含有一个 .ioc 文件）",
+            "project directory; an STM32CubeMX project holds one .ioc file (default: current "
+            "directory)",
+            "工程目录，STM32CubeMX 工程含有一个 .ioc 文件（默认：当前目录）",
         ),
     )
     parser.add_argument(
@@ -315,8 +315,11 @@ def _add_stm32_setup(commands) -> None:
     parser.add_argument(
         "-d",
         "--directory",
-        required=True,
-        help=tr("STM32CubeMX project directory", "STM32CubeMX 工程目录"),
+        default=".",
+        help=tr(
+            "STM32CubeMX project directory (default: current directory)",
+            "STM32CubeMX 工程目录（默认：当前目录）",
+        ),
     )
     parser.add_argument(
         "-t",
@@ -387,8 +390,11 @@ def _add_stm32_cubemx_gen(commands) -> None:
     parser.add_argument(
         "-d",
         "--directory",
-        required=True,
-        help=tr("Directory containing the CubeMX .ioc file", "含有 CubeMX .ioc 文件的目录"),
+        default=".",
+        help=tr(
+            "Directory containing the CubeMX .ioc file (default: current directory)",
+            "含有 CubeMX .ioc 文件的目录（默认：当前目录）",
+        ),
     )
     parser.add_argument(
         "--ioc",
@@ -645,6 +651,18 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def run_command(run: Callable[[], None]) -> None:
+    """运行一个命令 run；运行期间在后台检查新版本，结束时（失败也一样）提示。
+    Run a command, run; a new version is checked in the background meanwhile and reported at
+    the end, after a failure too.
+    """
+    report = update_notice.start()
+    try:
+        run()
+    finally:
+        report()
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """libxr 命令入口：解析参数并运行子命令；运行期间在后台检查新版本，结束时提示。
     Entry of the libxr command: parse the arguments and run the subcommand; a new version is
@@ -652,58 +670,5 @@ def main(argv: Sequence[str] | None = None) -> int:
     """
     configure_output()
     args = build_parser().parse_args(argv)
-    report = update_notice.start()
-    try:
-        args.run(args)
-    finally:
-        report()
+    run_command(lambda: args.run(args))
     return 0
-
-
-# 旧命令与对应的新命令；旧命令在 7.0.0 删除。
-# Old commands and their new commands; the old ones are removed in 7.0.0.
-LEGACY_COMMANDS = {
-    "xr_parse": ("parse",),
-    "xr_parse_ioc": ("parse",),
-    "xr_gen_code": ("gen",),
-    "xr_gen_code_stm32": ("gen",),
-    "xr_cubemx_cfg": ("stm32", "setup"),
-    "xr_cubemx_generate": ("stm32", "cubemx-gen"),
-    "xr_stm32_cmake": ("stm32", "cmake"),
-    "xr_stm32_flash": ("stm32", "flash-info"),
-    "xr_stm32_toolchain_switch": ("stm32", "toolchain"),
-}
-
-
-def legacy(old: str, argv: Sequence[str] | None = None) -> int:
-    """运行旧命令 old：警告它已改名，再以同样的参数运行对应的新命令。
-    Run the old command old: warn that it was renamed, then run its new command with the same
-    arguments.
-    """
-    configure_output()
-    new = "libxr " + " ".join(LEGACY_COMMANDS[old])
-    logging.warning(
-        tr(
-            f"{old} is now `{new}`; the old name is removed in libxr 7.0.0",
-            f"{old} 已改为 `{new}`；旧命令将在 libxr 7.0.0 删除",
-        )
-    )
-    args = list(sys.argv[1:] if argv is None else argv)
-    if old == "xr_stm32_cmake" and args and not args[0].startswith("-"):
-        # xr_stm32_cmake 的工程目录是位置参数。
-        # xr_stm32_cmake took the project directory as a positional argument.
-        args.insert(0, "-d")
-    return main([*LEGACY_COMMANDS[old], *args])
-
-
-# 旧命令的 console_scripts 入口。
-# console_scripts entry points of the old commands.
-xr_parse = functools.partial(legacy, "xr_parse")
-xr_parse_ioc = functools.partial(legacy, "xr_parse_ioc")
-xr_gen_code = functools.partial(legacy, "xr_gen_code")
-xr_gen_code_stm32 = functools.partial(legacy, "xr_gen_code_stm32")
-xr_cubemx_cfg = functools.partial(legacy, "xr_cubemx_cfg")
-xr_cubemx_generate = functools.partial(legacy, "xr_cubemx_generate")
-xr_stm32_cmake = functools.partial(legacy, "xr_stm32_cmake")
-xr_stm32_flash = functools.partial(legacy, "xr_stm32_flash")
-xr_stm32_toolchain_switch = functools.partial(legacy, "xr_stm32_toolchain_switch")

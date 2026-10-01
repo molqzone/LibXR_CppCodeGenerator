@@ -35,15 +35,15 @@ Repository = "https://github.com/xrobot-org/LibXR_CppCodeGenerator"
 libxr = "libxr.cli:main"
 # 旧命令，运行时提示对应的 libxr 子命令；7.0.0 删除。
 # Old commands; they name the libxr subcommand when run and are removed in 7.0.0.
-xr_parse = "libxr.cli:xr_parse"
-xr_parse_ioc = "libxr.cli:xr_parse_ioc"
-xr_gen_code = "libxr.cli:xr_gen_code"
-xr_gen_code_stm32 = "libxr.cli:xr_gen_code_stm32"
-xr_cubemx_cfg = "libxr.cli:xr_cubemx_cfg"
-xr_cubemx_generate = "libxr.cli:xr_cubemx_generate"
-xr_stm32_cmake = "libxr.cli:xr_stm32_cmake"
-xr_stm32_flash = "libxr.cli:xr_stm32_flash"
-xr_stm32_toolchain_switch = "libxr.cli:xr_stm32_toolchain_switch"
+xr_parse = "libxr.legacy:xr_parse"
+xr_parse_ioc = "libxr.legacy:xr_parse_ioc"
+xr_gen_code = "libxr.legacy:xr_gen_code"
+xr_gen_code_stm32 = "libxr.legacy:xr_gen_code_stm32"
+xr_cubemx_cfg = "libxr.legacy:xr_cubemx_cfg"
+xr_cubemx_generate = "libxr.legacy:xr_cubemx_generate"
+xr_stm32_cmake = "libxr.legacy:xr_stm32_cmake"
+xr_stm32_flash = "libxr.legacy:xr_stm32_flash"
+xr_stm32_toolchain_switch = "libxr.legacy:xr_stm32_toolchain_switch"
 
 [tool.setuptools.packages.find]
 where = ["src"]

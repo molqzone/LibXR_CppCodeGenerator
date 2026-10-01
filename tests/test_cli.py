@@ -17,7 +17,7 @@ from unittest import mock
 
 from fixtures import IOC, GeneratorTestCase, TestCase, run_libxr
 
-from libxr import cli
+from libxr import cli, legacy
 from libxr import generator_code_stm32 as generator
 
 REPOSITORY = Path(__file__).resolve().parents[1]
@@ -95,9 +95,34 @@ class Platforms(TestCase):
 
 
 class LegacyCommands(TestCase):
-    """旧的 xr_* 命令提示新命令后以同样的参数运行它。
-    The old xr_* commands name the new command, then run it with the same arguments.
+    """旧的 xr_* 命令提示新命令，参数及其含义与 6.0.0 之前相同。
+    The old xr_* commands name their new command and keep the arguments, with their meaning,
+    of versions before 6.0.0.
     """
+
+    def setUp(self):
+        super().setUp()
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+
+    def run_old(self, old, *argv):
+        """以 argv 运行旧命令 old（不查询 PyPI），返回退出码、标准输出和标准错误。
+        Run the old command old with argv, without querying PyPI; return the exit code, stdout
+        and stderr.
+        """
+        out, err = io.StringIO(), io.StringIO()
+        with (
+            mock.patch("libxr.update_notice._latest_version", return_value=None),
+            contextlib.redirect_stdout(out),
+            contextlib.redirect_stderr(err),
+            self.assertLogs(level="WARNING"),
+        ):
+            try:
+                code = legacy.run(old, list(argv))
+            except SystemExit as exit:
+                code = exit.code
+        return code, out.getvalue(), err.getvalue()
 
     def test_an_old_command_warns_and_runs_the_new_one(self):
         out = io.StringIO()
@@ -106,7 +131,7 @@ class LegacyCommands(TestCase):
             contextlib.redirect_stdout(out),
             self.assertLogs(level="WARNING") as logs,
         ):
-            code = cli.legacy("xr_stm32_flash", ["STM32F103C8T6"])
+            code = legacy.run("xr_stm32_flash", ["STM32F103C8T6"])
         self.assertEqual(code, 0)
         self.assertEqual(
             logs.output,
@@ -120,21 +145,90 @@ class LegacyCommands(TestCase):
     def test_every_old_command_is_installed_and_names_a_subcommand(self):
         scripts = installed_scripts()
         self.assertEqual(scripts.pop("libxr"), "libxr.cli:main")
-        self.assertEqual(scripts, {old: f"libxr.cli:{old}" for old in cli.LEGACY_COMMANDS})
-        for old, new in cli.LEGACY_COMMANDS.items():
+        self.assertEqual(scripts, {old: f"libxr.legacy:{old}" for old in legacy.COMMANDS})
+        for old, command in legacy.COMMANDS.items():
             with self.subTest(old=old), contextlib.redirect_stdout(io.StringIO()):
                 with self.assertRaises(SystemExit) as exit:
-                    cli.build_parser().parse_args([*new, "--help"])
+                    cli.build_parser().parse_args([*command.new.split()[1:], "--help"])
                 self.assertEqual(exit.exception.code, 0)
 
+    def test_the_old_required_arguments_are_still_required(self):
+        for old in ("xr_parse", "xr_parse_ioc", "xr_cubemx_cfg", "xr_cubemx_generate"):
+            with self.subTest(old=old):
+                code, _, err = self.run_old(old)
+                self.assertEqual(code, 2)
+                self.assertIn("-d/--directory", err)
+        code, _, err = self.run_old("xr_stm32_cmake")
+        self.assertEqual(code, 2)
+        self.assertIn("input_dir", err)
+        for new in (["parse"], ["stm32", "setup"], ["stm32", "cubemx-gen"]):
+            with self.subTest(new=new):
+                self.assertEqual(cli.build_parser().parse_args(new).directory, ".")
+
+    def test_xr_gen_code_takes_the_platform_from_the_input_directory(self):
+        project = self.root / "project"
+        project.mkdir()
+        (project / "demo.ioc").write_text(IOC, encoding="utf-8")
+        elsewhere = self.root / "elsewhere"
+        elsewhere.mkdir()
+        for folder in (project, elsewhere):
+            (folder / "cubemx.yaml").write_text("{}\n", encoding="utf-8")
+        with mock.patch("libxr.generator_code_stm32.generate") as generate:
+            argv = ["-i", str(project / "cubemx.yaml"), "-o", "app_main.cpp", "--xrobot"]
+            self.assertEqual(self.run_old("xr_gen_code", *argv)[0], 0)
+            generate.assert_called_once_with(str(project / "cubemx.yaml"), "app_main.cpp", True, "")
+            generate.reset_mock()
+            argv = ["-i", str(elsewhere / "cubemx.yaml"), "-o", "app_main.cpp"]
+            self.assertEqual(self.run_old("xr_gen_code", *argv)[0], 0)
+            generate.assert_not_called()
+            self.assertEqual(self.run_old("xr_gen_code_stm32", *argv)[0], 0)
+            generate.assert_called_once_with(
+                str(elsewhere / "cubemx.yaml"), "app_main.cpp", False, ""
+            )
+        self.assertEqual(self.run_old("xr_gen_code", *argv, "-d", str(project))[0], 2)
+
+    def test_xr_cubemx_cfg_without_xrobot_does_not_use_it(self):
+        with mock.patch("libxr.config_cubemx_project.setup_project") as setup:
+            self.assertEqual(self.run_old("xr_cubemx_cfg", "-d", "project")[0], 0)
+            self.assertIs(setup.call_args.kwargs["xrobot_enable"], False)
+            self.assertEqual(self.run_old("xr_cubemx_cfg", "-d", "project", "--xrobot")[0], 0)
+            self.assertIs(setup.call_args.kwargs["xrobot_enable"], True)
+        self.assertEqual(self.run_old("xr_cubemx_cfg", "-d", "project", "--no-xrobot")[0], 2)
+
+    def test_xr_cubemx_generate_keeps_auto_confirm_and_the_first_ioc(self):
+        for name in ("b.ioc", "a.ioc"):
+            (self.root / name).write_text("", encoding="utf-8")
+        with mock.patch("libxr.cubemx_generator.generate_cubemx_project") as generate:
+            self.assertEqual(self.run_old("xr_cubemx_generate", "-d", str(self.root))[0], 0)
+            options = generate.call_args.kwargs
+            self.assertEqual(options["ioc_file"], os.path.join(str(self.root), "a.ioc"))
+            self.assertEqual((options["firmware"], options["download"]), (None, False))
+            argv = ["-d", str(self.root), "--auto-confirm"]
+            self.assertEqual(self.run_old("xr_cubemx_generate", *argv)[0], 0)
+            options = generate.call_args.kwargs
+            self.assertEqual((options["firmware"], options["download"]), ("migrate", True))
+        self.assertEqual(self.run_old("xr_cubemx_generate", *argv, "--download")[0], 2)
+
     def test_the_positional_directory_of_xr_stm32_cmake_still_works(self):
-        with (
-            mock.patch("libxr.update_notice._latest_version", return_value=None),
-            mock.patch("libxr.generator_stm32_cmake.integrate") as integrate,
-            self.assertLogs(level="WARNING"),
-        ):
-            self.assertEqual(cli.legacy("xr_stm32_cmake", ["project"]), 0)
+        with mock.patch("libxr.generator_stm32_cmake.integrate") as integrate:
+            self.assertEqual(self.run_old("xr_stm32_cmake", "project")[0], 0)
         integrate.assert_called_once_with("project")
+        self.assertEqual(self.run_old("xr_stm32_cmake", "-d", "project")[0], 2)
+
+    def test_xr_stm32_flash_takes_exactly_one_model(self):
+        code, out, err = self.run_old("xr_stm32_flash")
+        self.assertEqual((code, out), (1, ""))
+        self.assertIn("xr_stm32_flash <STM32_MODEL>", err)
+        code, out, _ = self.run_old("xr_stm32_flash", "--help")
+        self.assertEqual(code, 0)
+        self.assertIn("xr_stm32_flash STM32F103C8T6", out)
+        self.assertEqual(self.run_old("xr_stm32_flash", "STM32F103C8T6", "extra")[0], 1)
+
+    def test_xr_stm32_toolchain_switch_works_on_the_current_directory(self):
+        with mock.patch("libxr.stm32_toolchain_switch.switch_toolchain") as switch:
+            self.assertEqual(self.run_old("xr_stm32_toolchain_switch", "clang", "-n")[0], 0)
+        switch.assert_called_once_with(".", "clang", "newlib")
+        self.assertEqual(self.run_old("xr_stm32_toolchain_switch", "-d", ".", "gcc")[0], 2)
 
     def test_an_old_module_still_runs_as_a_script(self):
         result = subprocess.run(

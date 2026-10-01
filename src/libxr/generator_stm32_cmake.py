@@ -454,6 +454,6 @@ def integrate(input_directory: str) -> None:
 
 
 if __name__ == "__main__":
-    from libxr.cli import legacy
+    from libxr.legacy import run
 
-    raise SystemExit(legacy("xr_stm32_cmake"))
+    raise SystemExit(run("xr_stm32_cmake"))

@@ -1925,6 +1925,6 @@ def parse_project(directory: str, output: str | None = None, summary: bool = Tru
 
 
 if __name__ == "__main__":
-    from libxr.cli import legacy
+    from libxr.legacy import run
 
-    raise SystemExit(legacy("xr_parse_ioc"))
+    raise SystemExit(run("xr_parse_ioc"))
