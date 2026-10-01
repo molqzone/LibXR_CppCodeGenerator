@@ -15,11 +15,12 @@
 
 ## 🌟 Features 功能亮点
 
-- 🧠 自动生成设备驱动和应用程序框架。
-  Automatically generates device drivers and application scaffolding.
+- 🧠 由 STM32CubeMX 工程生成 LibXR 外设对象、`app_main` 入口和 CMake 接入。
+  Generates the LibXR peripheral objects, the `app_main` entry and the CMake integration
+  from an STM32CubeMX project.
 
-- ⚙️ 支持多种后端架构，默认支持 STM32 平台。
-  Supports multiple backends; STM32 is the default.
+- ⚙️ 解析器和生成器按平台选择，目前支持 STM32。
+  Parsers and generators are chosen by platform; STM32 is supported so far.
 
 - 📦 可与 XRobot 框架集成：每个生成的设备对象以自身名字和唯一类型静态注册。
   Integrates with XRobot: every generated device object is registered statically under its own name with one type.
@@ -582,11 +583,22 @@ usage: libxr stm32 cmake [-h] [-d DIRECTORY]
   `CONFIGURE_DEPENDS` of `User/*.cpp`; an `XROBOT_MODULES_DIR` that disagrees with the
   project is reported as a warning.
 
-- 自动检测是否启用 FreeRTOS：
-  Auto-detect FreeRTOS configuration:
+- 自动检测 RTOS：
+  Auto-detect the RTOS:
 
   - 存在 `Core/Inc/FreeRTOSConfig.h` → `LIBXR_SYSTEM=FreeRTOS`
-  - 否则设置为 `None`
+  - 否则存在 `Core/Inc/app_threadx.h` → `LIBXR_SYSTEM=ThreadX`
+  - 都没有时设置为 `None`
+
+- 调整 `cmake/starm-clang.cmake`（存在时）：默认运行时配置仍写在 CubeMX 的
+  `set(STARM_TOOLCHAIN_CONFIG "...")` 一行，加入的选择块使单个构建目录可用
+  `-DSTARM_TOOLCHAIN_CONFIG=<profile>` 选择配置，`libxr stm32 toolchain` 改变的默认值也作用于
+  已有构建目录；未知的配置名在 CMake 配置时报错。
+  Adjust `cmake/starm-clang.cmake` when it exists: the default runtime profile stays on
+  CubeMX's `set(STARM_TOOLCHAIN_CONFIG "...")` line, and the added selection block lets a
+  single build directory choose a profile with `-DSTARM_TOOLCHAIN_CONFIG=<profile>` and
+  carries a default changed by `libxr stm32 toolchain` into existing build directories; an
+  unknown profile name fails at CMake configure time.
 
 - 自动向主 `CMakeLists.txt` 添加以下指令(若尚未包含)：
   Auto-appends the following line to `CMakeLists.txt` if missing:
@@ -633,8 +645,8 @@ usage: libxr stm32 cmake [-h] [-d DIRECTORY]
 - 推荐启用 **FreeRTOS**，自动生成 `FreeRTOSConfig.h`
   Recommended to enable **FreeRTOS** and generate `FreeRTOSConfig.h`
 
-  - 关闭 `USB_DEVICE` 或 `USBX` 中间件
-    Disable `USB_DEVICE` or `USBX` middleware.
+- 使用 USB 时关闭 `USB_DEVICE` 或 `USBX` 中间件
+  With USB, disable the `USB_DEVICE` or `USBX` middleware
 
 #### ⏱️ Timebase 配置建议(Timebase Configuration)
 
@@ -729,20 +741,22 @@ libxr stm32 toolchain clang
 
 ## 🧩 代码生成后操作 (After Code Generation)
 
-生成代码后，你需要**手动添加**以下内容：
-After generating code, you must **manually add** the following:
+生成代码后，CubeMX 生成的代码中需要**手动加入**以下内容，写在 USER CODE 区域中，CubeMX
+重新生成时保留：
+After generation, the following is **added by hand** to the CubeMX-generated code, inside
+USER CODE sections so that CubeMX keeps it on regeneration:
 
 ```cpp
 #include "app_main.h"
 ```
 
 并在合适位置调用 `app_main();`：
-And call `app_main();` in the appropriate location:
+and `app_main();` is called at the following place:
 
 | 场景 (Scenario)       | 添加位置        |Where to add|
 |-----------------------|------------------------------------| -----------|
 | 🟢 Bare metal 裸机工程 | `main()` 函数末尾   | End of `main()` |
-| 🔵 FreeRTOS 工程       | 线程入口       | Thread entry function |
+| 🔵 FreeRTOS / ThreadX 工程 | 线程入口       | Thread entry function |
 
 ---
 
@@ -762,8 +776,8 @@ LibXR is a cross-platform driver abstraction and utility library supporting STM3
   Unified peripheral interface abstraction
 - 嵌入式组件（如 Terminal、PowerManager、Database 等）
   Embedded modules like Terminal, PowerManager, Database, etc.
-- FreeRTOS / bare-metal 支持
-  FreeRTOS and bare-metal support
+- 裸机、FreeRTOS、ThreadX 与 Linux 支持
+  Bare-metal, FreeRTOS, ThreadX and Linux support
 - 机器人运动学与导航
   Kinematics and navigation libraries for robotics
 - 自动代码生成支持
@@ -782,14 +796,14 @@ LibXR is a cross-platform driver abstraction and utility library supporting STM3
 **LibXR_CppCodeGenerator 是用于 LibXR 的代码生成工具链**，当前支持 STM32 + CubeMX，未来将扩展至 Zephyr、ESP-IDF 等平台。
 LibXR_CppCodeGenerator is a code generation toolchain for LibXR. It currently supports STM32 with CubeMX, and is planned to support Zephyr, ESP-IDF, and more.
 
-- 从不同平台的工程文件生成 `.yaml` 配置
-  Parse project files from different platforms to generate `.yaml` configurations
-- 基于 `.yaml` 自动生成 `app_main.cpp`、中断、CMake 等
-  Generate `app_main.cpp`, interrupt handlers, and CMake integration
-- 支持 `XRobot` glue 层集成
-  Supports optional integration with XRobot framework
-- 支持用户代码保留与多文件结构
-  Preserves user code blocks and supports modular output
+- 由工程文件（目前是 STM32CubeMX 的 `.ioc`）生成 `.yaml` 配置
+  Parse project files (STM32CubeMX `.ioc` so far) into a `.yaml` configuration
+- 由 `.yaml` 生成 `app_main.cpp`、`flash_map.hpp` 和 CMake 接入
+  Generate `app_main.cpp`, `flash_map.hpp` and the CMake integration from the `.yaml`
+- 可选生成 XRobot 使用的 `XR_REGISTER` 注册
+  Optionally emit the `XR_REGISTER` registrations that XRobot uses
+- 重新生成时保留 User Code 区域中的用户代码
+  Keep the user code of the User Code regions on regeneration
 
 #### 🔗 Links
 
@@ -801,16 +815,14 @@ LibXR_CppCodeGenerator is a code generation toolchain for LibXR. It currently su
 
 ### 🤖 XRobot
 
-XRobot 是一个轻量级的模块化应用管理框架，专为嵌入式设备而设计。它本身不包含任何驱动或业务代码，专注于模块的注册、调度、生命周期管理、事件处理与参数配置。
-**XRobot is a lightweight modular application management framework designed for embedded systems.**
-It does not include any drivers or business logic by itself. Instead, it focuses on module registration, scheduling, lifecycle management, event handling, and parameter configuration.
+XRobot 是配合 LibXR 使用的模块管理工具。它负责拉取模块、把每个模块锁定到具体的提交，再根据 `User/` 下的 YAML 配置生成主函数。
+**XRobot is the Module manager for LibXR.**
+It fetches Modules, locks each one to a commit, and generates the main function from the YAML configurations under `User/`.
 
-- 模块注册与生命周期管理
-  Module registration and lifecycle management
-- 参数管理 / 配置系统 / 事件系统
-  Parameter management, configuration system, and event system
-- ApplicationRunner / ThreadManager 等应用调度器
-  ApplicationRunner and ThreadManager for runtime coordination
+- 拉取模块并把每个模块锁定到具体的提交（`xrobot.lock`）
+  Fetch Modules and lock each one to a commit (`xrobot.lock`)
+- 检查模块配置，生成 `User/xrobot_main.hpp`
+  Check the Module configurations and generate `User/xrobot_main.hpp`
 - 不直接访问硬件，使用 BSP 以 `XR_REGISTER` 注册的具名对象
   Does not access hardware directly; uses the named objects the BSP registers with `XR_REGISTER`
 
@@ -818,17 +830,11 @@ It does not include any drivers or business logic by itself. Instead, it focuses
 
 #### ✅ Recommended For 推荐使用场景
 
-- 拥有多个子模块（如传感器、通信、控制器）且希望统一管理初始化、调度与资源依赖
-  For projects with multiple submodules (e.g., sensors, communication, controllers) needing unified lifecycle and dependency management.
+- 工程由多个模块（如传感器、通信、控制器）组成，需要统一管理模块的版本和配置
+  For projects made of several Modules (such as sensors, communication, controllers) whose versions and configurations are managed together.
 
-- 希望构建平台无关的应用层逻辑，与底层驱动解耦
-  For building platform-independent application logic decoupled from hardware drivers.
-
-- 与 **LibXR / XRobot** 结合时，以 `XR_REGISTER(object, ExplicitType)` 暴露已生成的具名对象，不生成运行期 `HardwareContainer`
-  With **LibXR / XRobot**, exposes generated named objects through `XR_REGISTER(object, ExplicitType)` rather than a runtime `HardwareContainer`.
-
-- 模块配置直接按生成的对象名选择硬件，便于适配不同硬件配置
-  Module configurations select hardware directly by the generated object names, for quick adaptation to different hardware.
+- 应用层与底层驱动解耦：模块配置按生成的对象名选择硬件，便于适配不同的硬件
+  For application logic decoupled from the drivers: Module configurations select hardware by the generated object names, which eases moving to different hardware.
 
 #### 🔗 Links
 
