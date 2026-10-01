@@ -795,6 +795,19 @@ _USB_INSTANCES = {
 }
 
 
+def _pcd_handle(instance: str, config: dict) -> str | None:
+    """USB 实例的 PCD 句柄名，例如 hpcd_USB_FS、hpcd_USB_OTG_HS；USB_DRD_FS 系列取 parse 记下的
+    PCDHandle（hpcd_USB_DRD_FS）。中间件等其他实例名和主机模式（Role 为 Host）的实例为 None。
+    The PCD handle name of a USB instance, such as hpcd_USB_FS or hpcd_USB_OTG_HS; families with
+    USB_DRD_FS take the PCDHandle parse recorded (hpcd_USB_DRD_FS). Other instance names, such
+    as middleware, and instances in host mode (Role Host) give None.
+    """
+    name = _USB_INSTANCES.get((instance or "").upper())
+    if name is None or config.get("Role") == "Host":
+        return None
+    return config.get("PCDHandle") or f"hpcd_{name}"
+
+
 def _integer(key: str, value, minimum: int = 1, maximum: int | None = None) -> int:
     """设置 key 的整数值；字符串按 Python 整数字面量解析（如 0x1D50）。
     The integer value of the setting key; a string is read as a Python integer literal, such
@@ -1110,6 +1123,8 @@ def generate_dma_resources(project_data: dict) -> str:
             for instance in instances:
                 usb = _usb_settings(instance)
                 if usb is None or not usb[1]["enable"]:
+                    continue
+                if _pcd_handle(instance, instances[instance]) is None:
                     continue
                 name, usb_cfg = usb
                 inst_lower = name.lower()
@@ -1472,14 +1487,17 @@ class PeripheralFactory:
         to libxr_settings.
 
         实例名和设置来自 _usb_settings()；其他实例名（如 USB_DEVICE 中间件）和未启用的实例不生成
-        代码。设备对象 usb_fs 或 usb_hs 引用 generate_dma_resources() 定义的端点缓冲区，本方法
+        代码，启用了但在 CubeMX 中是主机模式的实例记录警告后不生成。设备对象 usb_fs 或 usb_hs
+        使用 _pcd_handle() 给出的句柄，引用 generate_dma_resources() 定义的端点缓冲区，本方法
         不定义缓冲区。CDC 串口（如 usb_otg_fs_cdc）使用 EP1 收发数据、EP2 发送通知，并登记为
         UART。
         The instance name and settings come from _usb_settings(); other instance names, such as
-        the USB_DEVICE middleware, and disabled instances produce no code. The device object,
-        usb_fs or usb_hs, references the endpoint buffers that generate_dma_resources()
-        defines; this method defines no buffer. The CDC serial port, for example usb_otg_fs_cdc,
-        uses EP1 for data and EP2 for notifications and is registered as UART.
+        the USB_DEVICE middleware, and disabled instances produce no code, and an enabled
+        instance in host mode in CubeMX is skipped with a warning. The device object, usb_fs or
+        usb_hs, uses the handle _pcd_handle() gives and references the endpoint buffers that
+        generate_dma_resources() defines; this method defines no buffer. The CDC serial port,
+        for example usb_otg_fs_cdc, uses EP1 for data and EP2 for notifications and is
+        registered as UART.
 
         Raises:
             ValueError: 设置了 cdc_count；复合 USB 设备应在 BSP 用户代码中定义。
@@ -1495,6 +1513,17 @@ class PeripheralFactory:
                 tr(
                     f"USB instance '{inst_lower}' is disabled. Skipping generation.",
                     f"USB 实例 '{inst_lower}' 未启用，跳过生成。",
+                )
+            )
+            return "", ""
+        pcd_handle = _pcd_handle(instance, config)
+        if pcd_handle is None:
+            logging.warning(
+                tr(
+                    f"USB instance '{inst_lower}' is in host mode in CubeMX, and the LibXR USB "
+                    "device needs device mode. Skipping generation.",
+                    f"USB 实例 '{inst_lower}' 在 CubeMX 中是主机模式，LibXR 的 USB 设备需要设备"
+                    "模式，跳过生成。",
                 )
             )
             return "", ""
@@ -1539,7 +1568,6 @@ class PeripheralFactory:
         size_enum = {8: "SIZE_8", 16: "SIZE_16", 32: "SIZE_32", 64: "SIZE_64"}[ep0_sz]
         lang_var = f"{inst_lower}_lang_pack".upper()
         cdc_var = f"{inst_lower}_cdc"
-        pcd_handle = f"hpcd_USB_OTG_{speed}" if is_otg else f"hpcd_USB_{speed}"
         instance_type = (
             "STM32USBDeviceOtgFS"
             if (is_otg and speed == "FS")
@@ -1653,11 +1681,13 @@ def _generate_extern_declarations(project_data: dict) -> str:
     """生成 HAL 句柄的 extern 声明，按字母顺序排列且不重复。
     Generate the extern declarations of the HAL handles, sorted and without duplicates.
 
-    包括非 SysTick 时基使用的 TIM、LPTIM 或 HRTIM 句柄和每个外设实例的句柄；USB 实例（不含
-    USB_DEVICE 等中间件）使用 PCD 句柄，USART 段（USART、UART 和 LPUART）使用 UART_HandleTypeDef。
+    包括非 SysTick 时基使用的 TIM、LPTIM 或 HRTIM 句柄和每个外设实例的句柄；设备模式的 USB 实例
+    （不含 USB_DEVICE 等中间件）使用 PCD 句柄（见 _pcd_handle()），USART 段（USART、UART 和
+    LPUART）使用 UART_HandleTypeDef。
     They cover the TIM, LPTIM or HRTIM handle of a timebase other than SysTick and the handle
-    of every peripheral instance; USB instances, not middleware such as USB_DEVICE, use their
-    PCD handle, and the USART section (USART, UART and LPUART) uses UART_HandleTypeDef.
+    of every peripheral instance; USB instances in device mode, not middleware such as
+    USB_DEVICE, use their PCD handle (see _pcd_handle()), and the USART section (USART, UART
+    and LPUART) uses UART_HandleTypeDef.
     """
     externs = set()
 
@@ -1679,11 +1709,11 @@ def _generate_extern_declarations(project_data: dict) -> str:
     for p_type, instances in peripherals.items():
         for instance in instances:
             if p_type == "USB":
-                # USB 使用 PCD 句柄，例如 hpcd_USB_FS、hpcd_USB_OTG_HS。
-                # USB uses its PCD handle, e.g. hpcd_USB_FS or hpcd_USB_OTG_HS.
-                name = _USB_INSTANCES.get(instance.upper())
-                if name is not None:
-                    externs.add(f"extern PCD_HandleTypeDef hpcd_{name};")
+                # 设备模式的 USB 使用 PCD 句柄，例如 hpcd_USB_FS、hpcd_USB_OTG_HS。
+                # USB in device mode uses its PCD handle, e.g. hpcd_USB_FS or hpcd_USB_OTG_HS.
+                handle = _pcd_handle(instance, instances[instance])
+                if handle is not None:
+                    externs.add(f"extern PCD_HandleTypeDef {handle};")
             elif p_type == "DAC":
                 externs.add(f"extern DAC_HandleTypeDef h{instance.lower()};")
             else:

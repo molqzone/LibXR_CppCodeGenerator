@@ -459,17 +459,35 @@ class McuParser(PeripheralParser):
 # TIM 解析器 / TIM Parser
 # --------------------------
 class TIMParser(PeripheralParser):
-    """读取定时器的模式、周期、预分频和 PWM 通道。
-    Reads timer mode, period, prescaler and PWM channels.
+    """读取定时器的计数模式、周期、预分频和 PWM 通道。
+    Reads timer counter mode, period, prescaler and PWM channels.
     """
 
+    _SHARED_CHANNEL_KEY = re.compile(r"^SH\.S_(TIM\d+)_CH\d+N?\.\d+$")
+    # 没有引脚的通道（如内部信号的输入捕获）把模式写在虚拟引脚上；时钟源不是通道模式。
+    # A channel without a pin, such as input capture from an internal signal, has its mode on
+    # a virtual pin; the clock source is not a channel mode.
+    _VIRTUAL_CHANNEL_KEY = re.compile(r"^VP_(TIM\d+)_VS_(?!ClockSource)\w+\.Mode$")
+
     def parse(self, p_type: str) -> None:
-        """读取 TIMx.* 属性：Channel-PWM 和 Channel 属性记为 PWM 通道，属性名含 Period、
-        Prescaler 或 Mode 时写入对应字段，周期和预分频转为数值。
-        Read TIMx.* properties: Channel-PWM and Channel properties become PWM channels, and a
-        property name containing Period, Prescaler or Mode sets that field, with period and
-        prescaler converted to numbers.
+        """读取 TIMx.* 属性中的 PWM 通道、周期、预分频和计数模式，周期和预分频转为数值。
+        Read the PWM channels, period, prescaler and counter mode from TIMx.* properties, with
+        period and prescaler converted to numbers.
+
+        TIMx.Channel-PWM GenerationN … 条目按 key 中列出的 CHx 和 CHxN 记录 PWM 通道，两者都列出
+        时主输出和互补输出各记一个。单通道定时器（如 TIM10、TIM16）不论什么模式都只写
+        TIMx.Channel，此时按通道模式（见 _shared_pwm_channels()）记录 PWM Generation 模式列出的
+        通道，输入捕获等其他模式不记；找不到通道模式时把 TIMx.Channel 记为 PWM 通道。Period（或
+        PeriodNoDither）为周期，Prescaler 为预分频，CounterMode 为 Mode。
+        A TIMx.Channel-PWM GenerationN ... entry records the CHx and CHxN listed in its key as
+        PWM channels, the main and the complementary output one each when both are listed. A
+        single-channel timer such as TIM10 or TIM16 writes only TIMx.Channel whatever its mode;
+        then the channel modes (see _shared_pwm_channels()) give the channels listed by a PWM
+        Generation mode, and other modes such as input capture give none; without a channel
+        mode TIMx.Channel is recorded as a PWM channel. Period (or PeriodNoDither) is the
+        period, Prescaler the prescaler and CounterMode the Mode.
         """
+        shared = self._shared_pwm_channels()
         for key, value in self.raw_map.items():
             tim_name = self._ioc_key_root(key)
             if not tim_name.startswith("TIM"):
@@ -481,25 +499,43 @@ class TIMParser(PeripheralParser):
 
             self._ensure_tim_instance(p_type, tim_name)
 
+            prop = parts[1]
             if "Channel-PWM" in key:
-                self._handle_pwm_channel(tim_name, parts, value)
-            elif parts[1] == "Channel":
-                # 简化格式，如 TIM10.Channel → TIM_CHANNEL_1。
-                # Simplified format like TIM10.Channel → TIM_CHANNEL_1
-                ch_name = self._normalize_tim_channel_token(value)
-                if ch_name:
-                    label, is_n = self._get_associated_pin_label(tim_name, ch_name)
-                    self.config.peripherals["TIM"][tim_name]["Channels"][ch_name] = {
-                        "Label": label,
-                        "PWM": True,
-                        "Complementary": is_n,
-                    }
-            elif "Period" in parts[1]:
+                self._add_pwm_channels(tim_name, re.findall(r"CH\d+N?", prop))
+            elif prop == "Channel":
+                channel = self._normalize_tim_channel_token(value)
+                channels = shared.get(tim_name, [channel] if channel else [])
+                self._add_pwm_channels(tim_name, channels)
+            elif prop in ("Period", "PeriodNoDither"):
                 self.config.peripherals[p_type][tim_name]["Period"] = sanitize_numeric(value)
-            elif "Prescaler" in parts[1]:
+            elif prop == "Prescaler":
                 self.config.peripherals[p_type][tim_name]["Prescaler"] = sanitize_numeric(value)
-            elif "Mode" in parts[1]:
+            elif prop == "CounterMode":
                 self.config.peripherals[p_type][tim_name]["Mode"] = value
+
+    def _shared_pwm_channels(self) -> dict[str, list[str]]:
+        """每个记录了通道模式的定时器在 PWM Generation 模式下列出的通道；只有其他模式的定时器为
+        空列表。
+        The channels listed by a PWM Generation mode for each timer with recorded channel
+        modes; a timer with only other modes gets an empty list.
+
+        通道模式取自引脚共享条目 SH.S_TIMx_CHn.k=TIMx_CHn,<模式>，例如
+        SH.S_TIM10_CH1.0=TIM10_CH1,PWM Generation1 CH1 给出 {"TIM10": ["CH1"]}；以及虚拟引脚
+        VP_TIMx_VS_*.Mode，例如 VP_TIM16_VS_NoInput1.Mode=Input_Capture1_from_TI1_REMAP_TIM16。
+        Channel modes come from the shared pin entries SH.S_TIMx_CHn.k=TIMx_CHn,<mode>, e.g.
+        SH.S_TIM10_CH1.0=TIM10_CH1,PWM Generation1 CH1 gives {"TIM10": ["CH1"]}, and from the
+        virtual pins VP_TIMx_VS_*.Mode, e.g.
+        VP_TIM16_VS_NoInput1.Mode=Input_Capture1_from_TI1_REMAP_TIM16.
+        """
+        channels: dict[str, list[str]] = {}
+        for key, value in self.raw_map.items():
+            match = self._SHARED_CHANNEL_KEY.match(key) or self._VIRTUAL_CHANNEL_KEY.match(key)
+            if match is None:
+                continue
+            mode = str(value).split(",", 1)[-1].strip()
+            found = re.findall(r"CH\d+N?", mode) if mode.startswith("PWM Generation") else []
+            channels.setdefault(match.group(1), []).extend(found)
+        return channels
 
     def _ensure_tim_instance(self, p_type: str, tim_name: str) -> None:
         """TIM 实例不存在时创建，模式、周期、预分频为空，通道表为空。
@@ -514,32 +550,22 @@ class TIMParser(PeripheralParser):
                 "Channels": {},
             }
 
-    def _handle_pwm_channel(self, tim_name: str, parts: list, value: str) -> None:
-        """从 TIMx.Channel-PWM Generation2 CH2N=TIM_CHANNEL_2 这类条目记录一个 PWM 通道。
-        Record one PWM channel from an entry such as TIMx.Channel-PWM Generation2
-        CH2N=TIM_CHANNEL_2.
-
-        通道取 key 末尾的 CHx / CHxN，CHxN 标记为互补输出；Label 为该通道所连引脚的标签。
-        The channel is the trailing CHx / CHxN of the key, and CHxN is marked complementary;
-        Label is the label of the pin wired to the channel.
+    def _add_pwm_channels(self, tim_name: str, channels: list[str]) -> None:
+        """把 CHx / CHxN 记为定时器的 PWM 通道；CHxN 标记为互补输出，Label 为该通道所连引脚的
+        标签。
+        Record CHx / CHxN as PWM channels of the timer; CHxN is marked complementary, and Label
+        is the label of the pin wired to the channel.
         """
-        # 用正则表达式取出末尾的 CHx 或 CHxN。
-        # Use regex to capture CHx or CHxN
-        match = re.search(r"(CH\d+N?)$", parts[1])
-        if not match:
-            return
-
-        channel_id = self._normalize_tim_channel_token(match.group(1))
-        if not channel_id:
-            return
-        is_n = channel_id.endswith("N")
-        pin_label, _ = self._get_associated_pin_label(tim_name, channel_id)
-
-        self.config.peripherals["TIM"][tim_name]["Channels"][channel_id] = {
-            "Label": pin_label,
-            "PWM": True,
-            "Complementary": is_n,
-        }
+        for channel in channels:
+            channel_id = self._normalize_tim_channel_token(channel)
+            if not channel_id:
+                continue
+            pin_label, _ = self._get_associated_pin_label(tim_name, channel_id)
+            self.config.peripherals["TIM"][tim_name]["Channels"][channel_id] = {
+                "Label": pin_label,
+                "PWM": True,
+                "Complementary": channel_id.endswith("N"),
+            }
 
     def _get_associated_pin_label(self, timer_name: str, channel_id: str) -> tuple[str, bool]:
         """定时器通道所连引脚的 (标签, 是否互补输出)；引脚信号以 N 结尾时为互补输出。
@@ -909,10 +935,10 @@ class SPIParser(PeripheralParser):
     """
 
     def parse(self, p_type: str) -> None:
-        """读取 SPIx.* 属性：属性名含 BaudRate、Direction、CLKPolarity 或 CLKPhase 时写入对应
-        字段，BaudRate 转为数值。
-        Read SPIx.* properties: a property name containing BaudRate, Direction, CLKPolarity or
-        CLKPhase sets that field, with BaudRate converted to a number.
+        """读取 SPIx.* 属性：CalculateBaudRate（CubeMX 算出的波特率）写入 BaudRate，Direction、
+        CLKPolarity、CLKPhase 写入同名字段。
+        Read SPIx.* properties: CalculateBaudRate, the baud rate CubeMX calculates, sets
+        BaudRate, and Direction, CLKPolarity and CLKPhase set the fields of the same name.
         """
         for key, value in self.raw_map.items():
             spi_name = self._ioc_key_root(key)
@@ -926,14 +952,10 @@ class SPIParser(PeripheralParser):
             self._ensure_spi_instance(p_type, spi_name)
 
             prop = parts[1]
-            if "BaudRate" in prop:
+            if prop == "CalculateBaudRate":
                 self.config.peripherals[p_type][spi_name]["BaudRate"] = sanitize_numeric(value)
-            elif "Direction" in prop:
-                self.config.peripherals[p_type][spi_name]["Direction"] = value
-            elif "CLKPolarity" in prop:
-                self.config.peripherals[p_type][spi_name]["CLKPolarity"] = value
-            elif "CLKPhase" in prop:
-                self.config.peripherals[p_type][spi_name]["CLKPhase"] = value
+            elif prop in ("Direction", "CLKPolarity", "CLKPhase"):
+                self.config.peripherals[p_type][spi_name][prop] = value
 
     def _ensure_spi_instance(self, p_type: str, spi_name: str) -> None:
         """SPI 实例不存在时创建，各字段为空，DMA 表为空。
@@ -1011,14 +1033,10 @@ class USARTParser(PeripheralParser):
                 self._ensure_uart_instance(p_type, uart_name)
 
                 prop = parts[1]
-                if "BaudRate" in prop:
+                if prop == "BaudRate":
                     self.config.peripherals[p_type][uart_name]["BaudRate"] = sanitize_numeric(value)
-                elif "WordLength" in prop:
-                    self.config.peripherals[p_type][uart_name]["WordLength"] = value
-                elif "Parity" in prop:
-                    self.config.peripherals[p_type][uart_name]["Parity"] = value
-                elif "StopBits" in prop:
-                    self.config.peripherals[p_type][uart_name]["StopBits"] = value
+                elif prop in ("WordLength", "Parity", "StopBits"):
+                    self.config.peripherals[p_type][uart_name][prop] = value
                 elif prop.startswith("VirtualMode"):
                     virtual_modes[uart_name] = str(value).strip()
 
@@ -1085,11 +1103,11 @@ class I2CParser(PeripheralParser):
         Read I2C from three kinds of entries: I2C instances listed in Mcu.IP*; pins whose signal
         contains I2C, recorded as SCL or SDA of that instance; and I2Cx.* properties.
 
-        属性按 key 的最后一段匹配：ClockSpeed 转为数值，DualAddressMode 转为布尔值，Timing
+        属性按 key 的最后一段精确匹配：ClockSpeed 转为数值，DualAddressMode 转为布尔值，Timing
         存为字符串，DutyCycle 和 AddressingMode 原样保存。引脚信号属于 FMPI2C 等名字不以 I2C
         开头的外设时，记录一次警告后跳过，因为 LibXR 没有它们的驱动。引脚处于 SMBus 模式的实例
         在 CubeMX 生成的代码中只有 SMBUS 句柄，记录一条警告后去掉。
-        Properties match on the last token of the key: ClockSpeed becomes a number,
+        Properties match the last token of the key exactly: ClockSpeed becomes a number,
         DualAddressMode a boolean and Timing a string; DutyCycle and AddressingMode are stored
         as is. Pin signals of a peripheral whose name does not start with I2C, such as FMPI2C,
         are logged once as a warning and skipped, as LibXR has no driver for them. An instance
@@ -1142,15 +1160,13 @@ class I2CParser(PeripheralParser):
             self._ensure_i2c_instance(p_type, i2c_name)
 
             prop = parts[-1]
-            if "ClockSpeed" in prop:
+            if prop == "ClockSpeed":
                 self.config.peripherals[p_type][i2c_name]["ClockSpeed"] = sanitize_numeric(value)
-            elif "DutyCycle" in prop:
-                self.config.peripherals[p_type][i2c_name]["DutyCycle"] = value
-            elif "AddressingMode" in prop:
-                self.config.peripherals[p_type][i2c_name]["AddressingMode"] = value
-            elif "DualAddressMode" in prop:
+            elif prop in ("DutyCycle", "AddressingMode"):
+                self.config.peripherals[p_type][i2c_name][prop] = value
+            elif prop == "DualAddressMode":
                 self.config.peripherals[p_type][i2c_name]["DualAddressMode"] = value == "ENABLE"
-            elif "Timing" in prop:
+            elif prop == "Timing":
                 self.config.peripherals[p_type][i2c_name]["Timing"] = str(value)
 
         # 引脚模式为 SMBus-two-wire-Interface 或 SMBus-Alert-mode 的实例使用 SMBUS 句柄。
@@ -1199,10 +1215,10 @@ class CANParser(PeripheralParser):
         Read CANx.* and FDCANx.* properties; the peripheral type follows the instance name and
         overrides the p_type argument.
 
-        两类都把 CalculateBaudRate 存为 BaudRate、把 Mode 存为 Mode，其余参数交给 CAN 2.0 或
-        FDCAN 专用处理。
-        Both store CalculateBaudRate as BaudRate and Mode as Mode; other parameters go to the
-        CAN 2.0 or the FDCAN handler.
+        CAN 的 CalculateBaudRate 和 FDCAN 的 CalculateBaudRateNominal 存为 BaudRate，两类的 Mode
+        存为 Mode，其余参数交给 CAN 2.0 或 FDCAN 专用处理。
+        CalculateBaudRate of CAN and CalculateBaudRateNominal of FDCAN are stored as BaudRate and
+        Mode of both as Mode; other parameters go to the CAN 2.0 or the FDCAN handler.
         """
         for key, value in self.raw_map.items():
             can_name = self._ioc_key_root(key)
@@ -1219,9 +1235,9 @@ class CANParser(PeripheralParser):
 
             # 通用参数
             # Common parameters
-            if "CalculateBaudRate" in prop:
+            if prop in ("CalculateBaudRate", "CalculateBaudRateNominal"):
                 self.config.peripherals[p_type][can_name]["BaudRate"] = value
-            elif "Mode" in prop:
+            elif prop == "Mode":
                 self.config.peripherals[p_type][can_name]["Mode"] = value
 
             # CAN 专用参数
@@ -1290,10 +1306,10 @@ class CANParser(PeripheralParser):
         Read FDCAN parameters with type conversion; a failed conversion is logged as a warning.
 
         NominalPrescaler 转为浮点数；FrameFormat 为字符串；StdFiltersNbr、ExtFiltersNbr 转为
-        整数，存为 StdFilters、ExtFilters。波特率由 CalculateBaudRate* 的通用处理读取。
+        整数，存为 StdFilters、ExtFilters。波特率由通用处理从 CalculateBaudRateNominal 读取。
         NominalPrescaler becomes a float; FrameFormat a string; StdFiltersNbr and ExtFiltersNbr
-        integers stored as StdFilters and ExtFilters. The baud rate is read by the common
-        CalculateBaudRate* handling.
+        integers stored as StdFilters and ExtFilters. The common handling reads the baud rate
+        from CalculateBaudRateNominal.
         """
         param_map = {
             "NominalPrescaler": ("NominalPrescaler", float),
@@ -1324,6 +1340,11 @@ class USBParser(PeripheralParser):
     a -<profile> suffix are grouped by profile.
     """
 
+    # 这些系列的 USB IP 是 USB_DRD_FS，CubeMX 把 PCD 句柄命名为 hpcd_USB_DRD_FS。
+    # The USB IP of these families is USB_DRD_FS, whose PCD handle CubeMX names
+    # hpcd_USB_DRD_FS.
+    _DRD_FAMILIES = {"STM32C0", "STM32G0", "STM32H5", "STM32U0", "STM32U3", "STM32U5"}
+
     def parse(self, p_type: str) -> None:
         """找出 USB 相关实例，并收集每个实例的全部属性。
         Find the USB-related instances and collect all properties of each.
@@ -1334,9 +1355,14 @@ class USBParser(PeripheralParser):
         USB., USB_OTG_FS. or USB_OTG_HS., in .ioc order.
 
         "<param>-<profile>" 形式的参数存入 profiles[profile][param]，其余存在实例下；
-        IPParameters 拆成列表。
+        IPParameters 拆成列表。VirtualMode（含各 profile 中的）含 Device 时 Role 为 Device，
+        含 Host 时为 Host，主机模式下 CubeMX 生成的是 HCD 句柄。_DRD_FAMILIES 系列的 USB 实例记下
+        PCDHandle hpcd_USB_DRD_FS。
         A "<param>-<profile>" parameter is stored in profiles[profile][param] and any other
-        under the instance; IPParameters is split into a list.
+        under the instance; IPParameters is split into a list. Role is Device when a
+        VirtualMode, profiles included, contains Device and Host when one contains Host; in
+        host mode CubeMX generates an HCD handle. The USB instance of the _DRD_FAMILIES gets
+        PCDHandle hpcd_USB_DRD_FS.
         """
         # 1. 按 .ioc 中的顺序找出 raw_map 里的全部 USB 外设名。
         # 1. Find all USB peripheral names in the raw_map, in .ioc order
@@ -1391,6 +1417,18 @@ class USBParser(PeripheralParser):
                         logging.debug(f"[USBParser] IPParameters: {parameters}")
                     else:
                         self.config.peripherals["USB"][usb_name][rest_key] = value
+
+        family = self.config.mcu_config.get("Family") or ""
+        for usb_name, cfg in self.config.peripherals["USB"].items():
+            modes = [cfg.get("VirtualMode")]
+            modes += [profile.get("VirtualMode") for profile in cfg.get("profiles", {}).values()]
+            modes = [str(mode) for mode in modes if mode]
+            if any("Device" in mode for mode in modes):
+                cfg["Role"] = "Device"
+            elif any("Host" in mode for mode in modes):
+                cfg["Role"] = "Host"
+            if usb_name == "USB" and family in self._DRD_FAMILIES:
+                cfg["PCDHandle"] = "hpcd_USB_DRD_FS"
 
     def _ensure_usb_instance(self, usb_name: str) -> None:
         """USB 实例不存在时创建空字典。
@@ -1837,10 +1875,13 @@ def parse_ioc_file(ioc_path: str) -> dict[str, Any] | None:
     logged as an error and gives None.
 
     先读取时基（NVIC.TimeBaseIP、NVIC.TimeBase）和 GPIO，再运行各外设解析器；DMA 解析器最后
-    运行，把 DMA 配置和开关挂到对应的外设实例下。
+    运行，把 DMA 配置和开关挂到对应的外设实例下。之后去掉 CubeMX 不会为其生成 HAL 句柄的实例
+    （见 _drop_ungenerated_instances()），并检查外部中断引脚的 NVIC 设置。
     The timebase (NVIC.TimeBaseIP, NVIC.TimeBase) and GPIO are read first, then each
     peripheral parser runs; the DMA parser runs last and attaches the DMA configurations and
-    flags to the peripheral instances.
+    flags to the peripheral instances. Then the instances CubeMX generates no HAL handle for
+    are dropped (see _drop_ungenerated_instances()) and the NVIC setting of external
+    interrupt pins is checked.
 
     解析出错时记录错误；--verbose（调试日志）下同时记录调用栈。
     A parse error is logged; with --verbose (debug logging) the traceback is logged too.
@@ -1906,6 +1947,8 @@ def parse_ioc_file(ioc_path: str) -> dict[str, Any] | None:
                 # Strip 'Parser' suffix
                 parser.parse(parser.__class__.__name__[:-6])
 
+        _drop_ungenerated_instances(config, raw_map)
+        _check_exti_nvic(raw_map, config.pin_registry, config.mcu_config.get("Family") or "")
         return config.clean_structure()
     except Exception as e:
         logging.error(tr(f"Parsing failed: {str(e)}", f"解析失败：{str(e)}"))
@@ -1941,6 +1984,131 @@ def _check_timebase(raw_map: dict[str, str], timebase: dict[str, str | None]) ->
                 f"{fields[1]}. In STM32CubeMX, set it to the highest (0) in NVIC.",
                 f"HAL 时基中断 {irq}（{source}）的抢占优先级为 {fields[1]}。请在 STM32CubeMX "
                 "的 NVIC 中把它设为最高（0）。",
+            )
+        )
+
+
+def _init_functions(raw_map: dict[str, str]) -> dict[str, list[dict[str, Any]]]:
+    """Project Manager 中每个 IP 的初始化函数设置，取自 ProjectManager.functionlistsort。
+    The initialization function settings of each IP in the Project Manager, from
+    ProjectManager.functionlistsort.
+
+    条目形如 [false-]<序号>-<函数>-<IP>-<不调用>-<驱动>-<静态>[-<上下文>]：开头的 false 表示取消了
+    Generate Code，<不调用> 为 true 表示勾选了 Do Not Generate Function Call，<驱动> 为 HAL 或
+    LL。每个 IP 对应一个列表，多核或 TrustZone 工程的每个上下文各一项。
+    An entry reads [false-]<rank>-<function>-<IP>-<no call>-<driver>-<static>[-<context>]: a
+    leading false means Generate Code is off, <no call> true means Do Not Generate Function
+    Call is set, and <driver> is HAL or LL. Each IP maps to a list with one item per context
+    of a multi-core or TrustZone project.
+    """
+    functions: defaultdict[str, list[dict[str, Any]]] = defaultdict(list)
+    for entry in raw_map.get("ProjectManager.functionlistsort", "").split(","):
+        parts = entry.strip().split("-")
+        generate = True
+        if parts[0] in ("true", "false"):
+            generate = parts.pop(0) == "true"
+        if len(parts) < 5 or not parts[0].isdigit():
+            continue
+        functions[parts[2]].append(
+            {
+                "function": parts[1],
+                "generate": generate,
+                "called": parts[3] != "true",
+                "driver": parts[4],
+            }
+        )
+    return functions
+
+
+def _drop_ungenerated_instances(config: ConfigurationManager, raw_map: dict[str, str]) -> None:
+    """去掉 CubeMX 不会为其生成 HAL 句柄的外设实例，每个记录一条警告。
+    Drop the peripheral instances CubeMX generates no HAL handle for, with one warning each.
+
+    这些实例是：不在 Mcu.IPn 中，即没有启用、只在引脚上分配了信号的外设；Project Manager 中
+    取消了 Generate Code 的外设；使用 LL 驱动的外设。勾选了 Do Not Generate Function Call 的
+    外设保留，但警告 main() 不调用它的初始化函数（USB 除外，USB 对象默认不生成）。
+    These are peripherals missing from Mcu.IPn, that is not enabled with only their signals
+    assigned to pins; peripherals with Generate Code off in the Project Manager; and
+    peripherals on the LL driver. A peripheral with Do Not Generate Function Call is kept, with
+    a warning that main() does not call its initialization function (except USB, whose object
+    is not generated by default).
+    """
+    enabled = {str(v).strip() for k, v in raw_map.items() if re.fullmatch(r"Mcu\.IP\d+", k)}
+    functions = _init_functions(raw_map)
+    for p_type, group in config.peripherals.items():
+        for name in list(group):
+            entries = [e for e in functions.get(name, []) if e["generate"]]
+            if enabled and name not in enabled:
+                reason = tr(
+                    "it is not enabled in CubeMX (no Mcu.IP entry)",
+                    "CubeMX 中没有启用它（Mcu.IP 中没有它）",
+                )
+            elif functions.get(name) and not entries:
+                reason = tr(
+                    "Generate Code is off for it in the CubeMX Project Manager",
+                    "CubeMX 的 Project Manager 中取消了它的代码生成（Generate Code）",
+                )
+            elif entries and all(e["driver"] == "LL" for e in entries):
+                reason = tr(
+                    "it uses the LL driver in CubeMX, and LibXR needs a HAL handle",
+                    "它在 CubeMX 中使用 LL 驱动，LibXR 需要 HAL 句柄",
+                )
+            else:
+                uncalled = [e["function"] for e in entries if not e["called"]]
+                if uncalled and p_type != "USB":
+                    logging.warning(
+                        tr(
+                            f"{name}: main() does not call {uncalled[0]}() (Do Not Generate "
+                            "Function Call is set in CubeMX); call it before app_main() "
+                            "constructs the LibXR object",
+                            f"{name}：main() 不调用 {uncalled[0]}()（CubeMX 中勾选了 Do Not "
+                            "Generate Function Call）；须在 app_main() 构造 LibXR 对象之前调用它",
+                        )
+                    )
+                continue
+            del group[name]
+            logging.warning(tr(f"{name} is not generated: {reason}", f"{name} 不会生成：{reason}"))
+
+
+def _check_exti_nvic(raw_map: dict[str, str], pins: dict[str, dict], family: str) -> None:
+    """外部中断引脚所在 EXTI 线的中断在 NVIC 中没有开启时记录警告。
+    Warn about an external interrupt pin whose EXTI line has no interrupt enabled in NVIC.
+
+    NVIC 没有开启时 CubeMX 不生成 EXTIx_IRQHandler；LibXR 的 EnableInterrupt() 打开中断后，
+    中断会进入 Default_Handler。一个中断可以覆盖多条线，例如 EXTI9_5_IRQn 覆盖 5～9 线。
+    STM32WB0 的引脚中断按端口分（GPIOA_IRQn），不检查。
+    Without NVIC enabled CubeMX generates no EXTIx_IRQHandler; once EnableInterrupt() of LibXR
+    enables the interrupt, it goes to Default_Handler. One interrupt may cover several lines,
+    e.g. EXTI9_5_IRQn covers lines 5 to 9. STM32WB0 pin interrupts are per port (GPIOA_IRQn)
+    and are not checked.
+    """
+    if family.startswith("STM32WB0"):
+        return
+    covered: set[int] = set()
+    for key, value in raw_map.items():
+        root, _, irq = key.partition(".")
+        match = re.fullmatch(r"EXTI(\d+)(?:_(\d+))?_IRQn", irq)
+        if not root.startswith("NVIC") or match is None:
+            continue
+        if str(value).replace("\\:", ":").split(":")[0] != "true":
+            continue
+        first, last = int(match.group(1)), int(match.group(2) or match.group(1))
+        covered.update(range(min(first, last), max(first, last) + 1))
+    for pin, cfg in pins.items():
+        match = re.fullmatch(r"GPXTI(\d+)", str(cfg.get("Signal", "")))
+        if match is None or int(match.group(1)) in covered:
+            continue
+        line = int(match.group(1))
+        name = f"{pin} ({cfg['Label']})" if cfg.get("Label") else pin
+        name_zh = f"{pin}（{cfg['Label']}）" if cfg.get("Label") else f"{pin} "
+        logging.warning(
+            tr(
+                f"{name} is an external interrupt pin, but no NVIC interrupt of EXTI line {line} "
+                "is enabled; enable it in STM32CubeMX NVIC, or the interrupt goes to "
+                "Default_Handler once EnableInterrupt() is called",
+                f"{name_zh}是外部中断引脚，但 NVIC 中没有开启 EXTI 线 {line} 的中断；请在 "
+                "STM32CubeMX 的 NVIC 中开启，否则调用 EnableInterrupt() 后中断会进入 "
+                "Default_Handler",
             )
         )
 

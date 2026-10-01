@@ -24,9 +24,9 @@ from libxr import generator_code_stm32 as generator
 os.environ["XR_LANG"] = "en"
 
 # 一个 STM32F407 工程的 .ioc 片段：CAN、SPI、PWM、两个 UART（其一带 DMA）、两个 USB 设备、
-# 一个输出 GPIO 和一个外部中断 GPIO。
+# 一个输出 GPIO 和一个外部中断 GPIO（NVIC 中开启了它的中断）。
 # An .ioc excerpt of an STM32F407 project: CAN, SPI, PWM, two UARTs (one with DMA), two USB
-# devices, an output GPIO and an external-interrupt GPIO.
+# devices, an output GPIO and an external-interrupt GPIO with its interrupt enabled in NVIC.
 IOC = textwrap.dedent("""\
     Mcu.Family=STM32F4
     Mcu.Name=STM32F407I(E-G)Hx
@@ -50,6 +50,7 @@ IOC = textwrap.dedent("""\
     Dma.SPI1_RX.2.Instance=DMA2_Stream0
     Dma.USART1_RX.0.Instance=DMA2_Stream5
     Dma.USART1_TX.1.Instance=DMA2_Stream7
+    NVIC.EXTI15_10_IRQn=true\\:5\\:0\\:true\\:false\\:true\\:true\\:true\\:true\\:true
     PA9.Signal=USART1_TX
     PA10.Signal=USART1_RX
     PC6.Signal=USART6_TX
