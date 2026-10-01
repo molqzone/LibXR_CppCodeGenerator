@@ -13,11 +13,11 @@ import tempfile
 import textwrap
 import unittest
 from pathlib import Path
-from unittest.mock import patch
 
 import reference_projects
 from fixtures import IOC, GeneratorTestCase, user_region
 
+from libxr import cli
 from libxr import generator_code_stm32 as generator
 
 
@@ -69,13 +69,9 @@ class EntrySource(GeneratorTestCase):
         self.assertIn("// XROBOT_MAIN(); now follows this region", self.generate(existing=old))
 
     def test_the_removed_container_option_is_an_argument_error(self):
-        argv = ["generator", "-i", "input.yaml", "-o", "app.cpp", "--hw-cntr"]
-        with (
-            patch("sys.argv", argv),
-            contextlib.redirect_stderr(io.StringIO()),
-            self.assertRaises(SystemExit) as error,
-        ):
-            generator.parse_arguments()
+        argv = ["gen", "-i", "input.yaml", "-o", "app.cpp", "--hw-cntr"]
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as error:
+            cli.build_parser().parse_args(argv)
         self.assertEqual(error.exception.code, 2)
 
     def test_user_blocks_are_kept_across_regenerations(self):
@@ -124,15 +120,15 @@ class ReferenceProjects(GeneratorTestCase):
 
 
 class ProjectConfiguration(GeneratorTestCase):
-    """读取 xr_parse_ioc 写出的工程 YAML。
-    Reading the project YAML that xr_parse_ioc writes.
+    """读取 libxr parse 写出的工程 YAML。
+    Reading the project YAML that libxr parse writes.
     """
 
     def test_a_file_without_the_project_sections_is_rejected(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "project.yaml"
             for text, problem in (
-                ("", f"{path} must contain a YAML mapping written by xr_parse_ioc"),
+                ("", f"{path} must contain a YAML mapping written by `libxr parse`"),
                 ("Mcu: {}\nPeripherals: {}\n", "Missing required section: GPIO"),
             ):
                 with self.subTest(text=text):
@@ -510,15 +506,12 @@ LIBXR_CONFIG = textwrap.dedent("""\
     """)
 
 GENERATE = textwrap.dedent("""\
-    import sys
     from unittest.mock import patch
-    from libxr import generator_code_stm32, peripheral_analyzer_stm32
-    with patch('libxr.package_info.LibXRPackageInfo.check_and_print'):
-        sys.argv = ['xr_parse_ioc', '-d', 'project', '-o', 'project/cubemx.yaml']
-        peripheral_analyzer_stm32.main()
-        sys.argv = ['xr_gen_code_stm32', '-i', 'project/cubemx.yaml',
-                    '-o', 'project/User/app_main.cpp', '--xrobot']
-        generator_code_stm32.main()
+    from libxr import cli
+    with patch('libxr.update_notice._latest_version', return_value=None):
+        cli.main(['parse', '-d', 'project', '-o', 'project/cubemx.yaml'])
+        cli.main(['gen', '-i', 'project/cubemx.yaml', '-o', 'project/User/app_main.cpp',
+                  '--xrobot', '-d', 'project'])
     """)
 
 

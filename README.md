@@ -93,60 +93,81 @@ pip install -e .
 
 ---
 
-## 🔧 General 通用命令(跨平台支持)
+## 🔧 命令 / Commands
 
-以下命令适用于所有平台(如 STM32 及未来支持的架构)。
-These commands work across platforms (STM32 and others):
+所有功能都在一个命令 `libxr` 下。`parse` 和 `gen` 与平台无关，按工程所属的平台选择解析器和
+生成器；只属于某个平台的命令放在平台名下，例如 `libxr stm32 setup`。目前支持 STM32
+（含有 STM32CubeMX `.ioc` 文件的目录）。
 
-### `xr_parse`
+All functions are subcommands of one command, `libxr`. `parse` and `gen` are platform-neutral
+and choose the parser and the generator by the platform of the project; commands that belong to
+one platform sit under its name, such as `libxr stm32 setup`. STM32 (a directory holding an
+STM32CubeMX `.ioc` file) is supported so far.
 
-```bash
-xr_parse -d DIRECTORY [xr_parse_ioc options]
-```
+| 命令 Command | 作用 | Purpose |
+| --- | --- | --- |
+| `libxr parse` | 解析工程，写出配置 YAML | Parse a project into the configuration YAML |
+| `libxr gen` | 由配置 YAML 生成 LibXR 代码 | Generate the LibXR code from the configuration YAML |
+| `libxr stm32 setup` | 把 CubeMX 工程配置为使用 LibXR | Set up a CubeMX project for LibXR |
+| `libxr stm32 cubemx-gen` | 以脚本模式运行 CubeMX 生成工程 | Run CubeMX in script mode |
+| `libxr stm32 cmake` | 把 LibXR 接入 CubeMX 的 CMake 工程 | Integrate LibXR into the CubeMX CMake project |
+| `libxr stm32 flash-info` | 打印某个型号的 Flash 布局 | Print the flash layout of a model |
+| `libxr stm32 toolchain` | 切换工具链和 clang 标准库 | Switch the toolchain and the clang standard library |
 
-目录中有 `.ioc` 文件时转发给 `xr_parse_ioc`；目前只支持 STM32 工程。
-Forwards to `xr_parse_ioc` when the directory contains an `.ioc` file; only STM32
-projects are supported so far.
+每个命令运行时在后台查询 PyPI，结束时若有更新的 libxr 就提示升级。
 
-### `xr_gen_code`
+While a command runs, PyPI is queried in the background; a newer libxr is reported when the
+command ends.
 
-```bash
-xr_gen_code -i config.yaml [xr_gen_code_stm32 options]
-```
+### 旧命令 / Old commands
 
-输入文件所在目录有 `.ioc` 文件时转发给 `xr_gen_code_stm32`，否则不做任何事。
-Forwards to `xr_gen_code_stm32` when the input file's directory contains an
-`.ioc` file; otherwise it does nothing.
+6.0.0 之前的 `xr_*` 命令仍可使用：运行时先提示对应的新命令，再以同样的参数执行。旧命令将在
+7.0.0 删除。
+
+The `xr_*` commands of earlier versions still work: they name their new command, then run it
+with the same arguments. They are removed in 7.0.0.
+
+| 旧命令 Old | 新命令 New |
+| --- | --- |
+| `xr_parse`、`xr_parse_ioc` | `libxr parse` |
+| `xr_gen_code`、`xr_gen_code_stm32` | `libxr gen` |
+| `xr_cubemx_cfg` | `libxr stm32 setup` |
+| `xr_cubemx_generate` | `libxr stm32 cubemx-gen` |
+| `xr_stm32_cmake` | `libxr stm32 cmake` |
+| `xr_stm32_flash` | `libxr stm32 flash-info` |
+| `xr_stm32_toolchain_switch` | `libxr stm32 toolchain` |
 
 ### 重新生成 BSP（CI 所用命令）Regenerating a BSP (what CI runs)
 
-XRobot BSP 的 CI 用以下命令重新生成 BSP 对象，并检查结果与提交内容一致：
-XRobot BSP CI regenerates the BSP objects with these commands and checks that the
-result matches the committed files:
+XRobot BSP 的 CI 在工程根目录用以下命令重新生成 BSP 对象，并检查结果与提交内容一致：
+XRobot BSP CI regenerates the BSP objects with these commands in the project root and checks
+that the result matches the committed files:
 
 ```bash
-xr_parse_ioc -d . -o .ci-tools/cubemx.yaml
-xr_gen_code_stm32 -i .ci-tools/cubemx.yaml -o User/app_main.cpp --xrobot --libxr-config User/libxr_config.yaml
+libxr parse -d . -o .ci-tools/cubemx.yaml
+libxr gen -i .ci-tools/cubemx.yaml -o User/app_main.cpp --xrobot --libxr-config User/libxr_config.yaml
 ```
 
 `User/libxr_config.yaml` 顶层可有 `generator:` 键（本工具的发布版本号或 40 位提交 SHA），
-BSP CI 用它安装固定版本的生成器。生成器保留该键及文件中的注释。
+BSP CI 用它安装固定版本的生成器。生成器保留该键及文件中的注释；已安装的版本与之不同时，
+`libxr gen` 给出警告。
 `User/libxr_config.yaml` may contain a top-level `generator:` key (a release
 version or 40-hex commit SHA of this tool) that BSP CI uses to install the pinned
-generator. The generator keeps this key and the file's comments.
+generator. The generator keeps this key and the file's comments, and `libxr gen` warns when
+the installed version differs from it.
 
 ---
 
 ## STM32 工程工具 (STM32 Project Tools)
 
-### `xr_cubemx_cfg`
+### `libxr stm32 setup`
 
 自动配置 STM32CubeMX 工程
 Automatically configures an STM32CubeMX project.
 
 ```bash
-usage: xr_cubemx_cfg [-h] -d DIRECTORY [-t TERMINAL] [--xrobot] [--commit COMMIT] [--git-source GIT_SOURCE]
-                     [--git-mirrors GIT_MIRRORS]
+usage: libxr stm32 setup [-h] -d DIRECTORY [-t TERMINAL] [--xrobot] [--commit COMMIT]
+                         [--git-source GIT_SOURCE] [--git-mirrors GIT_MIRRORS]
 ```
 
 解析 `.ioc` 文件，生成 YAML 和 C++ 驱动代码，补丁中断处理函数，并初始化项目结构
@@ -228,19 +249,19 @@ The chosen source becomes the submodule’s origin remote.
 
 #### 🤖 CubeMX 自动生成说明 (CubeMX Automation Notes)
 
-新的 `xr_cubemx_generate` 入口可以单独使用，只做 CubeMX 脚本模式生成，不执行后续 LibXR 解析和代码生成。
-The new `xr_cubemx_generate` entrypoint can be used standalone when you only want CubeMX script-mode generation.
+`libxr stm32 cubemx-gen` 可以单独使用，只做 CubeMX 脚本模式生成，不执行后续 LibXR 解析和代码生成。
+`libxr stm32 cubemx-gen` can be used on its own when only CubeMX script-mode generation is wanted.
 
 最小脚本模式命令示例 / Minimal example:
 
 ```bash
-xr_cubemx_generate -d . --cubemx-cmd /path/to/STM32CubeMX
+libxr stm32 cubemx-gen -d . --cubemx-cmd /path/to/STM32CubeMX
 ```
 
 Windows 上推荐直接启动 STM32CubeMX.exe / Windows example:
 
 ```powershell
-xr_cubemx_generate -d . `
+libxr stm32 cubemx-gen -d . `
   --cubemx-cmd "$env:LOCALAPPDATA\Programs\STM32CubeMX\STM32CubeMX.exe" `
   --launch-mode direct `
   --auto-confirm `
@@ -262,28 +283,27 @@ Note: CubeMX script mode may still launch the GUI. `--auto-confirm` is a best-ef
 
 - `User/app_main.cpp`、`User/app_main.h`、`User/libxr_config.yaml`、`User/flash_map.hpp`：
 
-  生成的 C++ 代码与配置（见 `xr_gen_code_stm32`）
-  Generated C++ code and configuration (see `xr_gen_code_stm32`)
+  生成的 C++ 代码与配置（见 `libxr gen`）
+  Generated C++ code and configuration (see `libxr gen`)
 
-- `cmake/LibXR.CMake`、`CMakeLists.txt`、`.gitignore`（见 `xr_stm32_cmake`）
-  (see `xr_stm32_cmake`)
+- `cmake/LibXR.CMake`、`CMakeLists.txt`、`.gitignore`（见 `libxr stm32 cmake`）
+  (see `libxr stm32 cmake`)
 
 - 初始化的 Git 仓库及 LibXR 子模块
   Initialized Git repository and LibXR submodule
 
 ---
 
-### `xr_cubemx_generate`
+### `libxr stm32 cubemx-gen`
 
 独立运行 STM32CubeMX 脚本模式生成。
 Run STM32CubeMX script-mode generation as a standalone step.
 
 ```bash
-usage: xr_cubemx_generate [-h] -d DIRECTORY [--ioc IOC] [--cubemx-cmd CUBEMX_CMD]
-                          [--java-cmd JAVA_CMD] [--launch-mode {auto,direct,java}]
-                          [--generate-code-dir GENERATE_CODE_DIR] [--expect-path EXPECT_PATH]
-                          [--log-dir LOG_DIR] [--script-path SCRIPT_PATH] [--keep-script]
-                          [--silent] [--auto-confirm] [--timeout TIMEOUT]
+usage: libxr stm32 cubemx-gen [-h] -d DIRECTORY [--ioc IOC] [--cubemx-cmd CUBEMX_CMD] [--java-cmd JAVA_CMD]
+                              [--launch-mode {auto,direct,java}] [--generate-code-dir GENERATE_CODE_DIR]
+                              [--expect-path EXPECT_PATH] [--log-dir LOG_DIR] [--script-path SCRIPT_PATH]
+                              [--keep-script] [--silent] [--auto-confirm] [--timeout TIMEOUT]
 ```
 
 用途 / Purpose:
@@ -319,13 +339,13 @@ If CI runs CubeMX, it must run in such an already configured desktop environment
 
 ---
 
-### `xr_parse_ioc`
+### `libxr parse`
 
 自动解析 STM32CubeMX 工程配置
 Parses `.ioc` files from STM32CubeMX projects and exports structured YAML.
 
 ```bash
-usage: xr_parse_ioc [-h] -d DIRECTORY [-o OUTPUT] [--verbose]
+usage: libxr parse [-h] -d DIRECTORY [-o OUTPUT] [--verbose]
 ```
 
 解析 `.ioc` 文件为 `.config.yaml`，并在终端输出解析摘要
@@ -360,13 +380,13 @@ Parses `.ioc` files and creates `.config.yaml` with a readable summary.
 
 ---
 
-### `xr_gen_code_stm32`
+### `libxr gen`
 
 根据 YAML 配置生成 STM32 硬件抽象层代码，可选生成 XRobot 集成代码。
 Generates STM32 application code from YAML.
 
 ```bash
-usage: xr_gen_code_stm32 [-h] -i INPUT -o OUTPUT [--xrobot] [--libxr-config LIBXR_CONFIG]
+usage: libxr gen [-h] -i INPUT [-d DIRECTORY] -o OUTPUT [--xrobot] [--libxr-config LIBXR_CONFIG]
 ```
 
 #### 🔧 Required
@@ -423,13 +443,13 @@ usage: xr_gen_code_stm32 [-h] -i INPUT -o OUTPUT [--xrobot] [--libxr-config LIBX
 
 ---
 
-### `xr_stm32_flash`
+### `libxr stm32 flash-info`
 
 解析 STM32 型号，生成 Flash 扇区信息表（YAML 格式输出）。
 Parses STM32 model name and generates flash layout info (YAML output).
 
 ```bash
-usage: xr_stm32_flash <STM32_MODEL>
+usage: libxr stm32 flash-info [-h] model
 ```
 
 ### 🧠 功能说明 (Functionality)
@@ -464,13 +484,13 @@ sectors:
 
 ---
 
-### `xr_stm32_cmake`
+### `libxr stm32 cmake`
 
 为 STM32CubeMX 工程生成 `LibXR.CMake` 配置，并自动集成至 `CMakeLists.txt`。
 Generates `LibXR.CMake` file and injects it into the STM32CubeMX CMake project.
 
 ```bash
-usage: xr_stm32_cmake [-h] input_dir
+usage: libxr stm32 cmake [-h] input_dir
 ```
 
 #### 🔧 必选参数 (Required)
@@ -497,11 +517,11 @@ usage: xr_stm32_cmake [-h] input_dir
   - 添加 `User/*.cpp` 为源文件
     Add `User/*.cpp` to project sources
 
-  - 仅当 `User/app_main.cpp` 由 `xr_gen_code_stm32 --xrobot` 生成时，设置
+  - 仅当 `User/app_main.cpp` 由 `libxr gen --xrobot` 生成时，设置
     `XROBOT_MODULES_DIR` 指向 `Modules/`；纯 LibXR 工程不设置。已存在的 `LibXR.CMake`
     不会被修改，与工程不一致时给出警告。
     Set `XROBOT_MODULES_DIR` to `Modules/` only when `User/app_main.cpp` was
-    generated by `xr_gen_code_stm32 --xrobot`; LibXR-only projects do not set it.
+    generated by `libxr gen --xrobot`; LibXR-only projects do not set it.
     An existing `LibXR.CMake` is not changed; a mismatch is reported as a warning.
 
 - 自动检测是否启用 FreeRTOS：
@@ -570,13 +590,13 @@ usage: xr_stm32_cmake [-h] input_dir
 
 ---
 
-### `xr_stm32_toolchain_switch`
+### `libxr stm32 toolchain`
 
 自动切换 STM32 CMake 工程的工具链及 Clang 标准库配置。
 Automatically switches STM32 CMake toolchain and Clang standard library configuration.
 
 ```bash
-usage: xr_stm32_toolchain_switch {gcc,clang} [-g | --gnu | --hybrid | -n | --newlib | -p | --picolibc]
+usage: libxr stm32 toolchain [-h] [-g | -n | -p] {gcc,clang}
 ```
 
 #### 🔧 必选参数 (Required)
@@ -606,10 +626,10 @@ usage: xr_stm32_toolchain_switch {gcc,clang} [-g | --gnu | --hybrid | -n | --new
 #### 📝 示例 (Examples)
 
 ```bash
-xr_stm32_toolchain_switch gcc
-xr_stm32_toolchain_switch clang -g
-xr_stm32_toolchain_switch clang --newlib
-xr_stm32_toolchain_switch clang --picolibc
+libxr stm32 toolchain gcc
+libxr stm32 toolchain clang -g
+libxr stm32 toolchain clang --newlib
+libxr stm32 toolchain clang --picolibc
 ```
 
 #### 📦 功能说明 (Functionality)
@@ -619,11 +639,11 @@ xr_stm32_toolchain_switch clang --picolibc
 
 - 如使用 Clang，同步修改 `cmake/starm-clang.cmake` 中的默认标准库类型；已有构建目录在下次
   配置/构建时即使用新值。单个构建目录也可用 `-DSTARM_TOOLCHAIN_CONFIG=<profile>` 选择
-  （需先运行 `xr_stm32_cmake`）。
+  （需先运行 `libxr stm32 cmake`）。
   If using Clang, synchronize the default standard library type in
   `cmake/starm-clang.cmake`; existing build directories use the new value on their
   next configure or build. A single build directory can also select a profile with
-  `-DSTARM_TOOLCHAIN_CONFIG=<profile>` (after `xr_stm32_cmake` has run).
+  `-DSTARM_TOOLCHAIN_CONFIG=<profile>` (after `libxr stm32 cmake` has run).
 
 - 在 gcc 与 clang 之间切换会更换编译器，需在新的构建目录中重新配置。
   Switching between gcc and clang changes the compiler; configure a new build

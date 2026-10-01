@@ -1,22 +1,19 @@
 #!/usr/bin/env python3
-"""xr_stm32_toolchain_switch：切换 STM32 CMake 工程默认 preset 的工具链和 starm-clang 的标准库。
-xr_stm32_toolchain_switch: switches the toolchain of the default preset of an STM32 CMake
+"""libxr stm32 toolchain：切换 STM32 CMake 工程默认 preset 的工具链和 starm-clang 的标准库。
+libxr stm32 toolchain: switches the toolchain of the default preset of an STM32 CMake
 project and the standard library of starm-clang.
 
 在工程根目录运行，修改 CMakePresets.json 和 cmake/starm-clang.cmake。
 Run in the project root; it edits CMakePresets.json and cmake/starm-clang.cmake.
 """
 
-import argparse
 import json
 import logging
 import os
 import re
 import sys
 
-from xr_syntax.i18n import localize_argparse, tr
-
-from libxr.output import configure_output
+from xr_syntax.i18n import tr
 
 # 路径和常量
 # Paths and constants
@@ -146,77 +143,28 @@ def patch_clang_stdlib(starm_config):
     logging.info(tr(f"{cmake_file} updated.", f"已更新 {cmake_file}。"))
 
 
-def main():
-    """xr_stm32_toolchain_switch 命令行入口。
-    Command-line entry of xr_stm32_toolchain_switch.
+def switch_toolchain(compiler: str, std: str | None = None) -> None:
+    """把默认 preset 切换到 compiler（gcc 或 clang）；clang 同时按 std 切换标准库。
+    Switch the default preset to compiler (gcc or clang); for clang, also switch the standard
+    library to std.
 
-    gcc 不接受标准库选项，只切换工具链；clang 必须带 -g、-n、-p 之一，同时切换工具链和
-    STARM_TOOLCHAIN_CONFIG。选项组合错误时打印用法并以状态 1 退出。
-    gcc takes no standard library option and only switches the toolchain; clang needs one of
-    -g, -n and -p and switches both the toolchain and STARM_TOOLCHAIN_CONFIG. A wrong option
-    combination prints the usage and exits with status 1.
+    gcc 不接受标准库选项，clang 必须给出 std（hybrid、newlib 或 picolibc）；组合错误时记录错误并
+    以状态 1 退出。
+    gcc takes no standard library and clang needs std (hybrid, newlib or picolibc); a wrong
+    combination logs an error and exits with status 1.
     """
-    configure_output()
-    localize_argparse()
-    examples = (
-        "  xr_stm32_toolchain_switch gcc\n"
-        "  xr_stm32_toolchain_switch clang -g\n"
-        "  xr_stm32_toolchain_switch clang --newlib\n"
-        "  xr_stm32_toolchain_switch clang --picolibc"
-    )
-    parser = argparse.ArgumentParser(
-        description=tr(
-            "Switch STM32 toolchain and clang standard library.\nUsage examples:\n" + examples,
-            "切换 STM32 工具链和 clang 标准库。\n用法示例：\n" + examples,
-        ),
-        formatter_class=argparse.RawTextHelpFormatter,
-    )
-    parser.add_argument(
-        "compiler",
-        choices=["gcc", "clang"],
-        help=tr("Compiler (gcc or clang)", "编译器（gcc 或 clang）"),
-    )
-    group = parser.add_mutually_exclusive_group()
-    group.add_argument(
-        "-g",
-        "--gnu",
-        "--hybrid",
-        dest="std",
-        action="store_const",
-        const="hybrid",
-        help=tr("Use GNU(Hybrid) standard library", "使用 GNU（Hybrid）标准库"),
-    )
-    group.add_argument(
-        "-n",
-        "--newlib",
-        dest="std",
-        action="store_const",
-        const="newlib",
-        help=tr("Use newlib standard library", "使用 newlib 标准库"),
-    )
-    group.add_argument(
-        "-p",
-        "--picolibc",
-        dest="std",
-        action="store_const",
-        const="picolibc",
-        help=tr("Use picolibc standard library", "使用 picolibc 标准库"),
-    )
-    args = parser.parse_args()
-    compiler = args.compiler
     if compiler == "gcc":
-        if args.std:
+        if std:
             logging.error(
                 tr(
                     "Standard library option (-g/-n/-p) cannot be used with gcc!",
                     "gcc 不能使用标准库选项（-g/-n/-p）！",
                 )
             )
-            parser.print_usage()
             sys.exit(1)
         patch_cmakepresets("gcc")
     elif compiler == "clang":
-        if not args.std:
+        if not std:
             logging.error(
                 tr(
                     "Standard library option required for clang: -g/--gnu/--hybrid, "
@@ -224,13 +172,13 @@ def main():
                     "clang 需要标准库选项：-g/--gnu/--hybrid、-n/--newlib、-p/--picolibc",
                 )
             )
-            parser.print_usage()
             sys.exit(1)
-        starm_config = STD_MAP[args.std]
         patch_cmakepresets("clang")
-        patch_clang_stdlib(starm_config)
+        patch_clang_stdlib(STD_MAP[std])
     logging.info(tr("Done.", "完成。"))
 
 
 if __name__ == "__main__":
-    main()
+    from libxr.cli import legacy
+
+    raise SystemExit(legacy("xr_stm32_toolchain_switch"))

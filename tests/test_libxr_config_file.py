@@ -10,7 +10,6 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
 
 import yaml
 from fixtures import GeneratorTestCase
@@ -135,12 +134,10 @@ class LibXRConfigFile(GeneratorTestCase):
 
     def test_bare_output_file_name_writes_into_current_directory(self):
         (self.directory / "input.yaml").write_text(yaml.safe_dump(PROJECT), encoding="utf-8")
-        argv = ["xr_gen_code_stm32", "-i", "input.yaml", "-o", "app_main.cpp"]
         previous = Path.cwd()
         os.chdir(self.directory)
         self.addCleanup(os.chdir, previous)
-        with patch("sys.argv", argv), patch("libxr.package_info.LibXRPackageInfo.check_and_print"):
-            generator.main()
+        generator.generate("input.yaml", "app_main.cpp")
         for name in ("app_main.cpp", "app_main.h", "libxr_config.yaml", "flash_map.hpp"):
             self.assertTrue((self.directory / name).is_file(), name)
 
@@ -150,14 +147,8 @@ class LibXRConfigFile(GeneratorTestCase):
         output.parent.mkdir()
         broken = "Terminal: [unclosed\n"
         (output.parent / "libxr_config.yaml").write_text(broken, encoding="utf-8")
-        argv = ["xr_gen_code_stm32", "-i", str(self.directory / "input.yaml"), "-o", str(output)]
-        with (
-            patch("sys.argv", argv),
-            patch("libxr.package_info.LibXRPackageInfo.check_and_print"),
-            contextlib.redirect_stderr(io.StringIO()),
-            self.assertRaises(SystemExit) as error,
-        ):
-            generator.main()
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as error:
+            generator.generate(str(self.directory / "input.yaml"), str(output))
         self.assertEqual(error.exception.code, 1)
         self.assertEqual(sorted(p.name for p in output.parent.iterdir()), ["libxr_config.yaml"])
         self.assertEqual((output.parent / "libxr_config.yaml").read_text(encoding="utf-8"), broken)

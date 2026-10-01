@@ -13,55 +13,48 @@ commands produce. When the output changes on purpose, run this file to refresh e
 review the difference line by line.
 """
 
-import contextlib
-import io
 import shutil
-import sys
 from pathlib import Path
-from unittest import mock
 
-from libxr import generator_code_stm32, peripheral_analyzer_stm32
+from fixtures import run_libxr
 
 DATA = Path(__file__).resolve().parent / "data"
 PROJECTS = ("devc", "mc02", "opencr", "f103")
 GENERATED = ("app_main.cpp", "app_main.h", "flash_map.hpp", "libxr_config.yaml")
 
 
-def _run(main, argv):
-    """以 argv 运行一个命令入口，不检查新版本，屏蔽标准输出。
-    Run a command entry with argv, without the version check and with stdout suppressed.
+def _run(*argv):
+    """以这些参数运行 libxr 命令；失败时抛出带标准错误的 AssertionError。
+    Run the libxr command with these arguments; a failure raises an AssertionError with stderr.
     """
-    with (
-        mock.patch.object(sys, "argv", argv),
-        mock.patch("libxr.package_info.LibXRPackageInfo.check_and_print"),
-        contextlib.redirect_stdout(io.StringIO()),
-    ):
-        main()
+    code, _, err = run_libxr(*argv)
+    assert code == 0, err
 
 
 def parse(name, directory):
-    """在 directory 中对工程 name 运行 xr_parse_ioc，返回写出的 cubemx.yaml。
-    Run xr_parse_ioc for project name in directory; return the cubemx.yaml it writes.
+    """在 directory 中对工程 name 运行 libxr parse，返回写出的 cubemx.yaml。
+    Run libxr parse for project name in directory; return the cubemx.yaml it writes.
     """
     directory.mkdir(parents=True, exist_ok=True)
     shutil.copy(DATA / name / "project.ioc", directory / "project.ioc")
     output = directory / "cubemx.yaml"
-    _run(peripheral_analyzer_stm32.main, ["xr_parse_ioc", "-d", str(directory), "-o", str(output)])
+    _run("parse", "-d", str(directory), "-o", str(output))
     return output
 
 
 def generate(name, cubemx_yaml, directory):
-    """以 cubemx_yaml 和工程 name 的 libxr_config.yaml 运行 xr_gen_code_stm32 --xrobot，返回
+    """以 cubemx_yaml 和工程 name 的 libxr_config.yaml 运行 libxr gen --xrobot，返回
     User/ 目录。
-    Run xr_gen_code_stm32 --xrobot with cubemx_yaml and the libxr_config.yaml of project name;
+    Run libxr gen --xrobot with cubemx_yaml and the libxr_config.yaml of project name;
     return the User/ folder.
     """
     user = directory / "User"
     user.mkdir(parents=True, exist_ok=True)
     config = user / "libxr_config.yaml"
     shutil.copy(DATA / name / "libxr_config.yaml", config)
-    argv = ["xr_gen_code_stm32", "-i", str(cubemx_yaml), "-o", str(user / "app_main.cpp")]
-    _run(generator_code_stm32.main, argv + ["--xrobot", "--libxr-config", str(config)])
+    output = str(user / "app_main.cpp")
+    options = ["--xrobot", "--libxr-config", str(config), "-d", str(DATA / name)]
+    _run("gen", "-i", str(cubemx_yaml), "-o", output, *options)
     return user
 
 

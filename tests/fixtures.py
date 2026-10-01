@@ -8,12 +8,15 @@ module-level registries and settings.
 
 import contextlib
 import importlib
+import io
 import os
 import textwrap
 import unittest
+from unittest import mock
 
 from xr_syntax.cpp import CppDocument
 
+from libxr import cli
 from libxr import generator_code_stm32 as generator
 
 # 测试断言英文输出；中文输出的测试自己设置 XR_LANG。
@@ -69,6 +72,24 @@ IOC = textwrap.dedent("""\
     USB_OTG_HS.IPParameters=VirtualMode-Device_Only_FS
     USB_OTG_HS.VirtualMode-Device_Only_FS=Device_Only_FS
     """)
+
+
+def run_libxr(*argv):
+    """以这些参数运行 libxr 命令（不查询 PyPI），返回退出码、标准输出和标准错误。
+    Run the libxr command with these arguments, without querying PyPI; return the exit code,
+    stdout and stderr.
+    """
+    out, err = io.StringIO(), io.StringIO()
+    with (
+        mock.patch("libxr.update_notice._latest_version", return_value=None),
+        contextlib.redirect_stdout(out),
+        contextlib.redirect_stderr(err),
+    ):
+        try:
+            code = cli.main(list(argv))
+        except SystemExit as exit:
+            code = exit.code
+    return code, out.getvalue(), err.getvalue()
 
 
 def user_region(code, name):

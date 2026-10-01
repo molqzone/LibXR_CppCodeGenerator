@@ -2,8 +2,8 @@
 Write the current commit of the master branch of the remote xrobot-org/libxr repository into
 src/libxr/libxr_version.py.
 
-生成的文件只含 LibXRInfo.COMMIT，xr_cubemx_cfg 以它作为 LibXR 的默认 commit。
-The generated file holds only LibXRInfo.COMMIT, which xr_cubemx_cfg uses as the default LibXR
+生成的文件只含 LibXRInfo.COMMIT，libxr stm32 setup 以它作为 LibXR 的默认 commit。
+The generated file holds only LibXRInfo.COMMIT, which libxr stm32 setup uses as the default LibXR
 commit.
 """
 

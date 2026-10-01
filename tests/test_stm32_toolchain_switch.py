@@ -1,6 +1,6 @@
-"""ST Arm Clang 运行库配置（libxr.stm32_toolchain_switch）：-D 选择和 xr_stm32_toolchain_switch。
+"""ST Arm Clang 运行库配置（libxr.stm32_toolchain_switch）：-D 选择和 libxr stm32 toolchain。
 The ST Arm Clang runtime profile (libxr.stm32_toolchain_switch): -D selection and
-xr_stm32_toolchain_switch.
+libxr stm32 toolchain.
 """
 
 import contextlib
@@ -33,8 +33,8 @@ CUBEMX_STARM = textwrap.dedent("""\
     endif()
     """)
 
-# 早期版本的 xr_stm32_cmake 改写后的同一段。
-# The same section as earlier xr_stm32_cmake versions rewrote it.
+# 早期版本的 xr_stm32_cmake（libxr stm32 cmake）改写后的同一段。
+# The same section as earlier xr_stm32_cmake (libxr stm32 cmake) versions rewrote it.
 CACHED_STARM = CUBEMX_STARM.replace(
     'set(STARM_TOOLCHAIN_CONFIG "STARM_PICOLIBC")\n\n',
     'set(STARM_TOOLCHAIN_CONFIG "STARM_PICOLIBC" CACHE STRING "ST Arm Clang runtime profile")\n'
@@ -44,8 +44,8 @@ CACHED_STARM = CUBEMX_STARM.replace(
 
 
 class StarmProfile(TestCase):
-    """xr_stm32_cmake 规范化运行库配置行，xr_stm32_toolchain_switch 只改写这一行。
-    xr_stm32_cmake normalizes the profile line, and xr_stm32_toolchain_switch rewrites only
+    """libxr stm32 cmake 规范化运行库配置行，libxr stm32 toolchain 只改写这一行。
+    libxr stm32 cmake normalizes the profile line, and libxr stm32 toolchain rewrites only
     that line.
     """
 

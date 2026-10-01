@@ -1,17 +1,11 @@
-"""xr_stm32_flash（libxr.stm32_flash_generator）：按型号输出 Flash 布局。
-xr_stm32_flash (libxr.stm32_flash_generator): print the flash layout of a model.
+"""libxr stm32 flash-info（libxr.stm32_flash_generator）：按型号输出 Flash 布局。
+libxr stm32 flash-info (libxr.stm32_flash_generator): print the flash layout of a model.
 """
 
-import contextlib
-import io
-import sys
 import unittest
-from unittest import mock
 
 import yaml
-from fixtures import TestCase
-
-from libxr import stm32_flash_generator
+from fixtures import TestCase, run_libxr
 
 
 class CommandLine(TestCase):
@@ -20,22 +14,10 @@ class CommandLine(TestCase):
     """
 
     def run_flash(self, *argv):
-        """以这些参数运行 xr_stm32_flash，返回退出码、标准输出和标准错误。
-        Run xr_stm32_flash with these arguments; return the exit code, stdout and stderr.
+        """以这些参数运行 libxr stm32 flash-info，返回退出码、标准输出和标准错误。
+        Run libxr stm32 flash-info with these arguments; return the exit code, stdout and stderr.
         """
-        out, err = io.StringIO(), io.StringIO()
-        with (
-            mock.patch.object(sys, "argv", ["xr_stm32_flash", *argv]),
-            mock.patch("libxr.package_info.LibXRPackageInfo.check_and_print"),
-            contextlib.redirect_stdout(out),
-            contextlib.redirect_stderr(err),
-        ):
-            try:
-                stm32_flash_generator.main()
-                code = 0
-            except SystemExit as exit:
-                code = exit.code
-        return code, out.getvalue(), err.getvalue()
+        return run_libxr("stm32", "flash-info", *argv)
 
     def test_the_layout_is_yaml_on_stdout(self):
         code, out, err = self.run_flash("stm32f103c8t6")
@@ -49,10 +31,11 @@ class CommandLine(TestCase):
     def test_help_and_wrong_usage(self):
         code, out, err = self.run_flash("--help")
         self.assertEqual((code, err), (0, ""))
-        self.assertTrue(out.startswith("STM32 Flash Information Tool\nUsage:\n"))
+        self.assertTrue(out.startswith("usage: libxr stm32 flash-info [-h] model\n"), out)
+        self.assertIn("libxr stm32 flash-info STM32F103C8T6", out)
         code, out, err = self.run_flash()
-        self.assertEqual((code, out), (1, ""))
-        self.assertTrue(err.startswith("STM32 Flash Information Tool\nUsage:\n"))
+        self.assertEqual((code, out), (2, ""))
+        self.assertTrue(err.startswith("usage: libxr stm32 flash-info [-h] model\n"), err)
 
     def test_errors_go_to_stderr(self):
         for model, reason in (

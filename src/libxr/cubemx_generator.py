@@ -10,7 +10,6 @@ An ST account login dialog stops the generation with an error; login is not auto
 
 from __future__ import annotations
 
-import argparse
 import contextlib
 import ctypes
 import logging
@@ -25,9 +24,7 @@ import time
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 
-from xr_syntax.i18n import localize_argparse, tr
-
-from libxr.output import configure_output
+from xr_syntax.i18n import tr
 
 LOGGER = logging.getLogger(__name__)
 
@@ -1706,142 +1703,7 @@ def generate_cubemx_project(
     return result
 
 
-def main() -> None:
-    """xr_cubemx_generate 命令入口：解析命令行参数并调用 generate_cubemx_project；出错时记录错误并
-    以退出码 1 结束。
-    Entry point of xr_cubemx_generate: parse the command line and call generate_cubemx_project;
-    on an error, log it and exit with code 1.
-    """
-    configure_output()
-    localize_argparse()
-
-    parser = argparse.ArgumentParser(
-        description=tr(
-            "Generate STM32CubeMX projects in script mode", "以脚本模式运行 STM32CubeMX 生成工程"
-        )
-    )
-    parser.add_argument(
-        "-d",
-        "--directory",
-        required=True,
-        help=tr("Directory containing the CubeMX .ioc file", "含有 CubeMX .ioc 文件的目录"),
-    )
-    parser.add_argument(
-        "--ioc",
-        default="",
-        help=tr(
-            "Explicit .ioc file path (defaults to the first .ioc in --directory)",
-            ".ioc 文件路径（默认：--directory 中的第一个 .ioc 文件）",
-        ),
-    )
-    parser.add_argument(
-        "--cubemx-cmd",
-        default="",
-        help=tr("STM32CubeMX executable path", "STM32CubeMX 可执行文件路径"),
-    )
-    parser.add_argument(
-        "--java-cmd",
-        default="",
-        help=tr(
-            "Java executable path for -jar launch mode",
-            "java -jar 启动方式使用的 Java 可执行文件路径",
-        ),
-    )
-    parser.add_argument(
-        "--launch-mode",
-        choices=("auto", "direct", "java"),
-        default="auto",
-        help=tr(
-            "CubeMX launch mode (default: auto; .jar uses java -jar, executables launch directly)",
-            "CubeMX 启动方式（默认：auto；.jar 用 java -jar 启动，可执行文件直接启动）",
-        ),
-    )
-    parser.add_argument(
-        "--generate-code-dir",
-        default="",
-        help=tr(
-            "Use 'generate code <dir>' instead of 'project generate'",
-            "用 'generate code <dir>' 代替 'project generate'",
-        ),
-    )
-    parser.add_argument(
-        "--expect-path",
-        action="append",
-        default=None,
-        help=tr(
-            "Path that must exist after generation (default: Core/Inc and Drivers)",
-            "生成后必须存在的路径（默认：Core/Inc 和 Drivers）",
-        ),
-    )
-    parser.add_argument(
-        "--log-dir",
-        default="",
-        help=tr(
-            "Optional directory for command/script/stdout/stderr logs",
-            "存放命令、脚本、标准输出和标准错误日志的目录（可选）",
-        ),
-    )
-    parser.add_argument(
-        "--script-path",
-        default="",
-        help=tr(
-            "Optional path for the generated CubeMX script file",
-            "生成的 CubeMX 脚本文件的路径（可选）",
-        ),
-    )
-    parser.add_argument(
-        "--keep-script",
-        action="store_true",
-        help=tr(
-            "Keep the generated CubeMX script in the project directory",
-            "在工程目录中保留生成的 CubeMX 脚本",
-        ),
-    )
-    parser.add_argument(
-        "--silent",
-        action="store_true",
-        help=tr("Pass -s to STM32CubeMX", "向 STM32CubeMX 传入 -s"),
-    )
-    parser.add_argument(
-        "--auto-confirm",
-        action="store_true",
-        help=tr(
-            "Attempt to auto-confirm migration/license/download dialogs",
-            "尝试自动确认迁移、许可和下载对话框",
-        ),
-    )
-    parser.add_argument(
-        "--timeout",
-        type=int,
-        default=1200,
-        help=tr(
-            "CubeMX process timeout in seconds (default: 1200)",
-            "CubeMX 进程的超时时间，单位为秒（默认：1200）",
-        ),
-    )
-
-    args = parser.parse_args()
-
-    try:
-        generate_cubemx_project(
-            project_dir=args.directory,
-            ioc_file=args.ioc,
-            cubemx_cmd=args.cubemx_cmd,
-            java_cmd=args.java_cmd,
-            launch_mode=args.launch_mode,
-            generate_code_dir=args.generate_code_dir,
-            expect_paths=args.expect_path,
-            log_dir=args.log_dir,
-            script_path=args.script_path,
-            keep_script=args.keep_script,
-            silent=args.silent,
-            auto_confirm=args.auto_confirm,
-            timeout=args.timeout,
-        )
-    except Exception as error:
-        LOGGER.error(error)
-        sys.exit(1)
-
-
 if __name__ == "__main__":
-    main()
+    from libxr.cli import legacy
+
+    raise SystemExit(legacy("xr_cubemx_generate"))

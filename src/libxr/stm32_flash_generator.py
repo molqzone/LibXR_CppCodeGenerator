@@ -1,5 +1,6 @@
-"""xr_stm32_flash：由 STM32 型号推算内部 Flash 容量和擦除扇区布局。
-xr_stm32_flash: derive the internal flash size and erase sector layout of an STM32 model.
+"""libxr stm32 flash-info：由 STM32 型号推算内部 Flash 容量和擦除扇区布局。
+libxr stm32 flash-info: derive the internal flash size and erase sector layout of an STM32
+model.
 
 容量取自型号中的容量代码；扇区布局按 STM32FlashLayoutRules.xml 中第一条匹配的规则生成。
 The size comes from the capacity code in the model; the sector layout follows the first matching
@@ -562,49 +563,27 @@ def _local_name(tag: str) -> str:
     return tag.split("}", 1)[-1]
 
 
-def main():
-    """xr_stm32_flash 命令入口：检查型号格式，以 YAML 输出 Flash 布局。
-    Entry point of xr_stm32_flash: check the model format and print the flash layout as YAML.
-
-    参数个数不对时打印用法并以退出码 1 结束；处理失败时打印原因和调用栈并以退出码 2 结束。
-    A wrong argument count prints the usage and exits with code 1; a failure prints the reason
-    and the stack trace and exits with code 2.
+def _valid_model(model: str) -> bool:
+    """型号不含 '-'、以 STM32 开头且长度超过 8 个字符时为 True。
+    True when the model has no '-', starts with STM32 and is longer than 8 characters.
     """
-    from libxr.output import configure_output
-    from libxr.package_info import LibXRPackageInfo
+    return "-" not in model and model.upper().startswith("STM32") and len(model) > 8
 
-    configure_output()
-    LibXRPackageInfo.check_and_print()
 
-    def validate_model(model: str) -> bool:
-        """型号不含 '-'、以 STM32 开头且长度超过 8 个字符时为 True。
-        True when the model has no '-', starts with STM32 and is longer than 8 characters.
-        """
-        return "-" not in model and model.upper().startswith("STM32") and len(model) > 8
+def print_flash_info(model: str) -> None:
+    """检查型号格式，以 YAML 向标准输出打印 Flash 布局。
+    Check the model format and print the flash layout as YAML to standard output.
 
-    usage = "\n".join(
-        [
-            tr("STM32 Flash Information Tool", "STM32 Flash 信息工具"),
-            tr("Usage:", "用法："),
-            "  xr_stm32_flash <STM32_MODEL>",
-            tr("\nExamples:", "\n示例："),
-            "  xr_stm32_flash STM32F103C8T6",
-            "  xr_stm32_flash STM32L476RG",
-        ]
-    )
-    if sys.argv[1:] in (["-h"], ["--help"]):
-        print(usage)
-        return
-    if len(sys.argv) != 2:
-        print(usage, file=sys.stderr)
-        sys.exit(1)
-
-    model = sys.argv[1].strip().upper()
+    型号无效或无法推算布局时，把原因写到标准错误并以退出码 2 结束。
+    An invalid model or one whose layout cannot be derived writes the reason to standard error
+    and exits with code 2.
+    """
+    model = model.strip().upper()
 
     # YAML 写到标准输出；报错写到标准错误，不会混进 YAML。
     # The YAML goes to stdout and errors go to stderr, so they never mix.
     try:
-        if not validate_model(model):
+        if not _valid_model(model):
             raise ValueError(
                 tr(f"Invalid STM32 model format: {model}", f"STM32 型号格式无效：{model}")
             )
@@ -626,4 +605,6 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    from libxr.cli import legacy
+
+    raise SystemExit(legacy("xr_stm32_flash"))

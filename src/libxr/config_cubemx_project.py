@@ -1,23 +1,22 @@
 #!/usr/bin/env python
 
-"""xr_cubemx_cfg：把 STM32CubeMX 工程配置为使用 LibXR 的工程。
-xr_cubemx_cfg: set up an STM32CubeMX project to use LibXR.
+"""libxr stm32 setup：把 STM32CubeMX 工程配置为使用 LibXR 的工程。
+libxr stm32 setup: set up an STM32CubeMX project to use LibXR.
 
 依次加入 LibXR 子模块（Middlewares/Third_Party/LibXR），创建 .gitignore 和 User 目录，记录终端设备，
-再调用 xr_parse_ioc、xr_gen_code_stm32 和 xr_stm32_cmake 生成配置、C++ 代码和 CMakeLists.txt。
+再像 libxr parse、libxr gen 和 libxr stm32 cmake 一样生成配置、C++ 代码和 CMakeLists.txt。
 In order it adds the LibXR submodule (Middlewares/Third_Party/LibXR), creates .gitignore and the
-User directory, records the terminal device, then runs xr_parse_ioc, xr_gen_code_stm32 and
-xr_stm32_cmake to produce the configuration, the C++ code and CMakeLists.txt.
+User directory, records the terminal device, then produces the configuration, the C++ code and
+CMakeLists.txt as libxr parse, libxr gen and libxr stm32 cmake do.
 """
 
-import argparse
 import logging
 import os
 import shlex
 import subprocess
 import sys
 
-from xr_syntax.i18n import localize_argparse, tr
+from xr_syntax.i18n import tr
 
 DEFAULT_MIRRORS = [
     "https://gitee.com/jiu-xiao/libxr",
@@ -441,11 +440,11 @@ def add_libxr(
                     tr(
                         f"LibXR checkout {current_commit[:12]} is {relation} this generator's "
                         f"default {default_libxr_commit[:12]}; it was left unchanged. To switch, "
-                        f"run xr_cubemx_cfg with --commit {default_libxr_commit} (or check out "
+                        f"run `libxr stm32 setup` with --commit {default_libxr_commit} (or check out "
                         "the commit in Middlewares/Third_Party/LibXR) and commit the gitlink.",
                         f"LibXR 的检出 {current_commit[:12]} {relation}本生成器的默认提交 "
                         f"{default_libxr_commit[:12]}，未做改动。如需切换，请用 --commit "
-                        f"{default_libxr_commit} 运行 xr_cubemx_cfg（或在 "
+                        f"{default_libxr_commit} 运行 `libxr stm32 setup`（或在 "
                         "Middlewares/Third_Party/LibXR 中检出该提交），然后提交 gitlink。",
                     )
                 )
@@ -473,9 +472,9 @@ def set_terminal_source(user_path, terminal_source):
     Record the -t/--terminal device as terminal_source in User/libxr_config.yaml, creating the
     file when it does not exist.
 
-    xr_gen_code_stm32 从这个文件读取终端设备，所以之后重新生成时沿用该设置；文件中的其他键和
+    libxr gen 从这个文件读取终端设备，所以之后重新生成时沿用该设置；文件中的其他键和
     注释保持不变。文件无法按 LibXR 配置读取时记录错误并以退出码 1 结束。
-    xr_gen_code_stm32 reads the terminal device from this file, so the choice persists for later
+    libxr gen reads the terminal device from this file, so the choice persists for later
     regenerations. Other keys and comments are kept. A file that cannot be read as a LibXR
     configuration logs an error and exits with code 1.
     """
@@ -498,45 +497,6 @@ def set_terminal_source(user_path, terminal_source):
             f"已在 {config_path} 中把 terminal_source 设为 {terminal_source}",
         )
     )
-
-
-def process_ioc_file(project_dir, yaml_output):
-    """调用 xr_parse_ioc 解析工程目录中的 .ioc 文件，把 YAML 配置写到 yaml_output。
-    Run xr_parse_ioc to parse the .ioc file of the project and write the YAML configuration to
-    yaml_output.
-    """
-    logging.info(tr("Parsing .ioc file...", "正在解析 .ioc 文件……"))
-    run_command(
-        [
-            sys.executable,
-            "-m",
-            "libxr.peripheral_analyzer_stm32",
-            "-d",
-            project_dir,
-            "-o",
-            yaml_output,
-        ]
-    )
-
-
-def generate_cpp_code(yaml_output, cpp_output, xrobot_enable=False):
-    """调用 xr_gen_code_stm32，根据 YAML 配置把 C++ 代码生成到 cpp_output；xrobot_enable 时
-    加 --xrobot。
-    Run xr_gen_code_stm32 to generate C++ code from the YAML configuration into cpp_output, with
-    --xrobot when xrobot_enable is set.
-    """
-    logging.info(tr("Generating C++ code...", "正在生成 C++ 代码……"))
-    cmd = [sys.executable, "-m", "libxr.generator_code_stm32", "-i", yaml_output, "-o", cpp_output]
-    if xrobot_enable:
-        cmd.append("--xrobot")
-    run_command(cmd)
-
-
-def generate_cmake_file(project_dir):
-    """调用 xr_stm32_cmake 为工程生成 CMakeLists.txt。
-    Run xr_stm32_cmake to generate the CMakeLists.txt of the project.
-    """
-    run_command([sys.executable, "-m", "libxr.generator_stm32_cmake", project_dir])
 
 
 def _friendly_path_name(path: str) -> str:
@@ -567,74 +527,31 @@ def ensure_valid_cubemx_project(path: str):
         sys.exit(1)
 
 
-def main():
-    """xr_cubemx_cfg 命令入口：选择 Git 源，加入 LibXR 子模块，再生成配置、C++ 代码和
-    CMakeLists.txt。
-    Entry point of xr_cubemx_cfg: choose the Git source, add the LibXR submodule, then generate
-    the configuration, the C++ code and CMakeLists.txt.
+def setup_project(
+    project_dir: str,
+    terminal_source: str = "",
+    xrobot_enable: bool = False,
+    commit: str = "",
+    git_source: str = "auto",
+    git_mirrors: str = "",
+) -> None:
+    """选择 Git 源，加入 LibXR 子模块，再生成配置、C++ 代码和 CMakeLists.txt。
+    Choose the Git source, add the LibXR submodule, then generate the configuration, the C++ code
+    and CMakeLists.txt.
 
-    未给出 --commit 时以 libxr_version.py 中锁定的 commit 为默认值。--git-source 为 auto 时，
-    在 GitHub、内置镜像、XR_GIT_MIRRORS 和 --git-mirrors 中选出响应最快的源。
-    Without --commit, the commit locked in libxr_version.py is the default. With --git-source
-    auto, the fastest of GitHub, the built-in mirror, XR_GIT_MIRRORS and --git-mirrors is chosen.
+    commit 为空时以 libxr_version.py 中锁定的 commit 为默认值。git_source 为 auto 时，在 GitHub、
+    内置镜像、XR_GIT_MIRRORS 和 git_mirrors（逗号分隔）中选出响应最快的源。
+    With an empty commit, the commit locked in libxr_version.py is the default. With git_source
+    auto, the fastest of GitHub, the built-in mirror, XR_GIT_MIRRORS and git_mirrors
+    (comma-separated) is chosen.
     """
-    from libxr.output import configure_output
-    from libxr.package_info import LibXRPackageInfo
+    from libxr.generator_code_stm32 import generate
+    from libxr.generator_stm32_cmake import integrate
+    from libxr.peripheral_analyzer_stm32 import parse_project
 
-    configure_output()
-    LibXRPackageInfo.check_and_print()
+    project_dir = project_dir.rstrip("/")
 
-    localize_argparse()
-    parser = argparse.ArgumentParser(
-        description=tr("Automate STM32CubeMX project setup", "自动配置 STM32CubeMX 工程")
-    )
-    parser.add_argument(
-        "-d",
-        "--directory",
-        required=True,
-        help=tr("STM32CubeMX project directory", "STM32CubeMX 工程目录"),
-    )
-    parser.add_argument(
-        "-t",
-        "--terminal",
-        default="",
-        help=tr(
-            "Terminal device (e.g. usart1, usb_fs_cdc); stored as "
-            "terminal_source in User/libxr_config.yaml",
-            "终端设备（例如 usart1、usb_fs_cdc），记录为 User/libxr_config.yaml 中的 "
-            "terminal_source",
-        ),
-    )
-    parser.add_argument("--xrobot", action="store_true", help=tr("Support XRobot", "支持 XRobot"))
-    parser.add_argument(
-        "--commit",
-        default="",
-        help=tr("Specify locked LibXR commit hash", "指定锁定的 LibXR 提交哈希"),
-    )
-    parser.add_argument(
-        "--git-source",
-        default="auto",
-        help=tr(
-            "Git source base URL or full repo URL, or 'auto'/'github' (default: auto)",
-            "Git 源的基础地址或完整仓库地址，或 'auto'/'github'（默认：auto）",
-        ),
-    )
-    parser.add_argument(
-        "--git-mirrors",
-        default="",
-        help=tr(
-            "Comma-separated mirror base/repo URLs (will be tried when --git-source=auto)",
-            "以逗号分隔的镜像基础地址或仓库地址（--git-source=auto 时参与选择）",
-        ),
-    )
-
-    args = parser.parse_args()
-
-    project_dir = args.directory.rstrip("/")
-    terminal_source = args.terminal
-    xrobot_enable = bool(args.xrobot)
-
-    libxr_commit = args.commit.strip()
+    libxr_commit = commit.strip()
     default_libxr_commit = ""
     if not libxr_commit:
         try:
@@ -674,21 +591,21 @@ def main():
     # 选择 Git 源（auto 时对默认源和镜像测速）。
     # Select Git source (auto benchmarks default and mirrors)
     env_mirrors = os.environ.get("XR_GIT_MIRRORS", "")
-    cli_mirrors = [m for m in args.git_mirrors.split(",") if m.strip()]
+    cli_mirrors = [m for m in git_mirrors.split(",") if m.strip()]
     all_mirrors = (
         DEFAULT_MIRRORS
         + [m.strip() for m in (env_mirrors.split(",") if env_mirrors else []) if m.strip()]
         + cli_mirrors
     )
 
-    if args.git_source == "auto":
+    if git_source == "auto":
         git_base = pick_git_base(
             default_base="https://github.com", mirrors=all_mirrors, timeout=5.0
         )
-    elif args.git_source == "github":
+    elif git_source == "github":
         git_base = "https://github.com"
     else:
-        git_base = args.git_source
+        git_base = git_source
     logging.info(tr(f"Selected Git base/repo: {git_base}", f"选用的 Git 源：{git_base}"))
 
     # 需要时加入 Git 子模块。
@@ -725,20 +642,18 @@ def main():
     if terminal_source:
         set_terminal_source(user_path, terminal_source)
 
-    # 处理 .ioc 文件。
-    # Process .ioc file
-    process_ioc_file(project_dir, yaml_output)
+    logging.info(tr("Parsing .ioc file...", "正在解析 .ioc 文件……"))
+    parse_project(project_dir, yaml_output, summary=False)
 
-    # 生成 C++ 代码。
-    # Generate C++ code
-    generate_cpp_code(yaml_output, cpp_output, xrobot_enable)
+    logging.info(tr("Generating C++ code...", "正在生成 C++ 代码……"))
+    generate(yaml_output, cpp_output, xrobot_enable)
 
-    # 生成 CMakeLists.txt。
-    # Generate CMakeLists.txt
-    generate_cmake_file(project_dir)
+    integrate(project_dir)
 
     logging.info(tr("[Pass] All tasks completed successfully!", "[通过] 全部任务已完成！"))
 
 
 if __name__ == "__main__":
-    main()
+    from libxr.cli import legacy
+
+    raise SystemExit(legacy("xr_cubemx_cfg"))

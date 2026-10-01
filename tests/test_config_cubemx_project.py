@@ -1,6 +1,6 @@
-"""xr_cubemx_cfg（libxr.config_cubemx_project）：写入 libxr_config.yaml 的终端设备，以及 LibXR
+"""libxr stm32 setup（libxr.config_cubemx_project）：写入 libxr_config.yaml 的终端设备，以及 LibXR
 子模块的检出策略。
-xr_cubemx_cfg (libxr.config_cubemx_project): the terminal device written to libxr_config.yaml,
+libxr stm32 setup (libxr.config_cubemx_project): the terminal device written to libxr_config.yaml,
 and the checkout policy of the LibXR submodule.
 """
 
@@ -176,7 +176,7 @@ class LibXRSubmodule(TestCase):
             return (
                 f"WARNING:root:LibXR checkout {checked_out[:12]} is {relation} this generator's "
                 f"default {self.default[:12]}; it was left unchanged. To switch, run "
-                f"xr_cubemx_cfg with --commit {self.default} (or check out the commit in "
+                f"`libxr stm32 setup` with --commit {self.default} (or check out the commit in "
                 "Middlewares/Third_Party/LibXR) and commit the gitlink."
             )
 

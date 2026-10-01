@@ -1,11 +1,10 @@
-"""xr_stm32_cmake 写入的 CMake 集成（libxr.generator_stm32_cmake）。
-The CMake integration written by xr_stm32_cmake (libxr.generator_stm32_cmake).
+"""libxr stm32 cmake 写入的 CMake 集成（libxr.generator_stm32_cmake）。
+The CMake integration written by libxr stm32 cmake (libxr.generator_stm32_cmake).
 """
 
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
 
 from fixtures import GeneratorTestCase
 
@@ -34,14 +33,10 @@ class ModulesDirectory(GeneratorTestCase):
         return code
 
     def run_cmake_generator(self):
-        """运行 xr_stm32_cmake，返回 cmake/LibXR.CMake 的文本。
-        Run xr_stm32_cmake and return the text of cmake/LibXR.CMake.
+        """把 LibXR 接入工程，返回 cmake/LibXR.CMake 的文本。
+        Integrate LibXR into the project and return the text of cmake/LibXR.CMake.
         """
-        with (
-            patch("sys.argv", ["xr_stm32_cmake", str(self.root)]),
-            patch("libxr.package_info.LibXRPackageInfo.check_and_print"),
-        ):
-            stm32_cmake.main()
+        stm32_cmake.integrate(str(self.root))
         return (self.root / "cmake" / "LibXR.CMake").read_text(encoding="utf-8")
 
     def test_xrobot_project_sets_modules_directory(self):

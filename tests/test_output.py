@@ -3,7 +3,6 @@ The language of the command-line output (libxr.output and the commands): Chinese
 Chinese environment, English otherwise.
 """
 
-import contextlib
 import io
 import logging
 import os
@@ -11,9 +10,8 @@ import subprocess
 import sys
 from unittest import mock
 
-from fixtures import TestCase
+from fixtures import TestCase, run_libxr
 
-from libxr import peripheral_analyzer_stm32
 from libxr.output import configure_output
 
 
@@ -47,28 +45,16 @@ class CommandOutput(TestCase):
     Help texts and errors of the commands follow the language.
     """
 
-    def run_parse_ioc(self, *argv):
-        """运行 xr_parse_ioc，返回退出码和标准输出、标准错误。
-        Run xr_parse_ioc and return the exit code, stdout and stderr.
+    def run_parse(self, *argv):
+        """运行 libxr parse，返回退出码和标准输出、标准错误。
+        Run libxr parse and return the exit code, stdout and stderr.
         """
-        out, err = io.StringIO(), io.StringIO()
-        with (
-            mock.patch.object(sys, "argv", ["xr_parse_ioc", *argv]),
-            mock.patch("libxr.package_info.LibXRPackageInfo.check_and_print"),
-            contextlib.redirect_stdout(out),
-            contextlib.redirect_stderr(err),
-        ):
-            try:
-                peripheral_analyzer_stm32.main()
-                code = 0
-            except SystemExit as exit:
-                code = exit.code
-        return code, out.getvalue(), err.getvalue()
+        return run_libxr("parse", *argv)
 
     def test_help_follows_the_language(self):
-        for language, usage in (("en", "usage: xr_parse_ioc"), ("zh", "用法：xr_parse_ioc")):
+        for language, usage in (("en", "usage: libxr parse"), ("zh", "用法：libxr parse")):
             with self.subTest(language=language), mock.patch.dict(os.environ, XR_LANG=language):
-                code, out, _ = self.run_parse_ioc("--help")
+                code, out, _ = self.run_parse("--help")
                 self.assertEqual(code, 0)
                 self.assertTrue(out.startswith(usage), out)
 
@@ -76,14 +62,7 @@ class CommandOutput(TestCase):
         # PYTHONIOENCODING=ascii 代替中文 Windows 上管道的 GBK：两者都写不出 UTF-8 中文。
         # PYTHONIOENCODING=ascii stands in for the GBK of a pipe on Chinese Windows: neither
         # writes Chinese as UTF-8.
-        script = (
-            "import sys\n"
-            "from unittest import mock\n"
-            "from libxr import peripheral_analyzer_stm32\n"
-            "sys.argv = ['xr_parse_ioc', '--help']\n"
-            "with mock.patch('libxr.package_info.LibXRPackageInfo.check_and_print'):\n"
-            "    peripheral_analyzer_stm32.main()\n"
-        )
+        script = "from libxr import cli\ncli.main(['parse', '--help'])\n"
         result = subprocess.run(
             [sys.executable, "-c", script],
             capture_output=True,
@@ -91,4 +70,4 @@ class CommandOutput(TestCase):
             check=False,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertTrue(result.stdout.decode("utf-8").startswith("用法：xr_parse_ioc"))
+        self.assertTrue(result.stdout.decode("utf-8").startswith("用法：libxr parse"))

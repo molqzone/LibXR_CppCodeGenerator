@@ -259,14 +259,14 @@ jobs:
         if: runner.os != 'Windows'
         run: |
           cd bsp_test
-          xr_cubemx_cfg -d .
+          libxr stm32 setup -d .
 
       - name: Python Compatibility Check (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           Set-Location bsp_test
-          xr_cubemx_cfg -d .
+          libxr stm32 setup -d .
 
   publish:
     name: Publish to PyPI
