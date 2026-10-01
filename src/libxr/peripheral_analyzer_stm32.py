@@ -1691,6 +1691,7 @@ def parse_ioc_file(ioc_path: str) -> dict[str, Any] | None:
             config.timebase["Source"] = value
         elif key.startswith("NVIC.TimeBase"):
             config.timebase["IRQ"] = value
+    _check_timebase(raw_map, config.timebase)
 
     # 创建全部解析器。
     # Instantiate all parsers
@@ -1735,6 +1736,38 @@ def parse_ioc_file(ioc_path: str) -> dict[str, Any] | None:
     except Exception as e:
         logging.error(tr(f"Parsing failed: {str(e)}", f"解析失败：{str(e)}"))
         return None
+
+
+def _check_timebase(raw_map: dict[str, str], timebase: dict[str, str | None]) -> None:
+    """HAL 时基仍是 SysTick，或其定时器中断的抢占优先级不是最高（0）时，记录警告。
+    Warn when the HAL timebase is still SysTick, or when the preemption priority of its timer
+    interrupt is not the highest (0).
+    """
+    source = timebase.get("Source") or "SysTick"
+    if source == "SysTick":
+        logging.warning(
+            tr(
+                "The HAL timebase is SysTick. In STM32CubeMX, set SYS > Timebase Source to a "
+                "general-purpose timer (such as TIM6) and give its interrupt the highest "
+                "preemption priority (0) in NVIC.",
+                "HAL 时基仍是 SysTick。请在 STM32CubeMX 的 SYS 中把 Timebase Source 改为普通"
+                "定时器（例如 TIM6），并在 NVIC 中把它的中断抢占优先级设为最高（0）。",
+            )
+        )
+        return
+    irq = timebase.get("IRQ")
+    # NVIC.<IRQ> 的值形如 true\:5\:0\:...，第二项是抢占优先级。
+    # NVIC.<IRQ> reads like true\:5\:0\:..., the second field being the preemption priority.
+    fields = raw_map.get(f"NVIC.{irq}", "").replace("\\:", ":").split(":")
+    if len(fields) > 1 and fields[1] != "0":
+        logging.warning(
+            tr(
+                f"The HAL timebase interrupt {irq} ({source}) has preemption priority "
+                f"{fields[1]}. In STM32CubeMX, set it to the highest (0) in NVIC.",
+                f"HAL 时基中断 {irq}（{source}）的抢占优先级为 {fields[1]}。请在 STM32CubeMX "
+                "的 NVIC 中把它设为最高（0）。",
+            )
+        )
 
 
 def _extract_key_value_pairs(file_handler: TextIO) -> dict[str, str]:

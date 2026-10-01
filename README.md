@@ -617,6 +617,10 @@ usage: libxr stm32 cmake [-h] [-d DIRECTORY]
 > ✅ 并将该中断优先级设置为 **最高(0)**
     And set the interrupt priority to **highest (0)**
 
+时基仍是 SysTick，或时基定时器中断的抢占优先级不是 0 时，`libxr parse` 会给出警告。
+`libxr parse` warns when the timebase is still SysTick, or when the preemption priority of the
+timebase timer interrupt is not 0.
+
 ---
 
 ### `libxr stm32 toolchain`

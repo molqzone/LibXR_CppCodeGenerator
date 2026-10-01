@@ -135,5 +135,41 @@ class ParsedConfiguration(TestCase):
         self.assertNotIn("I2C", peripherals)
 
 
+class Timebase(TestCase):
+    """HAL 时基应是中断优先级最高的普通定时器，否则警告。
+    The HAL timebase should be a general-purpose timer with the highest interrupt priority;
+    anything else is warned about.
+    """
+
+    TIMER = "NVIC.TimeBase=TIM6_DAC_IRQn\nNVIC.TimeBaseIP=TIM6\n"
+    parse = ParsedConfiguration.parse
+
+    def test_systick_is_warned_about(self):
+        with self.assertLogs(level="WARNING") as logs:
+            self.assertEqual(self.parse("")["Timebase"], {"Source": "SysTick", "IRQ": None})
+        self.assertEqual(
+            logs.output,
+            [
+                "WARNING:root:The HAL timebase is SysTick. In STM32CubeMX, set SYS > Timebase "
+                "Source to a general-purpose timer (such as TIM6) and give its interrupt the "
+                "highest preemption priority (0) in NVIC."
+            ],
+        )
+
+    def test_a_timer_needs_the_highest_priority(self):
+        with self.assertLogs(level="WARNING") as logs:
+            timebase = self.parse(self.TIMER + "NVIC.TIM6_DAC_IRQn=true\\:5\\:0\\:false\\:true\n")
+        self.assertEqual(timebase["Timebase"], {"Source": "TIM6", "IRQ": "TIM6_DAC_IRQn"})
+        self.assertEqual(
+            logs.output,
+            [
+                "WARNING:root:The HAL timebase interrupt TIM6_DAC_IRQn (TIM6) has preemption "
+                "priority 5. In STM32CubeMX, set it to the highest (0) in NVIC."
+            ],
+        )
+        with self.assertNoLogs(level="WARNING"):
+            self.parse(self.TIMER + "NVIC.TIM6_DAC_IRQn=true\\:0\\:0\\:false\\:true\n")
+
+
 if __name__ == "__main__":
     unittest.main()
