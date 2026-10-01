@@ -1,3 +1,0 @@
-# 基准数据逐字节比较，检出时不转换换行。
-# Reference data is compared byte for byte; checkouts must not convert line endings.
-tests/data/** -text

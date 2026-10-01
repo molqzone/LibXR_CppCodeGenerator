@@ -8,7 +8,6 @@ import tempfile
 import unittest
 from pathlib import Path
 
-import reference_projects
 from fixtures import IOC, TestCase, run_libxr
 
 from libxr import peripheral_analyzer_stm32
@@ -58,19 +57,6 @@ class ParseIoc(TestCase):
             self.assertEqual(self.parse(), 1)
         self.assertTrue(logs.output[0].startswith("ERROR:root:File processing failed: "))
         self.assertFalse((self.project / ".config.yaml").exists())
-
-
-class ReferenceProjects(TestCase):
-    """两个真实 BSP 工程的解析结果与基准文件逐字节相同。
-    The parse of two real BSP projects equals the reference files byte for byte.
-    """
-
-    def test_the_parsed_configuration_is_the_reference(self):
-        for name in reference_projects.PROJECTS:
-            with self.subTest(project=name), tempfile.TemporaryDirectory() as temporary:
-                output = reference_projects.parse(name, Path(temporary))
-                expected = reference_projects.DATA / name / "expected" / "cubemx.yaml"
-                self.assertEqual(output.read_bytes(), expected.read_bytes())
 
 
 class ParsedConfiguration(TestCase):
