@@ -83,15 +83,18 @@ class ConfigurationManager:
         self.mcu_config: dict[str, str | None] = {"Family": None, "Type": None}
 
     def clean_structure(self) -> dict[str, Any]:
-        """返回写入 YAML 的最终结构：GPIO、Peripherals、DMA、Timebase 和 Mcu。
-        Return the final structure written to YAML: GPIO, Peripherals, DMA, Timebase and Mcu.
+        """返回写入 YAML 的最终结构：Platform、GPIO、Peripherals、DMA、Timebase 和 Mcu。
+        Return the final structure written to YAML: Platform, GPIO, Peripherals, DMA, Timebase
+        and Mcu.
 
-        记录到 ThreadX 内存分配方式时加入 ThreadX 段；FreeRTOS 有任务、堆大小或功能开关时
-        加入 FreeRTOS 段。
-        A ThreadX section is added when a ThreadX allocation method was found, and a FreeRTOS
-        section when FreeRTOS has tasks, a heap size or feature flags.
+        Platform 为 stm32，libxr gen 据此选择生成器。记录到 ThreadX 内存分配方式时加入 ThreadX
+        段；FreeRTOS 有任务、堆大小或功能开关时加入 FreeRTOS 段。
+        Platform is stm32, from which libxr gen selects the generator. A ThreadX section is added
+        when a ThreadX allocation method was found, and a FreeRTOS section when FreeRTOS has
+        tasks, a heap size or feature flags.
         """
         cleaned_data = {
+            "Platform": "stm32",
             "GPIO": self._clean_gpio(),
             "Peripherals": self._clean_peripherals(),
             "DMA": {

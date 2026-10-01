@@ -374,7 +374,7 @@ def add_libxr(project_dir, libxr_commit=None, source=None, default_libxr_commit=
         logging.warning(
             tr(
                 f"{project_dir} is not a Git repository. Initializing...",
-                f"{project_dir}: 不是 Git 仓库，正在初始化……",
+                f"{project_dir}：不是 Git 仓库，正在初始化……",
             )
         )
         run_command(["git", "init", project_dir])
@@ -392,7 +392,7 @@ def add_libxr(project_dir, libxr_commit=None, source=None, default_libxr_commit=
             tr(
                 f"{libxr_path} exists but is not a valid Git checkout; it was left untouched. "
                 "Move it away or turn it into a LibXR checkout, then run again.",
-                f"{libxr_path}: 已存在，但不是有效的 Git 检出，未做改动。"
+                f"{libxr_path}：已存在，但不是有效的 Git 检出，未做改动。"
                 "请把它移走或改成 LibXR 的检出，然后重新运行。",
             )
         )
@@ -565,7 +565,7 @@ def ensure_valid_cubemx_project(path: str):
         logging.error(
             tr(
                 f"{display_name} is not a valid STM32CubeMX project: missing Core/ directory",
-                f"{display_name}: 不是有效的 STM32CubeMX 工程，缺少 Core/ 目录",
+                f"{display_name}：不是有效的 STM32CubeMX 工程，缺少 Core/ 目录",
             )
         )
         sys.exit(1)

@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import sys
 import threading
 import time
 import urllib.request
@@ -59,6 +61,17 @@ def _is_newer(latest: str, installed: str) -> bool:
         return False
 
 
+def upgrade_command() -> str:
+    """升级 libxr 的命令：pipx 安装的环境（sys.prefix 中有 pipx 写的 pipx_metadata.json）用
+    pipx upgrade，其余用 pip。
+    The command that upgrades libxr: pipx upgrade in an environment installed by pipx, whose
+    sys.prefix holds the pipx_metadata.json that pipx writes, else pip.
+    """
+    if os.path.isfile(os.path.join(sys.prefix, "pipx_metadata.json")):
+        return f"pipx upgrade {PACKAGE}"
+    return f"pip install -U {PACKAGE}"
+
+
 def start() -> Callable[[], None]:
     """在后台线程中开始查询 PyPI，返回命令结束时调用的报告函数。
     Start the PyPI query in a background thread and return the function that reports at the
@@ -84,9 +97,9 @@ def start() -> Callable[[], None]:
             logging.warning(
                 tr(
                     f"{PACKAGE} {latest} is available (installed: {installed}); "
-                    f"upgrade with `pip install -U {PACKAGE}`",
+                    f"upgrade with `{upgrade_command()}`",
                     f"{PACKAGE} {latest} 已发布（已安装 {installed}）；"
-                    f"用 `pip install -U {PACKAGE}` 升级",
+                    f"用 `{upgrade_command()}` 升级",
                 )
             )
 

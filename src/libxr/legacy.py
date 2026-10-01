@@ -54,7 +54,10 @@ def _parse(prog: str, argv: list[str]) -> None:
     parser.add_argument(
         "--verbose", action="store_true", help=tr("Enable debug logging", "输出调试日志")
     )
-    cli.cmd_parse(parser.parse_args(argv))
+    args = parser.parse_args(argv)
+    if args.verbose:
+        configure_output(logging.DEBUG)
+    cli.cmd_parse(args)
 
 
 def _gen_arguments(prog: str, argv: list[str]) -> argparse.Namespace:
@@ -302,10 +305,13 @@ def _stm32_cmake(prog: str, argv: list[str]) -> None:
 
 
 def _stm32_flash(prog: str, argv: list[str]) -> None:
-    """xr_stm32_flash：恰好一个型号参数；个数不对时打印用法并以状态 1 结束。
+    """xr_stm32_flash：恰好一个型号参数；个数不对时打印用法并以状态 1 结束，型号无法处理时以
+    状态 2 结束。
     xr_stm32_flash: exactly one model argument; a wrong count prints the usage and exits with
-    status 1.
+    status 1, and a model that cannot be processed exits with status 2.
     """
+    from libxr.stm32_flash_generator import print_flash_info
+
     usage = "\n".join(
         [
             tr("STM32 Flash Information Tool", "STM32 Flash 信息工具"),
@@ -322,7 +328,7 @@ def _stm32_flash(prog: str, argv: list[str]) -> None:
     if len(argv) != 1:
         print(usage, file=sys.stderr)
         sys.exit(1)
-    cli.cmd_stm32_flash_info(argparse.Namespace(model=argv[0]))
+    print_flash_info(argv[0], error_status=2)
 
 
 def _stm32_toolchain_switch(prog: str, argv: list[str]) -> None:

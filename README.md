@@ -28,10 +28,13 @@
 ## Static XRobot integration 静态 XRobot 集成
 
 `--xrobot` 生成具名的 `XR_REGISTER(object, Type)` 声明，不生成运行期
-HardwareContainer/ApplicationManager。不带 `--xrobot` 时不生成任何 XRobot 代码。
+HardwareContainer/ApplicationManager；`--no-xrobot` 时不生成任何 XRobot 代码。两者都不写时，
+`libxr gen` 和 `libxr stm32 setup` 沿用已有 `app_main.cpp` 的选择，新工程不生成 XRobot 代码。
 With `--xrobot`, the generator emits named `XR_REGISTER(object, Type)`
-declarations instead of a runtime HardwareContainer/ApplicationManager. Without
-`--xrobot`, no XRobot code is generated.
+declarations instead of a runtime HardwareContainer/ApplicationManager; with
+`--no-xrobot`, no XRobot code is generated. With neither, `libxr gen` and
+`libxr stm32 setup` keep the choice of the existing `app_main.cpp`, and a new project gets
+no XRobot code.
 
 - 每个名字只注册一种类型。每个 FDCAN 对象 `fdcanN` 注册为 `LibXR::FDCAN`，并额外生成
   同作用域的基类引用 `LibXR::CAN& canN = fdcanN;` 注册为 `LibXR::CAN`。若芯片同时有
@@ -96,14 +99,15 @@ pip install -e .
 
 ## 🔧 命令 / Commands
 
-所有功能都在一个命令 `libxr` 下。`parse` 和 `gen` 与平台无关，按工程所属的平台选择解析器和
-生成器；只属于某个平台的命令放在平台名下，例如 `libxr stm32 setup`。目前支持 STM32
-（含有 STM32CubeMX `.ioc` 文件的目录）。
+所有功能都在一个命令 `libxr` 下。`parse` 和 `gen` 与平台无关：`parse` 按工程所属的平台选择
+解析器，并把平台记录在配置 YAML 中；`gen` 按记录的平台选择生成器。只属于某个平台的命令放在
+平台名下，例如 `libxr stm32 setup`。目前支持 STM32（含有 STM32CubeMX `.ioc` 文件的目录）。
 
-All functions are subcommands of one command, `libxr`. `parse` and `gen` are platform-neutral
-and choose the parser and the generator by the platform of the project; commands that belong to
-one platform sit under its name, such as `libxr stm32 setup`. STM32 (a directory holding an
-STM32CubeMX `.ioc` file) is supported so far.
+All functions are subcommands of one command, `libxr`. `parse` and `gen` are platform-neutral:
+`parse` chooses the parser by the platform of the project and records the platform in the
+configuration YAML, and `gen` chooses the generator by the recorded platform. Commands that
+belong to one platform sit under its name, such as `libxr stm32 setup`. STM32 (a directory
+holding an STM32CubeMX `.ioc` file) is supported so far.
 
 | 命令 Command | 作用 | Purpose |
 | --- | --- | --- |
@@ -115,10 +119,16 @@ STM32CubeMX `.ioc` file) is supported so far.
 | `libxr stm32 flash-info` | 打印某个型号的 Flash 布局 | Print the flash layout of a model |
 | `libxr stm32 toolchain` | 切换工具链和 clang 标准库 | Switch the toolchain and the clang standard library |
 
-每个命令运行时在后台查询 PyPI，结束时若有更新的 libxr 就提示升级。
+每个子命令都接受 `--verbose`，输出调试日志。
+
+每个命令运行时在后台查询 PyPI，结束时若有更新的 libxr 就提示升级：pipx 安装的提示
+`pipx upgrade libxr`，其余提示 `pip install -U libxr`。
+
+Every subcommand takes `--verbose` for debug logging.
 
 While a command runs, PyPI is queried in the background; a newer libxr is reported when the
-command ends.
+command ends, with `pipx upgrade libxr` for a pipx installation and `pip install -U libxr`
+otherwise.
 
 ### 旧命令 / Old commands
 
@@ -173,11 +183,11 @@ Automatically configures an STM32CubeMX project.
 
 ```bash
 usage: libxr stm32 setup [-h] [-d DIRECTORY] [-t TERMINAL] [--xrobot | --no-xrobot] [--commit COMMIT]
-                         [--git-source GIT_SOURCE] [--git-mirrors GIT_MIRRORS]
+                         [--git-source GIT_SOURCE] [--git-mirrors GIT_MIRRORS] [--verbose]
 ```
 
-解析 `.ioc` 文件，生成 YAML 和 C++ 驱动代码，补丁中断处理函数，并初始化项目结构
-Parses `.ioc`, generates YAML and C++ code, patches interrupt handlers, and initializes the project structure.
+加入 LibXR 子模块，解析 `.ioc` 文件，生成 YAML 和 C++ 代码，并接入 CMake
+Adds the LibXR submodule, parses `.ioc`, generates the YAML and the C++ code, and integrates CMake.
 
 #### ⚙️ 可选参数 (Optional)
 
@@ -334,6 +344,7 @@ usage: libxr stm32 cubemx-gen [-h] [-d DIRECTORY] [--ioc IOC] [--cubemx-cmd CUBE
                               [--launch-mode {auto,direct,java}] [--generate-code-dir GENERATE_CODE_DIR]
                               [--expect-path EXPECT_PATH] [--log-dir LOG_DIR] [--script-path SCRIPT_PATH]
                               [--keep-script] [--silent] [--firmware {keep,migrate}] [--download] [--timeout TIMEOUT]
+                              [--verbose]
 ```
 
 用途 / Purpose:
@@ -400,8 +411,10 @@ Parses `.ioc` files and creates `.config.yaml` with a readable summary.
 
 - `.config.yaml`：
 
-  包含 GPIO、外设、DMA、FreeRTOS、MCU 等配置
-  YAML file containing GPIO, peripheral, DMA, FreeRTOS, and MCU configurations.
+  包含平台（`Platform: stm32`，`libxr gen` 据此选择生成器）以及 GPIO、外设、DMA、FreeRTOS、
+  MCU 等配置
+  YAML file containing the platform (`Platform: stm32`, from which `libxr gen` chooses the
+  generator) and the GPIO, peripheral, DMA, FreeRTOS, and MCU configurations.
 
 - 控制台摘要：MCU 信息、GPIO 数量、外设统计等
   Console summary: MCU information, GPIO count, peripheral statistics, etc.
@@ -414,7 +427,8 @@ Parses `.ioc` files and creates `.config.yaml` with a readable summary.
 Generates STM32 application code from YAML.
 
 ```bash
-usage: libxr gen [-h] -i INPUT [-d DIRECTORY] -o OUTPUT [--xrobot] [--libxr-config LIBXR_CONFIG] [--verbose]
+usage: libxr gen [-h] -i INPUT [-d DIRECTORY] -o OUTPUT [--xrobot | --no-xrobot] [--libxr-config LIBXR_CONFIG]
+                 [--verbose]
 ```
 
 #### 🔧 Required
@@ -432,10 +446,19 @@ usage: libxr gen [-h] -i INPUT [-d DIRECTORY] -o OUTPUT [--xrobot] [--libxr-conf
 
 #### ⚙️ Optional
 
-- `--xrobot`：
+- `-d`：
 
-  生成 XRobot 静态注册与 `XROBOT_MAIN();`（见上文 Static XRobot integration）
-  Emit XRobot static registrations and `XROBOT_MAIN();` (see Static XRobot integration)
+  工程目录，默认为当前目录。配置 YAML 没有记录平台时（旧版 `parse` 写出的文件）按它的平台选择
+  生成器
+  Project directory, the current directory by default; its platform chooses the generator
+  when the configuration YAML records none (a file written by an older `parse`)
+
+- `--xrobot` / `--no-xrobot`：
+
+  生成或不生成 XRobot 静态注册与 `XROBOT_MAIN();`（见上文 Static XRobot integration）；都不写时
+  沿用已有输出文件的选择
+  Emit XRobot static registrations and `XROBOT_MAIN();`, or not (see Static XRobot
+  integration); with neither, the existing output file keeps its choice
 
 - `--libxr-config`：
 
@@ -503,8 +526,12 @@ trigger no rebuild. One log line at the end lists the files written, unchanged a
 Parses STM32 model name and generates flash layout info (YAML output).
 
 ```bash
-usage: libxr stm32 flash-info [-h] model
+usage: libxr stm32 flash-info [-h] [--verbose] model
 ```
+
+型号无效或无法推算布局时记录错误并以状态 1 退出；旧命令 `xr_stm32_flash` 仍以状态 2 退出。
+An invalid model or one whose layout cannot be derived logs an error and exits with status 1;
+the old `xr_stm32_flash` command still exits with status 2.
 
 ### 🧠 功能说明 (Functionality)
 
@@ -544,7 +571,7 @@ sectors:
 Generates `LibXR.CMake` file and injects it into the STM32CubeMX CMake project.
 
 ```bash
-usage: libxr stm32 cmake [-h] [-d DIRECTORY]
+usage: libxr stm32 cmake [-h] [-d DIRECTORY] [--verbose]
 ```
 
 #### ⚙️ 可选参数 (Optional)
@@ -667,7 +694,7 @@ timebase timer interrupt is not 0.
 Automatically switches STM32 CMake toolchain and Clang standard library configuration.
 
 ```bash
-usage: libxr stm32 toolchain [-h] [-d DIRECTORY] [-g | -n | -p] {gcc,clang}
+usage: libxr stm32 toolchain [-h] [-d DIRECTORY] [-g | -n | -p] [--verbose] {gcc,clang}
 ```
 
 #### 🔧 必选参数 (Required)

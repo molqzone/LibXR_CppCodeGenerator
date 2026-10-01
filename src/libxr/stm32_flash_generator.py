@@ -11,6 +11,7 @@ matching rule is an error. The rules describe the factory bank configuration and
 against the STM32CubeProgrammer device data.
 """
 
+import logging
 import re
 import sys
 import xml.etree.ElementTree as ET
@@ -544,13 +545,14 @@ def _valid_model(model: str) -> bool:
     return "-" not in model and model.upper().startswith("STM32") and len(model) > 8
 
 
-def print_flash_info(model: str) -> None:
+def print_flash_info(model: str, error_status: int = 1) -> None:
     """检查型号格式，以 YAML 向标准输出打印 Flash 布局。
     Check the model format and print the flash layout as YAML to standard output.
 
-    型号无效或无法推算布局时，把原因写到标准错误并以退出码 2 结束。
-    An invalid model or one whose layout cannot be derived writes the reason to standard error
-    and exits with code 2.
+    型号无效或无法推算布局时记录错误（写到标准错误）并以 error_status 退出；旧命令
+    xr_stm32_flash 用 2。
+    An invalid model or one whose layout cannot be derived logs an error, on standard error,
+    and exits with error_status; the old xr_stm32_flash command uses 2.
     """
     model = model.strip().upper()
 
@@ -563,11 +565,10 @@ def print_flash_info(model: str) -> None:
             )
         info = layout_flash(model)
     except ValueError as error:
-        print(
-            tr(f"Failed to process model {model}: {error}", f"无法处理型号 {model}：{error}"),
-            file=sys.stderr,
+        logging.error(
+            tr(f"Failed to process model {model}: {error}", f"无法处理型号 {model}：{error}")
         )
-        sys.exit(2)
+        sys.exit(error_status)
     print(
         yaml.safe_dump(
             flash_info_to_dict(info),

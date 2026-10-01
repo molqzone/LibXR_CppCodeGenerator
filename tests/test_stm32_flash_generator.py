@@ -9,8 +9,8 @@ from fixtures import TestCase, run_libxr
 
 
 class CommandLine(TestCase):
-    """布局写到标准输出，用法和报错写到各自的流。
-    The layout goes to stdout; usage and errors go to their own streams.
+    """布局写到标准输出，用法写到标准输出或标准错误，报错以错误日志给出。
+    The layout goes to stdout, usage to stdout or stderr, and errors are logged.
     """
 
     def run_flash(self, *argv):
@@ -39,13 +39,14 @@ class CommandLine(TestCase):
     def test_help_and_wrong_usage(self):
         code, out, err = self.run_flash("--help")
         self.assertEqual((code, err), (0, ""))
-        self.assertTrue(out.startswith("usage: libxr stm32 flash-info [-h] model\n"), out)
+        usage = "usage: libxr stm32 flash-info [-h] [--verbose] model\n"
+        self.assertTrue(out.startswith(usage), out)
         self.assertIn("libxr stm32 flash-info STM32F103C8T6", out)
         code, out, err = self.run_flash()
         self.assertEqual((code, out), (2, ""))
-        self.assertTrue(err.startswith("usage: libxr stm32 flash-info [-h] model\n"), err)
+        self.assertTrue(err.startswith(usage), err)
 
-    def test_errors_go_to_stderr(self):
+    def test_errors_are_logged(self):
         for model, reason in (
             ("STM32", "Invalid STM32 model format: STM32"),
             ("STM32U575Z0T6", "Unrecognized capacity code for STM32U575Z0T6"),
@@ -56,10 +57,12 @@ class CommandLine(TestCase):
                 "No flash layout rule for STM32Q999RGT6 in STM32FlashLayoutRules.xml",
             ),
         ):
-            with self.subTest(model=model):
-                code, out, err = self.run_flash(model)
-                self.assertEqual((code, out), (2, ""))
-                self.assertEqual(err, f"Failed to process model {model}: {reason}\n")
+            with self.subTest(model=model), self.assertLogs(level="ERROR") as logs:
+                code, out, _ = self.run_flash(model)
+                self.assertEqual((code, out), (1, ""))
+                self.assertEqual(
+                    logs.output, [f"ERROR:root:Failed to process model {model}: {reason}"]
+                )
 
 
 if __name__ == "__main__":
