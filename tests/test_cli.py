@@ -129,11 +129,15 @@ class Options(TestCase):
             capture_output=True,
             text=True,
             encoding="utf-8",
+            env=dict(os.environ, XR_LANG="en"),
             check=False,
         )
+        # 从源码目录运行（只设 PYTHONPATH）时没有安装信息，版本显示为 unknown。
+        # Run from a source tree, with only PYTHONPATH set, there is no installation record
+        # and the version shows as unknown.
         self.assertEqual(
             (result.returncode, result.stdout),
-            (0, f"libxr {update_notice.installed_version()}\n"),
+            (0, f"libxr {update_notice.installed_version() or 'unknown'}\n"),
         )
 
     def test_every_subcommand_takes_verbose(self):
