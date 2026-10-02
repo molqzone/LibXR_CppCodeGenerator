@@ -233,6 +233,15 @@ class LibXRSubmodule(LibXRRemote, TestCase):
         self.add_libxr(project)
         self.assertEqual(self.head(checkout), self.old)
 
+    def test_a_successful_command_goes_to_the_debug_log_only(self):
+        # 以前成功的 git 命令记为 INFO，setup 的输出满是完整的命令行。
+        # Successful git commands used to be logged at INFO, filling the setup output with
+        # whole command lines.
+        with self.assertLogs(level="DEBUG") as logs:
+            output = cubemx_cfg.run_command(["git", "--version"])
+        self.assertTrue(output.startswith("git version "), output)
+        self.assertEqual(logs.output, ["DEBUG:root:[OK] git --version"])
+
     def test_a_directory_with_user_files_is_refused_untouched(self):
         project, checkout = self.project(self.old, self.old)
         git("submodule", "deinit", "-q", "-f", "--", "Middlewares/Third_Party/LibXR", cwd=project)
@@ -424,6 +433,11 @@ class SetupProject(GeneratorTestCase):
         (sources / "freertos.c").write_text(
             "void StartDefaultTask(void *argument) {}\n", encoding="utf-8"
         )
+        # adc.c 排在 freertos.c 前面但没有默认任务；只扫描 .c 文件，notes.txt 中的调用不算。
+        # adc.c sorts before freertos.c but has no default task; only .c files are scanned,
+        # so the call in notes.txt does not count.
+        (sources / "adc.c").write_text("void MX_ADC1_Init(void) {}\n", encoding="utf-8")
+        (sources / "notes.txt").write_text("app_main();\n", encoding="utf-8")
         (self.root / "CMakePresets.json").write_text(
             '{"configurePresets": [{"name": "default", "hidden": true}, {"name": "Debug"}],'
             ' "buildPresets": [{"name": "Debug", "configurePreset": "Debug"}]}',

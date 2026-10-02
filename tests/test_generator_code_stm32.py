@@ -332,20 +332,31 @@ class PeripheralObjects(GeneratorTestCase):
                 if notice:
                     self.assertEqual(logs.output, notice)
 
-    def test_a_terminal_on_a_disabled_usb_names_the_key(self):
-        generator.libxr_settings["USB"]["usb_otg_fs"] = {"enable": False}
-        generator.libxr_settings["terminal_source"] = "usb_otg_fs_cdc"
-        with self.assertLogs(level="WARNING") as logs:
-            code = self.generate(self.project(peripherals={"USB": {"USB_OTG_FS": {}}}))
-        self.assertNotIn("static Terminal", code)
-        self.assertEqual(
-            logs.output,
-            [
-                "WARNING:root:terminal_source 'usb_otg_fs_cdc' is the CDC serial port of USB "
-                "instance usb_otg_fs, which is not generated; set USB.usb_otg_fs.enable to true "
-                "in libxr_config.yaml. The terminal is not initialized."
-            ],
-        )
+    def test_a_terminal_on_a_port_that_is_not_generated_is_not_initialized(self):
+        # 终端串口是未生成的 USB 实例的 CDC 串口时，警告写出要修改的键。
+        # When the terminal port is the CDC port of a USB instance that is not generated, the
+        # warning names the key to change.
+        for terminal, message in (
+            (
+                "usart9",
+                "terminal_source 'usart9' is not registered as UART, terminal will not be "
+                "initialized.",
+            ),
+            (
+                "usb_otg_fs_cdc",
+                "terminal_source 'usb_otg_fs_cdc' is the CDC serial port of USB instance "
+                "usb_otg_fs, which is not generated; set USB.usb_otg_fs.enable to true in "
+                "libxr_config.yaml. The terminal is not initialized.",
+            ),
+        ):
+            with self.subTest(terminal=terminal):
+                self.setUp()
+                generator.libxr_settings["USB"]["usb_otg_fs"] = {"enable": False}
+                generator.libxr_settings["terminal_source"] = terminal
+                with self.assertLogs(level="WARNING") as logs:
+                    code = self.generate(self.project(peripherals={"USB": {"USB_OTG_FS": {}}}))
+                self.assertNotIn("static Terminal", code)
+                self.assertEqual(logs.output, [f"WARNING:root:{message}"])
 
     def test_peripheral_objects_are_static_and_use_their_handles(self):
         project = self.project(
