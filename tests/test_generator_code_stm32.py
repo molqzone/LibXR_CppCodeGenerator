@@ -411,9 +411,13 @@ class PeripheralObjects(GeneratorTestCase):
         self.assertLess(code.index('extern "C" void app_main'), code.index("static STM32Timebase"))
 
     def test_a_disabled_watchdog_gets_no_object(self):
+        # 以前仍声明 extern IWDG_HandleTypeDef hiwdg;，而 IWDG 没有激活时 HAL 模块通常没有打开，
+        # 这个类型也就没有定义。
+        # extern IWDG_HandleTypeDef hiwdg; used to be declared still, although the HAL module,
+        # and so the type, is usually absent while IWDG is not activated.
         code = self.generate(self.project(peripherals={"IWDG": {"IWDG": {"Enabled": False}}}))
-        self.assertNotIn("STM32Watchdog", code)
-        self.assertNotIn("iwdg.Feed()", code)
+        self.setUp()
+        self.assertEqual(code, self.generate(self.project()))
 
     def test_thread_priorities_are_libxr_levels(self):
         # LibXR 按 RTOS 的优先级数换算等级，原样写数值在 configMAX_PRIORITIES 较大的 FreeRTOS

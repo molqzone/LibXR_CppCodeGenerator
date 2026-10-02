@@ -1792,13 +1792,13 @@ def _generate_extern_declarations(project_data: dict) -> str:
     """生成 HAL 句柄的 extern 声明，按字母顺序排列且不重复。
     Generate the extern declarations of the HAL handles, sorted and without duplicates.
 
-    包括非 SysTick 时基使用的 TIM、LPTIM 或 HRTIM 句柄和每个外设实例的句柄；设备模式的 USB 实例
-    （不含 USB_DEVICE 等中间件）使用 PCD 句柄（见 _pcd_handle()），USART 段（USART、UART 和
-    LPUART）使用 UART_HandleTypeDef。
+    包括非 SysTick 时基使用的 TIM、LPTIM 或 HRTIM 句柄和每个外设实例的句柄，Enabled 为 false 的
+    实例除外；设备模式的 USB 实例（不含 USB_DEVICE 等中间件）使用 PCD 句柄（见 _pcd_handle()），
+    USART 段（USART、UART 和 LPUART）使用 UART_HandleTypeDef。
     They cover the TIM, LPTIM or HRTIM handle of a timebase other than SysTick and the handle
-    of every peripheral instance; USB instances in device mode, not middleware such as
-    USB_DEVICE, use their PCD handle (see _pcd_handle()), and the USART section (USART, UART
-    and LPUART) uses UART_HandleTypeDef.
+    of every peripheral instance except those whose Enabled is false; USB instances in device
+    mode, not middleware such as USB_DEVICE, use their PCD handle (see _pcd_handle()), and the
+    USART section (USART, UART and LPUART) uses UART_HandleTypeDef.
     """
     externs = set()
 
@@ -1819,6 +1819,12 @@ def _generate_extern_declarations(project_data: dict) -> str:
     peripherals = project_data.get("Peripherals", {})
     for p_type, instances in peripherals.items():
         for instance in instances:
+            config = instances[instance]
+            if isinstance(config, dict) and config.get("Enabled") is False:
+                # 关闭的看门狗（IWDG、WWDG）没有句柄，它的 HAL 模块通常也没有打开。
+                # A disabled watchdog (IWDG, WWDG) has no handle, and its HAL module is
+                # usually off.
+                continue
             if p_type == "USB":
                 # 设备模式的 USB 使用 PCD 句柄，例如 hpcd_USB_FS、hpcd_USB_OTG_HS。
                 # USB in device mode uses its PCD handle, e.g. hpcd_USB_FS or hpcd_USB_OTG_HS.
