@@ -2421,33 +2421,43 @@ void app_main(void);
 
 
 def generate_flash_map_cpp(flash_info: dict) -> str:
-    """把 Flash 布局字典转换为 C++ 代码：constexpr 数组 FLASH_SECTORS 和扇区数 FLASH_SECTOR_NUMBER。
-    Convert a Flash layout dictionary into C++ code: the constexpr array FLASH_SECTORS and the
-    sector count FLASH_SECTOR_NUMBER.
+    """把 Flash 布局字典转换为 C++ 代码：constexpr 数组 FLASH_REGIONS 和段数 FLASH_REGION_NUMBER。
+    Convert a Flash layout dictionary into C++ code: the constexpr array FLASH_REGIONS and the
+    run count FLASH_REGION_NUMBER.
 
-    扇区大小按字节写出；STM32L0、L1 的页小于 1 KB（如 0.125 KB 即 128 字节）。
-    Sector sizes are written in bytes; STM32L0 and L1 pages are below 1 KB, such as 0.125 KB,
-    that is 128 bytes.
+    地址相接、大小相同的扇区合成一段，写作 {起始地址, 扇区字节数, 扇区个数}。扇区大小按字节
+    写出；STM32L0、L1 的页小于 1 KB（如 0.125 KB 即 128 字节）。
+    Adjacent sectors of equal size form one run, written as {start address, sector bytes,
+    sector count}. Sector sizes are written in bytes; STM32L0 and L1 pages are below 1 KB,
+    such as 0.125 KB, that is 128 bytes.
 
     Args:
         flash_info: flash_info_to_dict() 的输出；每个扇区有十六进制的 address 和 size_kb。
             The output of flash_info_to_dict(); each sector has a hexadecimal address and
             size_kb.
     """
-    lines = [
-        '#include "stm32_flash.hpp"',
-        "",
-        "constexpr LibXR::FlashSector FLASH_SECTORS[] = {",
-    ]
-
+    regions: list[list[int]] = []
     for s in flash_info["sectors"]:
         address = int(s["address"], 16)
         size = round(float(s["size_kb"]) * 1024)
-        lines.append(f"  {{0x{address:08X}, 0x{size:08X}}},")
+        if regions:
+            last_address, last_size, last_count = regions[-1]
+            if last_size == size and last_address + last_size * last_count == address:
+                regions[-1][2] += 1
+                continue
+        regions.append([address, size, 1])
+
+    lines = [
+        '#include "stm32_flash.hpp"',
+        "",
+        "constexpr LibXR::FlashRegion FLASH_REGIONS[] = {",
+    ]
+    for address, size, count in regions:
+        lines.append(f"  {{0x{address:08X}, 0x{size:08X}, {count}}},")
 
     lines.append("};\n")
     lines.append(
-        "constexpr size_t FLASH_SECTOR_NUMBER = sizeof(FLASH_SECTORS) / sizeof(LibXR::FlashSector);"
+        "constexpr size_t FLASH_REGION_NUMBER = sizeof(FLASH_REGIONS) / sizeof(LibXR::FlashRegion);"
     )
     return "\n".join(lines)
 

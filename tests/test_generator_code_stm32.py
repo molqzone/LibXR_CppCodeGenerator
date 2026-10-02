@@ -1054,11 +1054,32 @@ class GenerationRuns(GeneratorTestCase):
         self.assertIn("0x1D51, 0x6199, 0x100,", code)
 
     def test_flash_pages_below_one_kilobyte_keep_their_size(self):
-        # STM32L0 的页是 128 字节；以前取整成 0 KB。
-        # STM32L0 pages are 128 bytes; they used to be truncated to 0 KB.
+        # STM32L0 的页是 128 字节；以前取整成 0 KB。128 KB 的 L071 是一段 1024 页。
+        # STM32L0 pages are 128 bytes; they used to be truncated to 0 KB. The 128 KB L071 is
+        # one run of 1024 pages.
         code = generator.generate_flash_map_cpp(flash_info_to_dict(layout_flash("STM32L071KBU6")))
-        self.assertIn("{0x08000000, 0x00000080},", code)
-        self.assertIn("{0x08000080, 0x00000080},", code)
+        self.assertIn(
+            "constexpr LibXR::FlashRegion FLASH_REGIONS[] = {\n"
+            "  {0x08000000, 0x00000080, 1024},\n"
+            "};",
+            code,
+        )
+
+    def test_flash_map_joins_adjacent_sectors_of_equal_size(self):
+        # F407 的扇区大小有三种；H743xG 两个 bank 之间有空洞，分成两段。
+        # The F407 has three sector sizes; the H743xG has a gap between its banks, so two runs.
+        cases = {
+            "STM32F407IGH6": "  {0x08000000, 0x00004000, 4},\n"
+            "  {0x08010000, 0x00010000, 1},\n"
+            "  {0x08020000, 0x00020000, 7},\n",
+            "STM32H743VGT6": "  {0x08000000, 0x00020000, 4},\n  {0x08100000, 0x00020000, 4},\n",
+        }
+        for model, regions in cases.items():
+            with self.subTest(model=model):
+                code = generator.generate_flash_map_cpp(flash_info_to_dict(layout_flash(model)))
+                self.assertIn(
+                    "constexpr LibXR::FlashRegion FLASH_REGIONS[] = {\n" + regions + "};", code
+                )
 
     def test_the_log_names_the_system_and_a_new_config_file(self):
         user, logs = self.run_generator("demo", self.project())
