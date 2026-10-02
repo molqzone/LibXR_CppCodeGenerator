@@ -193,8 +193,15 @@ class CommandLine(CubeMXTestCase):
         # CubeMX 6.18 起没有单独的 STM32CubeMX.jar，jar 嵌在可执行文件中。
         # From CubeMX 6.18 there is no separate STM32CubeMX.jar; the jar is in the executable.
         (install / "STM32CubeMX.jar").unlink()
-        with self.assertLogs(level="WARNING"):
+        with self.assertLogs(level="WARNING") as logs:
             self.assertEqual(build_cubemx_command(str(exe), "script.txt")[0], str(exe))
+        self.assertEqual(
+            logs.output,
+            [
+                "WARNING:libxr.cubemx_generator:STM32CubeMX.exe starts CubeMX and returns at "
+                "once, so the generation is not awaited; use --launch-mode auto"
+            ],
+        )
         with zipfile.ZipFile(exe, "w") as archive:
             archive.writestr("META-INF/MANIFEST.MF", "Main-Class: Demo\n")
         command = build_cubemx_command(str(exe), "script.txt")

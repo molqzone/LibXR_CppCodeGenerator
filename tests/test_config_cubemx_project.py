@@ -222,9 +222,16 @@ class LibXRSubmodule(TestCase):
         project, checkout = self.project(self.old, self.old)
         git("submodule", "deinit", "-q", "-f", "--", "Middlewares/Third_Party/LibXR", cwd=project)
         (checkout / "user_sources.cpp").write_text("keep", encoding="utf-8")
-        with self.assertLogs(level="ERROR"), self.assertRaises(SystemExit) as exit:
+        with self.assertLogs(level="ERROR") as logs, self.assertRaises(SystemExit) as exit:
             self.add_libxr(project)
         self.assertEqual(exit.exception.code, 1)
+        self.assertEqual(
+            logs.output,
+            [
+                f"ERROR:root:{checkout} exists but is not a valid Git checkout; it was left "
+                "untouched. Move it away or turn it into a LibXR checkout, then run again."
+            ],
+        )
         self.assertEqual([p.name for p in checkout.iterdir()], ["user_sources.cpp"])
 
     def test_an_existing_clone_is_adopted(self):

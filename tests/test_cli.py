@@ -77,8 +77,15 @@ class Platforms(TestCase):
         config.write_text(text, encoding="utf-8")
         output = project / "User" / "app_main.cpp"
         argv = ["gen", "-i", str(config), "-o", str(output)]
-        with self.assertLogs(level="ERROR"):
+        with self.assertLogs(level="ERROR") as logs:
             self.assertEqual(run_libxr(*argv)[0], 1)
+        self.assertEqual(
+            logs.output,
+            [
+                "ERROR:root:.: no supported platform recognized "
+                "(stm32: a directory with an STM32CubeMX .ioc file)"
+            ],
+        )
         self.assertFalse(output.exists())
         self.assertEqual(run_libxr(*argv, "-d", str(project))[0], 0)
         self.assertTrue(output.is_file())
