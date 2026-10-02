@@ -190,46 +190,13 @@ class ParsedConfiguration(TestCase):
             path.write_text(ioc + extra, encoding="utf-8")
             return peripheral_analyzer_stm32.parse_ioc_file(str(path))
 
-    def test_freertos_tasks_heap_and_features(self):
-        # CubeMX 用分号分隔多个任务，功能开关写 1 或 0。
-        # CubeMX separates tasks with semicolons and writes feature flags as 1 or 0.
-        freertos = self.parse(
-            "FREERTOS.Tasks01=defaultTask,0,3192,StartDefaultTask,Default,NULL,Dynamic,NULL,NULL;"
-            "worker,24,256,StartWorker,Default,NULL,Dynamic,NULL,NULL\n"
-            "FREERTOS.configTOTAL_HEAP_SIZE=65536\n"
-            "FREERTOS.INCLUDE_vTaskDelayUntil=1\n"
-            "FREERTOS.INCLUDE_vTaskDelete=0\n"
-        )["FreeRTOS"]
-        self.assertTrue(freertos["Enabled"])
-        self.assertEqual(
-            freertos["Tasks"],
-            {
-                "defaultTask": {
-                    "Priority": "0",
-                    "StackSize": "3192 words",
-                    "EntryFunction": "StartDefaultTask",
-                    "Type": "Default",
-                },
-                "worker": {
-                    "Priority": "24",
-                    "StackSize": "256 words",
-                    "EntryFunction": "StartWorker",
-                    "Type": "Default",
-                },
-            },
-        )
-        self.assertEqual((freertos["Heap"], freertos["Features"]), ("65536B", ["vTaskDelayUntil"]))
-
-    def test_sizes_and_dma_priorities_keep_their_values(self):
-        # CubeMX 可以把堆大小写成十六进制；DMA 优先级有 VERY_HIGH 一级。
-        # CubeMX may write the heap size in hexadecimal; DMA priorities have a VERY_HIGH level.
+    def test_dma_priorities_keep_their_values(self):
+        # DMA 优先级有 VERY_HIGH 一级。
+        # DMA priorities have a VERY_HIGH level.
         parsed = self.parse(
-            "FREERTOS.configTOTAL_HEAP_SIZE=0x18800\n"
             "Dma.USART1_RX.0.Priority=DMA_PRIORITY_VERY_HIGH\n"
             "Dma.USART1_TX.1.Priority=DMA_PRIORITY_LOW\n"
         )
-        self.assertEqual(parsed["FreeRTOS"]["Heap"], "100352B")
-        self.assertNotIn("AllocationMethod", parsed["FreeRTOS"])
         configurations = parsed["DMA"]["Configurations"]
         self.assertEqual(configurations["USART1_RX_0"]["priority"], "VeryHigh")
         self.assertEqual(configurations["USART1_TX_1"]["priority"], "Low")
@@ -268,17 +235,6 @@ class ParsedConfiguration(TestCase):
         errors = [r for r in logs.records if r.levelname == "ERROR"]
         self.assertEqual([r.getMessage() for r in errors], ["Parsing failed: boom"])
         self.assertIsNotNone(logs.records[-1].exc_info)
-
-    def test_can_flags_follow_their_hal_meaning(self):
-        # ABOM 是自动离线恢复，NART 是禁止自动重传；未写出的参数取 HAL 的默认值。
-        # ABOM is automatic bus-off management and NART disables automatic retransmission;
-        # parameters CubeMX omits keep the HAL defaults.
-        can = self.parse("CAN1.ABOM=ENABLE\nCAN1.NART=ENABLE\nCAN1.AWUM=ENABLE\n")["Peripherals"][
-            "CAN"
-        ]
-        flags = ("AutoBusOff", "AutoRetransmission", "AutoWakeup")
-        self.assertEqual([can["CAN1"][f] for f in flags], [True, False, True])
-        self.assertEqual([can["CAN2"][f] for f in flags], [False, True, False])
 
     def test_dma_requests_add_no_empty_peripheral_groups(self):
         peripherals = self.parse("")["Peripherals"]
@@ -601,37 +557,30 @@ class Rtos(TestCase):
 
     parse = ParsedConfiguration.parse
 
-    def test_the_x_cube_freertos_pack_is_freertos(self):
-        # 以前没有 FreeRTOS 段，libxr gen 按裸机生成。
-        # There used to be no FreeRTOS section, and libxr gen generated for bare metal.
-        with self.assertLogs(level="WARNING"):
-            parsed = self.parse(
-                "Mcu.ThirdParty0=STMicroelectronics.X-CUBE-FREERTOS.1.6.0\n"
-                "STMicroelectronics.X-CUBE-FREERTOS.1.6.0.configTOTAL_HEAP_SIZE=4096\n",
-                H5_IOC,
-            )
-        self.assertEqual(
-            parsed["FreeRTOS"],
-            {"RTOS": "FreeRTOS", "Enabled": True, "Tasks": {}, "Heap": "4096B", "Features": []},
-        )
-
-    def test_the_threadx_middleware_is_threadx(self):
-        # 参数全为默认值时（如 STM32CubeH5 的 USBX 例程）.ioc 中只有 Mcu.IPn=THREADX。
-        # With every parameter at its default, as in the USBX examples of STM32CubeH5, the
-        # .ioc file only has Mcu.IPn=THREADX.
-        for extra, pool in (
-            ("THREADX.TX_APP_CREATION=1\nTHREADX.TX_APP_MEM_POOL_SIZE=3*1024\n", "3*1024B"),
-            ("Mcu.IP9=THREADX\n", None),
+    def test_every_source_gives_its_section(self):
+        # 以前 X-CUBE-FREERTOS 扩展包的工程没有 FreeRTOS 段，libxr gen 按裸机生成。参数全为
+        # 默认值时（如 STM32CubeH5 的 USBX 例程）.ioc 中只有 Mcu.IPn=THREADX。
+        # Projects with the X-CUBE-FREERTOS pack used to get no FreeRTOS section, and libxr gen
+        # generated for bare metal. With every parameter at its default, as in the USBX
+        # examples of STM32CubeH5, the .ioc file only has Mcu.IPn=THREADX.
+        for extra, section in (
+            ("Mcu.ThirdParty0=STMicroelectronics.X-CUBE-FREERTOS.1.6.0\n", "FreeRTOS"),
+            ("Mcu.IP9=FREERTOS\n", "FreeRTOS"),
+            ("FREERTOS.configTOTAL_HEAP_SIZE=4096\n", "FreeRTOS"),
+            ("Mcu.IP9=THREADX\n", "ThreadX"),
+            ("THREADX.TX_APP_CREATION=1\n", "ThreadX"),
+            (
+                "STMicroelectronics.X-CUBE-AZRTOS-H7.3.3.0.AZRTOS_APP_MEM_ALLOCATION_METHOD=1\n",
+                "ThreadX",
+            ),
+            ("", None),
         ):
             with self.subTest(extra=extra), self.assertLogs(level="WARNING"):
                 parsed = self.parse(extra, H5_IOC)
-                self.assertEqual(parsed["ThreadX"]["MemPoolSize"], pool)
-                self.assertNotIn("FreeRTOS", parsed)
-
-    def test_a_project_without_an_rtos_has_neither_section(self):
-        parsed = self.parse("")
-        self.assertNotIn("FreeRTOS", parsed)
-        self.assertNotIn("ThreadX", parsed)
+                self.assertEqual(
+                    {name: parsed[name] for name in ("FreeRTOS", "ThreadX") if name in parsed},
+                    {section: {"Enabled": True}} if section else {},
+                )
 
 
 class Pins(TestCase):

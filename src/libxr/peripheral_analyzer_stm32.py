@@ -36,18 +36,6 @@ def sanitize_numeric(value: str) -> int | float | str:
         return value
 
 
-def byte_size(value: str) -> str:
-    """CubeMX 中的字节数（十进制或 0x 开头的十六进制）写成十进制加 B，例如 0x18800 为
-    100352B；不是整数时原样加 B。
-    A CubeMX byte count, decimal or 0x hexadecimal, written in decimal with a B suffix, e.g.
-    0x18800 gives 100352B; a value that is not an integer gets the B suffix as is.
-    """
-    try:
-        return f"{int(str(value).strip(), 0)}B"
-    except ValueError:
-        return f"{value}B"
-
-
 # --------------------------
 # 配置容器 / Configuration Containers
 # --------------------------
@@ -68,17 +56,8 @@ class ConfigurationManager:
         self.dma_types: dict[str, str] = {}
         self.dma_requests: dict[str, str] = {}
         self.dma_configs: dict[str, dict] = {}
-        self.freertos_config: dict[str, Any] = {
-            "Tasks": {},
-            "Heap": None,
-            "Features": {},
-        }
-        self.threadx_config: dict[str, Any] = {
-            "AllocationMethod": None,
-            "MemPoolSize": None,
-            "CorePresent": None,
-            "Tasks": {},
-        }
+        self.freertos = False
+        self.threadx = False
         self.timebase: dict[str, str | None] = {"Source": "SysTick", "IRQ": None}
         self.mcu_config: dict[str, str | None] = {"Family": None, "Type": None}
 
@@ -87,13 +66,13 @@ class ConfigurationManager:
         Return the final structure written to YAML: Platform, GPIO, Peripherals, DMA, Timebase
         and Mcu.
 
-        Platform 为 stm32，libxr gen 据此选择生成器。识别到 ThreadX（CubeMX 的 THREADX 中间件，或
-        记录了内存分配方式）时加入 ThreadX 段；识别到 FreeRTOS（CubeMX 的 FREERTOS 中间件或
-        X-CUBE-FREERTOS 扩展包）时加入 FreeRTOS 段。libxr gen 按这两段选择 LibXR 的系统。
+        Platform 为 stm32，libxr gen 据此选择生成器。识别到 ThreadX 时加入 ThreadX 段，识别到
+        FreeRTOS 时加入 FreeRTOS 段（见 ThreadXParser 和 FreeRTOSParser），两段都只有
+        Enabled: true；libxr gen 按这两段选择 LibXR 的系统。
         Platform is stm32, from which libxr gen selects the generator. A ThreadX section is added
-        when ThreadX is recognized (the CubeMX THREADX middleware, or a recorded allocation
-        method), and a FreeRTOS section when FreeRTOS is (the CubeMX FREERTOS middleware or the
-        X-CUBE-FREERTOS pack). libxr gen selects the LibXR system from these sections.
+        when ThreadX is recognized and a FreeRTOS section when FreeRTOS is (see ThreadXParser
+        and FreeRTOSParser), each holding only Enabled: true; libxr gen selects the LibXR system
+        from these sections.
         """
         cleaned_data = {
             "Platform": "stm32",
@@ -107,14 +86,10 @@ class ConfigurationManager:
             "Mcu": self.mcu_config,
         }
 
-        cleaned_data_threadx = self._clean_threadx()
-        if self.threadx_config.get("Enabled") or cleaned_data_threadx["AllocationMethod"]:
-            cleaned_data["ThreadX"] = cleaned_data_threadx
-
-        cleaned_freertos = self._clean_freertos()
-        if cleaned_freertos["Enabled"]:
-            cleaned_data["FreeRTOS"] = cleaned_freertos
-
+        if self.threadx:
+            cleaned_data["ThreadX"] = {"Enabled": True}
+        if self.freertos:
+            cleaned_data["FreeRTOS"] = {"Enabled": True}
         return cleaned_data
 
     def _clean_gpio(self) -> dict[str, dict]:
@@ -159,38 +134,6 @@ class ConfigurationManager:
         The DMA configurations that are not empty.
         """
         return {k: v for k, v in self.dma_configs.items() if v}
-
-    def _clean_freertos(self) -> dict:
-        """FreeRTOS 段：任务、堆大小和已启用的功能，功能名去掉 INCLUDE_ 前缀。
-        The FreeRTOS section: tasks, heap size and the enabled features, with INCLUDE_ removed
-        from feature names.
-
-        RTOS 默认为 FreeRTOS，Enabled 默认为 False。
-        RTOS defaults to FreeRTOS and Enabled to False.
-        """
-        return {
-            "RTOS": self.freertos_config.get("RTOS", "FreeRTOS"),
-            "Enabled": self.freertos_config.get("Enabled", False),
-            "Tasks": self.freertos_config["Tasks"],
-            "Heap": self.freertos_config["Heap"],
-            "Features": [
-                feat.replace("INCLUDE_", "")
-                for feat, enabled in self.freertos_config["Features"].items()
-                if enabled
-            ],
-        }
-
-    def _clean_threadx(self) -> dict:
-        """ThreadX 段：内存分配方式、内存池大小、是否包含内核，以及任务。
-        The ThreadX section: allocation method, memory pool size, whether the core is present,
-        and the tasks.
-        """
-        return {
-            "AllocationMethod": self.threadx_config.get("AllocationMethod"),
-            "MemPoolSize": self.threadx_config.get("MemPoolSize"),
-            "CorePresent": self.threadx_config.get("CorePresent"),
-            "Tasks": self.threadx_config["Tasks"],
-        }
 
 
 # --------------------------
@@ -603,9 +546,8 @@ class TIMParser(PeripheralParser):
 # ADC 解析器 / ADC Parser
 # --------------------------
 class ADCParser(PeripheralParser):
-    """读取 ADC 实例的规则转换通道、内部通道、连续模式、DMA 和 EOC 设置。
-    Reads ADC instances: regular conversion channels, internal channels, continuous mode, DMA
-    and EOC selection.
+    """读取 ADC 实例的规则转换通道、内部通道和 DMA 设置。
+    Reads ADC instances: regular conversion channels, internal channels and the DMA setting.
     """
 
     _CHANNEL_PATTERN = re.compile(r"^ADC_CHANNEL_[A-Z0-9_]+$")
@@ -620,6 +562,10 @@ class ADCParser(PeripheralParser):
         put the channel lists in order.
         """
         self._regular: defaultdict[str, dict[int, str]] = defaultdict(dict)
+        # 每个 ADC 的 CommonPathInternal 宏，只用于选择温度传感器宏，不写入配置。
+        # The CommonPathInternal macros of each ADC, used only to choose the temperature sensor
+        # macro and not written to the configuration.
+        self._common_path: dict[str, list[str]] = {}
         for key, value in self.raw_map.items():
             if self._ioc_root_startswith(key, "ADC"):
                 self._parse_adc_property(key, value)
@@ -656,8 +602,7 @@ class ADCParser(PeripheralParser):
 
         # 读取属性解析时记录的 CommonPathInternal（如有）。
         # Read CommonPathInternal (if present) captured during property parsing.
-        adc_cfg = self.config.peripherals.get("ADC", {}).get(adc_name, {})
-        cp_list = adc_cfg.get("CommonPathInternal", []) or []
+        cp_list = self._common_path.get(adc_name, [])
 
         # 直接映射
         # Direct maps
@@ -687,17 +632,15 @@ class ADCParser(PeripheralParser):
         Read one ADCx.<setting> property into that ADC instance.
 
         Channel-N#ChannelRegularConversion 记为第 N 个规则通道，同组的 Rank、SamplingTime 等
-        属性不读；ContinuousConvMode 存为布尔值 ContinuousMode；DMARegular 和
-        DMAContinuousRequests 归一为 "ENABLE" / "DISABLE" 存入 DMA；EOCSelection 原样保存。
+        属性不读；DMARegular 和 DMAContinuousRequests 归一为 "ENABLE" / "DISABLE" 存入 DMA。
         Channel-N#ChannelRegularConversion is recorded as regular channel N, while Rank,
-        SamplingTime and the other properties of the group are not read; ContinuousConvMode is
-        stored as the boolean ContinuousMode; DMARegular and DMAContinuousRequests are
-        normalized to "ENABLE" / "DISABLE" in DMA; EOCSelection is stored as is.
+        SamplingTime and the other properties of the group are not read; DMARegular and
+        DMAContinuousRequests are normalized to "ENABLE" / "DISABLE" in DMA.
 
         CommonPathInternal（如 "null|ADC_CHANNEL_TEMPSENSOR_ADC1|null|null"）按 | 拆分，去掉
-        null 后以大写列表保存，供之后选择温度传感器宏，选择不依赖 MCU 系列。
+        null 后以大写列表记下，供之后选择温度传感器宏，选择不依赖 MCU 系列。
         CommonPathInternal, e.g. "null|ADC_CHANNEL_TEMPSENSOR_ADC1|null|null", is split at |
-        and kept as an upper-case list without null entries, so the temperature sensor macro
+        and noted as an upper-case list without null entries, so the temperature sensor macro
         can be chosen later without depending on the MCU family.
         """
         parts = self._split_ioc_key(key)
@@ -721,19 +664,11 @@ class ADCParser(PeripheralParser):
                 self._regular[adc_name][int(match.group(1))] = value.strip()
             elif match:
                 logging.debug(f"Ignored invalid ADC channel: {key}={value}")
-        elif setting == "ContinuousConvMode":
-            self.config.peripherals["ADC"][adc_name]["ContinuousMode"] = value == "ENABLE"
         elif setting == "DMARegular" or setting == "DMAContinuousRequests":
             self.config.peripherals["ADC"][adc_name]["DMA"] = _to_enable_str(value)
-        elif setting == "EOCSelection":
-            self.config.peripherals["ADC"][adc_name]["EOCSelection"] = value
         elif setting == "CommonPathInternal":
-            # 值形如 "null|ADC_CHANNEL_TEMPSENSOR_ADC1|null|null"。
-            # Example string: "null|ADC_CHANNEL_TEMPSENSOR_ADC1|null|null"
-            raw = str(value)
-            tokens = [t.strip() for t in raw.split("|")]
-            tokens = [t.upper() for t in tokens if t and t.lower() != "null"]
-            self.config.peripherals["ADC"][adc_name]["CommonPathInternal"] = tokens
+            tokens = [t.strip() for t in str(value).split("|")]
+            self._common_path[adc_name] = [t.upper() for t in tokens if t and t.lower() != "null"]
 
     def _get_adc_instance_name(self) -> str:
         """第一个已记录的 ADC 实例名；还没有 ADC 实例时为 "ADC"。
@@ -776,13 +711,11 @@ class ADCParser(PeripheralParser):
         return bool(self._CHANNEL_PATTERN.match(entry))
 
     def _ensure_adc_instance(self, adc_name: str) -> None:
-        """ADC 实例不存在时创建：连续模式关闭，通道列表为空，DMA 为 "DISABLE"。
-        Create the ADC instance when it does not exist: continuous mode off, empty channel
-        lists and DMA "DISABLE".
+        """ADC 实例不存在时创建：通道列表为空，DMA 为 "DISABLE"。
+        Create the ADC instance when it does not exist: empty channel lists and DMA "DISABLE".
         """
         if adc_name not in self.config.peripherals["ADC"]:
             self.config.peripherals["ADC"][adc_name] = {
-                "ContinuousMode": False,
                 "RegularConversions": [],
                 "Channels": [],
                 "DMA": "DISABLE",
@@ -819,7 +752,7 @@ class ADCParser(PeripheralParser):
         for adc_name, adc_cfg in self.config.peripherals["ADC"].items():
             regs = [channel for _, channel in sorted(self._regular.get(adc_name, {}).items())]
             chs = list(dict.fromkeys(regs + adc_cfg.get("Channels", [])))
-            cp_list = adc_cfg.get("CommonPathInternal", []) or []
+            cp_list = self._common_path.get(adc_name, [])
             suffixed = next(
                 (x for x in chs + cp_list if re.match(r"ADC_CHANNEL_TEMPSENSOR_ADC\d+$", x)), None
             )
@@ -930,15 +863,14 @@ class DACParser(PeripheralParser):
 # SPI 解析器 / SPI Parser
 # --------------------------
 class SPIParser(PeripheralParser):
-    """读取 SPI 实例的波特率、方向、时钟极性和时钟相位。
-    Reads SPI instances: baud rate, direction, clock polarity and clock phase.
+    """读取 SPI 实例和它的波特率。
+    Reads SPI instances and their baud rates.
     """
 
     def parse(self, p_type: str) -> None:
-        """读取 SPIx.* 属性：CalculateBaudRate（CubeMX 算出的波特率）写入 BaudRate，Direction、
-        CLKPolarity、CLKPhase 写入同名字段。
-        Read SPIx.* properties: CalculateBaudRate, the baud rate CubeMX calculates, sets
-        BaudRate, and Direction, CLKPolarity and CLKPhase set the fields of the same name.
+        """有 SPIx.* 属性的实例都被记录；CalculateBaudRate（CubeMX 算出的波特率）写入 BaudRate。
+        Record every instance with SPIx.* properties; CalculateBaudRate, the baud rate CubeMX
+        calculates, sets BaudRate.
         """
         for key, value in self.raw_map.items():
             spi_name = self._ioc_key_root(key)
@@ -954,21 +886,13 @@ class SPIParser(PeripheralParser):
             prop = parts[1]
             if prop == "CalculateBaudRate":
                 self.config.peripherals[p_type][spi_name]["BaudRate"] = sanitize_numeric(value)
-            elif prop in ("Direction", "CLKPolarity", "CLKPhase"):
-                self.config.peripherals[p_type][spi_name][prop] = value
 
     def _ensure_spi_instance(self, p_type: str, spi_name: str) -> None:
-        """SPI 实例不存在时创建，各字段为空，DMA 表为空。
-        Create the SPI instance when it does not exist, with empty fields and an empty DMA map.
+        """SPI 实例不存在时创建，波特率为空，DMA 表为空。
+        Create the SPI instance when it does not exist, with no baud rate and an empty DMA map.
         """
         if not self.config.peripherals[p_type].get(spi_name):
-            self.config.peripherals[p_type][spi_name] = {
-                "BaudRate": None,
-                "Direction": None,
-                "CLKPolarity": None,
-                "CLKPhase": None,
-                "DMA": {},
-            }
+            self.config.peripherals[p_type][spi_name] = {"BaudRate": None, "DMA": {}}
 
 
 # --------------------------
@@ -1006,12 +930,12 @@ class USARTParser(PeripheralParser):
         Read USART, UART and LPUART configurations; an instance with only pin signals is created
         too.
 
-        第一遍读取 USARTx/UARTx/LPUARTx.* 属性中的波特率、字长、校验、停止位和 VirtualMode；第二遍
-        从含 _TX 或 _RX 的引脚信号推断实例名，创建尚未出现的实例。最后由引脚上的模式和
-        VirtualMode 定出模式：同步、IrDA、SmartCard 模式的实例在 CubeMX 生成的代码中没有 UART
-        句柄，记录一条警告后去掉，其余实例写入 Mode。
-        The first pass reads baud rate, word length, parity, stop bits and VirtualMode from
-        USARTx/UARTx/LPUARTx.* properties; the second pass derives instance names from pin
+        第一遍读取 USARTx/UARTx/LPUARTx.* 属性中的波特率和 VirtualMode；第二遍从含 _TX 或 _RX 的
+        引脚信号推断实例名，创建尚未出现的实例。最后由引脚上的模式和 VirtualMode 定出模式：同步、
+        IrDA、SmartCard 模式的实例在 CubeMX 生成的代码中没有 UART 句柄，记录一条警告后去掉，其余
+        实例写入 Mode。
+        The first pass reads baud rate and VirtualMode from USARTx/UARTx/LPUARTx.* properties;
+        the second pass derives instance names from pin
         signals containing _TX or _RX and creates the instances not seen yet. Finally the mode
         comes from the pin modes and VirtualMode: an instance in synchronous, IrDA or SmartCard
         mode has no UART handle in the code CubeMX generates and is dropped with a warning; the
@@ -1035,8 +959,6 @@ class USARTParser(PeripheralParser):
                 prop = parts[1]
                 if prop == "BaudRate":
                     self.config.peripherals[p_type][uart_name]["BaudRate"] = sanitize_numeric(value)
-                elif prop in ("WordLength", "Parity", "StopBits"):
-                    self.config.peripherals[p_type][uart_name][prop] = value
                 elif prop.startswith("VirtualMode"):
                     virtual_modes[uart_name] = str(value).strip()
 
@@ -1074,16 +996,13 @@ class USARTParser(PeripheralParser):
                 self.config.peripherals[p_type][name]["Mode"] = mode
 
     def _ensure_uart_instance(self, p_type: str, uart_name: str) -> None:
-        """UART/USART/LPUART 实例不存在时创建，模式为 Asynchronous，其余字段为空。
-        Create the UART/USART/LPUART instance when it does not exist, with mode Asynchronous
-        and the other fields empty.
+        """UART/USART/LPUART 实例不存在时创建，模式为 Asynchronous，波特率为空，DMA 表为空。
+        Create the UART/USART/LPUART instance when it does not exist, with mode Asynchronous,
+        no baud rate and an empty DMA map.
         """
         if uart_name not in self.config.peripherals[p_type]:
             self.config.peripherals[p_type][uart_name] = {
                 "BaudRate": None,
-                "WordLength": None,
-                "Parity": None,
-                "StopBits": None,
                 "Mode": "Asynchronous",
                 "DMA": {},
             }
@@ -1093,8 +1012,8 @@ class USARTParser(PeripheralParser):
 # I2C 解析器 / I2C Parser
 # --------------------------
 class I2CParser(PeripheralParser):
-    """读取 I2C 实例的时钟速度、时序、寻址方式和 SCL/SDA 引脚。
-    Reads I2C instances: clock speed, timing, addressing mode and SCL/SDA pins.
+    """读取 I2C 实例的时钟速度、时序和 SCL/SDA 引脚。
+    Reads I2C instances: clock speed, timing and SCL/SDA pins.
     """
 
     def parse(self, p_type: str) -> None:
@@ -1103,13 +1022,11 @@ class I2CParser(PeripheralParser):
         Read I2C from three kinds of entries: I2C instances listed in Mcu.IP*; pins whose signal
         contains I2C, recorded as SCL or SDA of that instance; and I2Cx.* properties.
 
-        属性按 key 的最后一段精确匹配：ClockSpeed 转为数值，DualAddressMode 转为布尔值，Timing
-        存为字符串，DutyCycle 和 AddressingMode 原样保存。引脚信号属于 FMPI2C 等名字不以 I2C
-        开头的外设时，记录一次警告后跳过，因为 LibXR 没有它们的驱动。引脚处于 SMBus 模式的实例
-        在 CubeMX 生成的代码中只有 SMBUS 句柄，记录一条警告后去掉。
-        Properties match the last token of the key exactly: ClockSpeed becomes a number,
-        DualAddressMode a boolean and Timing a string; DutyCycle and AddressingMode are stored
-        as is. Pin signals of a peripheral whose name does not start with I2C, such as FMPI2C,
+        属性按 key 的最后一段精确匹配：ClockSpeed 转为数值，Timing 存为字符串。引脚信号属于
+        FMPI2C 等名字不以 I2C 开头的外设时，记录一次警告后跳过，因为 LibXR 没有它们的驱动。引脚
+        处于 SMBus 模式的实例在 CubeMX 生成的代码中只有 SMBUS 句柄，记录一条警告后去掉。
+        Properties match the last token of the key exactly: ClockSpeed becomes a number and
+        Timing a string. Pin signals of a peripheral whose name does not start with I2C, such as FMPI2C,
         are logged once as a warning and skipped, as LibXR has no driver for them. An instance
         whose pins are in an SMBus mode has only an SMBUS handle in the code CubeMX generates
         and is dropped with a warning.
@@ -1162,10 +1079,6 @@ class I2CParser(PeripheralParser):
             prop = parts[-1]
             if prop == "ClockSpeed":
                 self.config.peripherals[p_type][i2c_name]["ClockSpeed"] = sanitize_numeric(value)
-            elif prop in ("DutyCycle", "AddressingMode"):
-                self.config.peripherals[p_type][i2c_name][prop] = value
-            elif prop == "DualAddressMode":
-                self.config.peripherals[p_type][i2c_name]["DualAddressMode"] = value == "ENABLE"
             elif prop == "Timing":
                 self.config.peripherals[p_type][i2c_name]["Timing"] = str(value)
 
@@ -1186,17 +1099,14 @@ class I2CParser(PeripheralParser):
                 )
 
     def _ensure_i2c_instance(self, p_type: str, i2c_name: str) -> None:
-        """I2C 实例不存在时创建：7 位寻址，双地址关闭，引脚未定。
-        Create the I2C instance when it does not exist: 7-bit addressing, dual address off, and
-        no pins.
+        """I2C 实例不存在时创建：时钟速度和时序为空，DMA 表为空，引脚未定。
+        Create the I2C instance when it does not exist: no clock speed or timing, an empty DMA
+        map, and no pins.
         """
         if not self.config.peripherals[p_type].get(i2c_name):
             self.config.peripherals[p_type][i2c_name] = {
                 "ClockSpeed": None,
                 "Timing": None,
-                "DutyCycle": None,
-                "AddressingMode": "7-bit",
-                "DualAddressMode": False,
                 "DMA": {},
                 "Pins": {"SCL": None, "SDA": None},
             }
@@ -1216,10 +1126,17 @@ class CANParser(PeripheralParser):
         overrides the p_type argument.
 
         CAN 的 CalculateBaudRate 和 FDCAN 的 CalculateBaudRateNominal 存为 BaudRate，两类的 Mode
-        存为 Mode，其余参数交给 CAN 2.0 或 FDCAN 专用处理。
+        存为 Mode；CAN 的 BS1、BS2 原样存为 TimeSeg1、TimeSeg2。
         CalculateBaudRate of CAN and CalculateBaudRateNominal of FDCAN are stored as BaudRate and
-        Mode of both as Mode; other parameters go to the CAN 2.0 or the FDCAN handler.
+        Mode of both as Mode; BS1 and BS2 of CAN are stored as is in TimeSeg1 and TimeSeg2.
         """
+        fields = {
+            "CalculateBaudRate": "BaudRate",
+            "CalculateBaudRateNominal": "BaudRate",
+            "Mode": "Mode",
+            "BS1": "TimeSeg1",
+            "BS2": "TimeSeg2",
+        }
         for key, value in self.raw_map.items():
             can_name = self._ioc_key_root(key)
             if not can_name.startswith(("CAN", "FDCAN")):
@@ -1230,105 +1147,9 @@ class CANParser(PeripheralParser):
             if len(parts) < 2:
                 continue
 
-            self._ensure_can_instance(p_type, can_name)
-            prop = parts[1]
-
-            # 通用参数
-            # Common parameters
-            if prop in ("CalculateBaudRate", "CalculateBaudRateNominal"):
-                self.config.peripherals[p_type][can_name]["BaudRate"] = value
-            elif prop == "Mode":
-                self.config.peripherals[p_type][can_name]["Mode"] = value
-
-            # CAN 专用参数
-            # CAN-specific parameters
-            if p_type == "CAN":
-                self._handle_legacy_can_params(can_name, prop, value)
-
-            # FDCAN 专用参数
-            # FDCAN-specific parameters
-            if p_type == "FDCAN":
-                self._handle_fdcan_params(can_name, prop, value)
-
-    def _ensure_can_instance(self, p_type: str, can_name: str) -> None:
-        """实例不存在时按类型创建默认字段。
-        Create the instance with the default fields of its type when it does not exist.
-
-        CAN 为波特率、模式、两个时间段和自动重传/自动唤醒；FDCAN 为标称预分频、标称波特率、
-        帧格式和标准/扩展滤波器数量。
-        CAN gets baud rate, mode, two time segments and auto retransmission/wakeup; FDCAN gets
-        nominal prescaler, nominal baud rate, frame format and standard/extended filter counts.
-        """
-        if can_name not in self.config.peripherals[p_type]:
-            defaults = {
-                "CAN": {
-                    "BaudRate": None,
-                    "Mode": None,
-                    "TimeSeg1": None,
-                    "TimeSeg2": None,
-                    "AutoRetransmission": True,
-                    "AutoBusOff": False,
-                    "AutoWakeup": False,
-                },
-                "FDCAN": {
-                    "NominalPrescaler": None,
-                    "FrameFormat": None,
-                    "StdFilters": 0,
-                    "ExtFilters": 0,
-                },
-            }
-            self.config.peripherals[p_type][can_name] = defaults[p_type].copy()
-
-    def _handle_legacy_can_params(self, can_name: str, prop: str, value: str) -> None:
-        """读取 CAN 2.0 参数：BS1、BS2 原样存为 TimeSeg1、TimeSeg2；ABOM、AWUM 转为布尔值存为
-        AutoBusOff、AutoWakeup；NART（禁止自动重传）取反后存为 AutoRetransmission。
-        Read CAN 2.0 parameters: BS1 and BS2 are stored as is in TimeSeg1 and TimeSeg2; ABOM
-        and AWUM become the booleans AutoBusOff and AutoWakeup; NART (no automatic
-        retransmission) is inverted into AutoRetransmission.
-        """
-        param_map = {
-            "BS1": "TimeSeg1",
-            "BS2": "TimeSeg2",
-            "ABOM": ("AutoBusOff", lambda v: v == "ENABLE"),
-            "AWUM": ("AutoWakeup", lambda v: v == "ENABLE"),
-            "NART": ("AutoRetransmission", lambda v: v != "ENABLE"),
-        }
-
-        if mapping := param_map.get(prop):
-            if isinstance(mapping, tuple):
-                key, converter = mapping
-                self.config.peripherals["CAN"][can_name][key] = converter(value)
-            else:
-                self.config.peripherals["CAN"][can_name][mapping] = value
-
-    def _handle_fdcan_params(self, can_name: str, prop: str, value: str) -> None:
-        """读取 FDCAN 参数并转换类型；转换失败时记录警告。
-        Read FDCAN parameters with type conversion; a failed conversion is logged as a warning.
-
-        NominalPrescaler 转为浮点数；FrameFormat 为字符串；StdFiltersNbr、ExtFiltersNbr 转为
-        整数，存为 StdFilters、ExtFilters。波特率由通用处理从 CalculateBaudRateNominal 读取。
-        NominalPrescaler becomes a float; FrameFormat a string; StdFiltersNbr and ExtFiltersNbr
-        integers stored as StdFilters and ExtFilters. The common handling reads the baud rate
-        from CalculateBaudRateNominal.
-        """
-        param_map = {
-            "NominalPrescaler": ("NominalPrescaler", float),
-            "FrameFormat": ("FrameFormat", str),
-            "StdFiltersNbr": ("StdFilters", int),
-            "ExtFiltersNbr": ("ExtFilters", int),
-        }
-
-        if mapping := param_map.get(prop):
-            key, converter = mapping
-            try:
-                self.config.peripherals["FDCAN"][can_name][key] = converter(value)
-            except ValueError:
-                logging.warning(
-                    tr(
-                        f"Invalid {key} value for {can_name}: {value}",
-                        f"{can_name} 的 {key} 值无效：{value}",
-                    )
-                )
+            instance = self.config.peripherals[p_type].setdefault(can_name, {})
+            if field := fields.get(parts[1]):
+                instance[field] = value
 
 
 # --------------------------
@@ -1664,52 +1485,26 @@ class DMAParser(PeripheralParser):
 
 
 class ThreadXParser(PeripheralParser):
-    """读取 ThreadX（Azure RTOS）的内存池大小、内存分配方式、内核选择和任务栈大小。
-    Reads ThreadX (Azure RTOS) memory pool size, allocation method, core selection and task
-    stack sizes.
+    """识别工程是否使用 ThreadX（Azure RTOS）。
+    Recognizes whether the project uses ThreadX (Azure RTOS).
     """
 
     def parse(self, p_type: str) -> None:
-        """读取 ThreadX 条目写入 threadx_config。
-        Read ThreadX entries into threadx_config.
-
-        以 TX_APP_MEM_POOL_SIZE 结尾的 key 为 MemPoolSize；以 AZRTOS_APP_MEM_ALLOCATION_METHOD
-        结尾的 key 为 AllocationMethod（1 为 Static，0 为 Dynamic）；含
-        ThreadXCcRTOSJjThreadXJjCore 的 key（ThreadX Core 组件选择）为布尔值 CorePresent；
-        AZRTOS.ThreadX.<任务>.StackSize 为任务栈大小。大小值带 B 后缀。工程用了 CubeMX 内置的
-        THREADX 中间件（如 STM32H5）时 Enabled 为真：Mcu.IPn 为 THREADX，或有 THREADX.* key；参数
-        全为默认值时 .ioc 中只有前者。
-        A key ending in TX_APP_MEM_POOL_SIZE gives MemPoolSize; one ending in
-        AZRTOS_APP_MEM_ALLOCATION_METHOD gives AllocationMethod (1 is Static, 0 Dynamic); a key
-        containing ThreadXCcRTOSJjThreadXJjCore, the ThreadX Core component selection, gives
-        the boolean CorePresent; AZRTOS.ThreadX.<task>.StackSize gives a task stack size. Sizes
-        carry a B suffix. A project with the THREADX middleware built into CubeMX (as on
-        STM32H5) has Enabled true: a Mcu.IPn is THREADX, or THREADX.* keys exist; with every
-        parameter at its default the .ioc file has only the former.
+        """有以下任一条目时记下工程使用 ThreadX：Mcu.IPn 为 THREADX，或有 THREADX.* key（CubeMX
+        内置的 THREADX 中间件，如 STM32H5；参数全为默认值时 .ioc 中只有前者）；或有以
+        AZRTOS_APP_MEM_ALLOCATION_METHOD 结尾的 key（X-CUBE-AZRTOS 扩展包）。
+        Record that the project uses ThreadX when any of these entries exists: a Mcu.IPn of
+        THREADX or THREADX.* keys (the THREADX middleware built into CubeMX, as on STM32H5; with
+        every parameter at its default the .ioc file has only the former), or a key ending in
+        AZRTOS_APP_MEM_ALLOCATION_METHOD (the X-CUBE-AZRTOS pack).
         """
         for key, value in self.raw_map.items():
-            if self._has_ioc_prefix(key, "THREADX") or (
-                self._ioc_key_startswith(key, "Mcu.IP") and value == "THREADX"
+            if (
+                self._has_ioc_prefix(key, "THREADX")
+                or (self._ioc_key_startswith(key, "Mcu.IP") and value == "THREADX")
+                or key.endswith("AZRTOS_APP_MEM_ALLOCATION_METHOD")
             ):
-                self.config.threadx_config["Enabled"] = True
-            if key.endswith("TX_APP_MEM_POOL_SIZE"):
-                self.config.threadx_config["MemPoolSize"] = byte_size(value)
-
-            elif key.endswith("AZRTOS_APP_MEM_ALLOCATION_METHOD"):
-                method_map = {
-                    "1": "Static",
-                    "0": "Dynamic",
-                }
-                self.config.threadx_config["AllocationMethod"] = method_map.get(value, value)
-
-            elif "ThreadXCcRTOSJjThreadXJjCore" in key:
-                self.config.threadx_config["CorePresent"] = value.lower() == "true"
-
-            elif self._has_ioc_prefix(key, "AZRTOS.ThreadX") and key.endswith(".StackSize"):
-                parts = self._split_ioc_key(key)
-                if len(parts) == 3:
-                    task = parts[1]
-                    self.config.threadx_config["Tasks"][task] = {"StackSize": byte_size(value)}
+                self.config.threadx = True
 
 
 # --------------------------
@@ -1794,8 +1589,8 @@ class WatchdogParser(PeripheralParser):
 # FreeRTOS 解析器 / FreeRTOS Parser
 # --------------------------
 class FreeRTOSParser(PeripheralParser):
-    """读取 FreeRTOS 的任务、堆大小和 INCLUDE_ 功能开关。
-    Reads FreeRTOS tasks, heap size and INCLUDE_ feature flags.
+    """识别工程是否使用 FreeRTOS。
+    Recognizes whether the project uses FreeRTOS.
     """
 
     # STM32C0、H5、N6、U0、U3、U5、WBA 等系列的 FreeRTOS 来自这个扩展包，不是 FREERTOS 中间件。
@@ -1804,66 +1599,23 @@ class FreeRTOSParser(PeripheralParser):
     _PACK = "STMicroelectronics.X-CUBE-FREERTOS"
 
     def parse(self, p_type: str) -> None:
-        """读取 FREERTOS.* 条目：Tasks* 为任务定义，configTOTAL_HEAP_SIZE（或含 HeapSize 的
-        key）为堆大小（带 B 后缀），key 含 INCLUDE_ 时为功能开关；有任何条目时 Enabled 为真。
-        Read FREERTOS.* entries: Tasks* holds task definitions, configTOTAL_HEAP_SIZE (or a
-        key containing HeapSize) the heap size with a B suffix, and a key containing INCLUDE_ a
-        feature flag; any entry makes Enabled true.
-
-        Mcu.IPn 为 FREERTOS 时 Enabled 也为真。工程用了 X-CUBE-FREERTOS 扩展包（Mcu.ThirdPartyN
-        为该包）时同样如此，堆大小取包的 configTOTAL_HEAP_SIZE；这类工程的任务写在用户代码中，
-        .ioc 里没有。
-        A Mcu.IPn of FREERTOS also makes Enabled true. So does the X-CUBE-FREERTOS pack (a
-        Mcu.ThirdPartyN naming it), with the heap size from configTOTAL_HEAP_SIZE of the pack;
-        the tasks of such a project live in user code, not in the .ioc file.
+        """有以下任一条目时记下工程使用 FreeRTOS：Mcu.IPn 为 FREERTOS，任何 FREERTOS.<参数>
+        条目，或 Mcu.ThirdPartyN 为 X-CUBE-FREERTOS 扩展包（这类工程的任务写在用户代码中，
+        .ioc 里没有）。
+        Record that the project uses FreeRTOS when any of these entries exists: a Mcu.IPn of
+        FREERTOS, any FREERTOS.<parameter> entry, or a Mcu.ThirdPartyN naming the
+        X-CUBE-FREERTOS pack (the tasks of such a project live in user code, not in the .ioc
+        file).
         """
         for key, value in self.raw_map.items():
             if (
-                self._ioc_key_startswith(key, "Mcu.ThirdParty")
-                and str(value).startswith(self._PACK)
-            ) or (self._ioc_key_startswith(key, "Mcu.IP") and value == "FREERTOS"):
-                self.config.freertos_config["Enabled"] = True
-            elif key.startswith(f"{self._PACK}.") and key.endswith(".configTOTAL_HEAP_SIZE"):
-                self.config.freertos_config["Heap"] = byte_size(value)
-            if not self._ioc_root_startswith(key, "FREERTOS"):
-                continue
-
-            parts = self._split_ioc_key(key)
-            if len(parts) < 2:
-                continue
-            self.config.freertos_config["Enabled"] = True
-            if parts[1].startswith("Tasks"):
-                self._process_task_configuration(value)
-            elif parts[1] == "configTOTAL_HEAP_SIZE" or "HeapSize" in key:
-                self.config.freertos_config["Heap"] = byte_size(value)
-            elif "INCLUDE_" in key:
-                self._process_feature_flag(parts[1], value)
-
-    def _process_task_configuration(self, task_data: str) -> None:
-        """读取任务定义：任务之间用分号分隔，每个任务按逗号拆分并去掉空项和 NULL，至少五项时
-        记录。
-        Read task definitions: tasks are separated by semicolons, each is split at commas with
-        empty and NULL items dropped, and recorded when at least five items remain.
-
-        前五项依次为任务名、优先级、栈大小、入口函数和类型；CubeMX 中栈大小的单位是字（word）。
-        The first five items are the task name, priority, stack size, entry function and type;
-        CubeMX gives the stack size in words.
-        """
-        for task in task_data.split(";"):
-            elements = [x for x in task.split(",") if x and x != "NULL"]
-            if len(elements) >= 5:
-                self.config.freertos_config["Tasks"][elements[0]] = {
-                    "Priority": elements[1],
-                    "StackSize": f"{elements[2]} words",
-                    "EntryFunction": elements[3],
-                    "Type": elements[4],
-                }
-
-    def _process_feature_flag(self, feature: str, state: str) -> None:
-        """记录一个 FreeRTOS 功能开关；CubeMX 写 1 或 ENABLE 时为 True。
-        Record one FreeRTOS feature flag; True when CubeMX writes 1 or ENABLE.
-        """
-        self.config.freertos_config["Features"][feature] = state in ("1", "ENABLE")
+                (self._ioc_key_startswith(key, "Mcu.ThirdParty") and value.startswith(self._PACK))
+                or (self._ioc_key_startswith(key, "Mcu.IP") and value == "FREERTOS")
+                or (
+                    self._ioc_root_startswith(key, "FREERTOS") and len(self._split_ioc_key(key)) > 1
+                )
+            ):
+                self.config.freertos = True
 
 
 # --------------------------
