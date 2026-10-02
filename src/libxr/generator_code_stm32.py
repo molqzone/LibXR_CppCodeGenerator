@@ -62,6 +62,10 @@ libxr_settings = copy.deepcopy(DEFAULT_SETTINGS)
 # 已加载的 libxr_config.yaml 的往返文档（含注释和用户的键）。
 # Round-trip document of the loaded libxr_config.yaml (comments, user keys).
 libxr_config_document = None
+# 生效设置来自的 libxr_config.yaml（路径或 URL）；设置无效时的报错写出它。
+# The libxr_config.yaml, a path or URL, that the effective settings come from; errors about
+# invalid settings name it.
+libxr_config_origin = "libxr_config.yaml"
 # 从 URL 下载 libxr_config.yaml 的时限（秒）。
 # Time limit in seconds for downloading libxr_config.yaml from a URL.
 CONFIG_DOWNLOAD_TIMEOUT = 30
@@ -71,15 +75,16 @@ CONFIG_DOWNLOAD_TIMEOUT = 30
 # 配置初始化 / Configuration Initialization
 # --------------------------
 def reset_settings() -> None:
-    """把生效的设置恢复为 DEFAULT_SETTINGS，并丢掉已加载的 libxr_config.yaml 文档，使同一进程中
-    的下一次生成不带上一次的设置。
+    """把生效的设置恢复为 DEFAULT_SETTINGS，并丢掉已加载的 libxr_config.yaml 文档和它的来源，使
+    同一进程中的下一次生成不带上一次的设置。
     Restore the effective settings to DEFAULT_SETTINGS and drop the loaded libxr_config.yaml
-    document, so the next generation in the same process carries nothing over.
+    document and its origin, so the next generation in the same process carries nothing over.
     """
-    global libxr_config_document
+    global libxr_config_document, libxr_config_origin
     libxr_settings.clear()
     libxr_settings.update(copy.deepcopy(DEFAULT_SETTINGS))
     libxr_config_document = None
+    libxr_config_origin = "libxr_config.yaml"
 
 
 def initialize_registry(use_xrobot: bool) -> None:
@@ -269,20 +274,23 @@ def load_libxr_config(output_dir: str, config_source: str) -> None:
 
     文件中的 SYSTEM 被忽略，它由工程 YAML 决定；config_version 大于 1 时给出警告。URL 的下载
     时限为 CONFIG_DOWNLOAD_TIMEOUT 秒。没有配置文件时保留默认设置并使用新的空文档。已存在但
-    无法读取或解析的配置会中止生成，而不是换用默认值。
+    无法读取或解析的配置会中止生成，而不是换用默认值。配置的路径或 URL 记为
+    libxr_config_origin，之后设置无效的报错都写出它。
     SYSTEM from the file is ignored because the project YAML decides it; a config_version
     above 1 is warned about. A URL download times out after CONFIG_DOWNLOAD_TIMEOUT seconds.
     Without a configuration file the defaults stay and a new, empty document is used. A
     configuration that exists but cannot be read or parsed stops generation instead of falling
-    back to the defaults.
+    back to the defaults. The path or URL of the configuration becomes libxr_config_origin,
+    which every later error about an invalid setting names.
 
     Raises:
-        LibXRConfigError: 配置无法下载、找到、读取或解析，或其值的类型与默认设置冲突。
-            The configuration cannot be downloaded, located, read or parsed, or the type of a
-            value conflicts with the default settings.
+        LibXRConfigError: 配置无法下载、找到、读取或解析，或某个设置段不是映射。
+            The configuration cannot be downloaded, located, read or parsed, or a settings
+            section is not a mapping.
     """
-    global libxr_settings, libxr_config_document
+    global libxr_settings, libxr_config_document, libxr_config_origin
     config_path = os.path.join(output_dir, "libxr_config.yaml")
+    libxr_config_origin = config_source or config_path
 
     if config_source:
         if config_source.startswith("http://") or config_source.startswith("https://"):
@@ -437,45 +445,32 @@ def libxr_config_text() -> str:
     return libxr_config_file.dump(document)
 
 
-def _deep_merge(base: dict, update: dict) -> dict:
-    """把 update 递归合并进 base 并返回 base；映射逐键合并，其他值直接覆盖，base 中映射对应的
-    null 视为空映射。
-    Merge update into base recursively and return base; mappings are merged key by key, other
-    values overwrite, and a null meeting a mapping in base counts as an empty mapping.
+def _deep_merge(base: dict, update: dict, path: str = "") -> dict:
+    """把 update 递归合并进 base 并返回 base；base 中的设置段逐键合并，其他值直接覆盖，设置段
+    对应的 null 视为空映射。单个值的类型在生成时用到它的地方检查。
+    Merge update into base recursively and return base; settings sections of base are merged
+    key by key, other values overwrite, and a null meeting a settings section counts as an empty
+    mapping. The type of a single value is checked where generation uses it.
+
+    Args:
+        path: base 在设置中的位置，例如 Terminal；报错时写出完整的键。
+            Where base sits in the settings, for example Terminal; errors name the full key.
 
     Raises:
-        LibXRConfigError: update 中的映射对应 base 中的非映射值，或 update 中的非映射值对应 base
-            中的映射。
-            A mapping in update meets a non-mapping value in base, or a non-mapping value in
-            update meets a mapping in base.
+        LibXRConfigError: base 中的设置段在 update 中不是映射，例如 USART: 5。
+            A settings section of base is not a mapping in update, for example USART: 5.
     """
     for key, value in update.items():
-        if isinstance(value, dict):
-            node = base.setdefault(key, {})
-            if isinstance(node, dict):
-                _deep_merge(node, value)
-            else:
-                expected = type(node).__name__
-                raise LibXRConfigError(
-                    tr(
-                        f"Config type conflict for key '{key}': expected {expected}, got a mapping",
-                        f"配置键 '{key}' 的类型冲突：应为 {expected}，实际是映射",
-                    )
-                )
-        elif isinstance(base.get(key), dict):
-            if value is None:
-                # 空的段（例如只写了 "I2C:"）等同于空映射。
-                # An empty section such as a bare "I2C:" counts as an empty mapping.
-                continue
-            actual = type(value).__name__
-            raise LibXRConfigError(
-                tr(
-                    f"Config type conflict for key '{key}': expected a mapping, got {actual}",
-                    f"配置键 '{key}' 的类型冲突：应为映射，实际是 {actual}",
-                )
-            )
-        else:
+        full_key = f"{path}.{key}" if path else str(key)
+        section = base.get(key)
+        if not isinstance(section, dict):
             base[key] = value
+        elif isinstance(value, dict):
+            _deep_merge(section, value, full_key)
+        # 空的段（例如只写了 "I2C:"）等同于空映射。
+        # An empty section such as a bare "I2C:" counts as an empty mapping.
+        elif value is not None:
+            raise _invalid_setting(full_key, value, "a mapping", "映射")
     return base
 
 
@@ -808,6 +803,70 @@ def _pcd_handle(instance: str, config: dict) -> str | None:
     return config.get("PCDHandle") or f"hpcd_{name}"
 
 
+def _invalid_setting(key: str, value, english: str, chinese: str) -> LibXRConfigError:
+    """设置 key 的值 value 无效时的错误；信息写出 libxr_config_origin、key、value 和应有的值。
+    The error for the invalid value of the setting key; the message names libxr_config_origin,
+    key, value and what the value must be.
+    """
+    return LibXRConfigError(
+        tr(
+            f"{libxr_config_origin}: {key} {value!r} is not {english}",
+            f"{libxr_config_origin}：{key} {value!r} 不是{chinese}",
+        )
+    )
+
+
+def _settings(*keys: str) -> dict:
+    """libxr_settings 中按 keys 逐层找到的设置段；缺少的段和空值（YAML 中只写了键）改为空映射。
+    The settings section reached through keys in libxr_settings, level by level; a missing
+    section or an empty value (only the key written in YAML) becomes an empty mapping.
+
+    Raises:
+        LibXRConfigError: 路径上的某个值不是映射；信息中写出到它为止的键。
+            A value on the way is not a mapping; the message names the keys up to it.
+    """
+    section = libxr_settings
+    for depth, key in enumerate(keys):
+        value = section.get(key)
+        if value is None:
+            value = section[key] = {}
+        elif not isinstance(value, dict):
+            raise _invalid_setting(".".join(keys[: depth + 1]), value, "a mapping", "映射")
+        section = value
+    return section
+
+
+def _flag(key: str, value) -> bool:
+    """设置 key 的开关值：YAML 的 true/false、yes/no 或 on/off。
+    The on/off value of the setting key: YAML true/false, yes/no or on/off.
+
+    Raises:
+        LibXRConfigError: value 不是布尔值，例如加了引号的 "false"；信息中写出 key。
+            value is not a boolean, for example a quoted "false"; the message names key.
+    """
+    if isinstance(value, bool):
+        return value
+    raise _invalid_setting(key, value, "true or false", "布尔值（true 或 false）")
+
+
+def _text(key: str, value) -> str:
+    """设置 key 的文本值；空值（YAML 中只写了键）为空字符串。
+    The text value of the setting key; an empty value (only the key written in YAML) is an
+    empty string.
+
+    Raises:
+        LibXRConfigError: value 不是字符串；信息中写出 key。数字也不接受，例如 serial: 0001
+            读出的是 1。
+            value is not a string; the message names key. Numbers are refused as well:
+            serial: 0001 reads as 1.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    raise _invalid_setting(key, value, "a string", "字符串")
+
+
 def _integer(key: str, value, minimum: int = 1, maximum: int | None = None) -> int:
     """设置 key 的整数值；字符串按 Python 整数字面量解析（如 0x1D50）。
     The integer value of the setting key; a string is read as a Python integer literal, such
@@ -818,7 +877,7 @@ def _integer(key: str, value, minimum: int = 1, maximum: int | None = None) -> i
     time.
 
     Raises:
-        ValueError: value 不是整数，或不在 minimum 到 maximum 之间；信息中写出 key。
+        LibXRConfigError: value 不是整数，或不在 minimum 到 maximum 之间；信息中写出 key。
             value is not an integer, or lies outside minimum to maximum; the message names key.
     """
     number = None
@@ -841,7 +900,7 @@ def _integer(key: str, value, minimum: int = 1, maximum: int | None = None) -> i
         english, chinese = "a positive integer", "正整数"
     else:
         english, chinese = "a non-negative integer", "非负整数"
-    raise ValueError(tr(f"{key} {value!r} is not {english}", f"{key} {value!r} 不是{chinese}"))
+    raise _invalid_setting(key, value, english, chinese)
 
 
 def _number(key: str, value) -> float | int:
@@ -849,7 +908,7 @@ def _number(key: str, value) -> float | int:
     The numeric value, integer or decimal, of the setting key; a string is read as a decimal.
 
     Raises:
-        ValueError: value 不是有限的数；信息中写出 key。
+        LibXRConfigError: value 不是有限的数；信息中写出 key。
             value is not a finite number; the message names key.
     """
     if not isinstance(value, bool):
@@ -861,7 +920,7 @@ def _number(key: str, value) -> float | int:
                 number = None
         if number is not None and math.isfinite(number):
             return number
-    raise ValueError(tr(f"{key} {value!r} is not a number", f"{key} {value!r} 不是数字"))
+    raise _invalid_setting(key, value, "a number", "数字")
 
 
 def _usb_settings(instance: str) -> tuple[str, dict] | None:
@@ -880,27 +939,30 @@ def _usb_settings(instance: str) -> tuple[str, dict] | None:
     in a fixed order: packet size, buffer and FIFO sizes, dma_section, CDC FIFO and queue
     lengths, and the descriptor (default 1d50:6199 / 0x0100 / "XRUSB-DEMO-"; see the link
     above for the allocation of 1d50:6199). An ep0_packet_size other than 8, 16, 32 or 64 is
-    warned about and becomes 8; the other sizes must be positive integers, and vid, pid and
-    bcd must lie between 0 and 0xFFFF.
+    warned about and becomes 8; the other sizes must be positive integers, vid, pid and bcd
+    must lie between 0 and 0xFFFF, and dma_section and the descriptor strings must be strings.
 
     Raises:
-        ValueError: 已启用的实例设置了 cdc_count（复合 USB 设备应在 BSP 用户代码中定义），或某个
-            大小或描述符数值无效。
-            An enabled instance sets cdc_count (a composite USB device belongs in BSP user code),
-            or a size or descriptor number is invalid.
+        LibXRConfigError: 实例的设置不是映射或 enable 不是布尔值；已启用的实例设置了 cdc_count
+            （复合 USB 设备应在 BSP 用户代码中定义），或某个大小、描述符数值或字符串无效。
+            The settings of the instance are not a mapping or enable is not a boolean; an
+            enabled instance sets cdc_count (a composite USB device belongs in BSP user code),
+            or a size, descriptor number or string is invalid.
     """
     name = _USB_INSTANCES.get((instance or "").upper())
     if name is None:
         return None
-    cfg = libxr_settings.setdefault("USB", {}).setdefault(name.lower(), {})
-    cfg.setdefault("enable", False)
-    if not cfg["enable"]:
+    prefix = f"USB.{name.lower()}"
+    cfg = _settings("USB", name.lower())
+    if not _flag(f"{prefix}.enable", cfg.setdefault("enable", False)):
         return name, cfg
     if "cdc_count" in cfg:
-        raise ValueError(
+        raise LibXRConfigError(
             tr(
-                "USB cdc_count is not a generator option; define composite USB in BSP user code",
-                "USB 的 cdc_count 不是生成器选项；复合 USB 设备请在 BSP 用户代码中定义",
+                f"{libxr_config_origin}: {prefix}.cdc_count is not a generator option; define "
+                "composite USB in BSP user code",
+                f"{libxr_config_origin}：{prefix}.cdc_count 不是生成器选项；复合 USB 设备请在 BSP "
+                "用户代码中定义",
             )
         )
     try:
@@ -947,9 +1009,11 @@ def _usb_settings(instance: str) -> tuple[str, dict] | None:
         "cdc_rx_fifo_size",
         "cdc_queue_size",
     ):
-        _integer(f"USB.{name.lower()}.{key}", cfg[key])
+        _integer(f"{prefix}.{key}", cfg[key])
     for key in ("vid", "pid", "bcd"):
-        _integer(f"USB.{name.lower()}.{key}", cfg[key], 0, 0xFFFF)
+        _integer(f"{prefix}.{key}", cfg[key], 0, 0xFFFF)
+    for key in ("dma_section", "manufacturer", "product", "serial"):
+        cfg[key] = _text(f"{prefix}.{key}", cfg[key])
     return name, cfg
 
 
@@ -975,19 +1039,21 @@ def generate_dma_resources(project_data: dict) -> str:
     lengths and endpoint capacities do not change.
 
     Raises:
-        ValueError: 已启用的 USB 实例设置了 cdc_count，或某个大小不是正整数。
-            An enabled USB instance sets cdc_count, or a size is not a positive integer.
+        LibXRConfigError: 某个设置段不是映射，已启用的 USB 实例设置了 cdc_count，或某个大小或
+            dma_section 无效。
+            A settings section is not a mapping, an enabled USB instance sets cdc_count, or a
+            size or dma_section is invalid.
     """
     dma_code = []
 
-    def section_attribute(instance_config: dict) -> str:
+    def section_attribute(key: str, instance_config: dict) -> str:
         """实例设置中 dma_section 对应的段属性文本；没有设置时为空字符串，并把 dma_section 记为
-        空字符串，使 libxr_config.yaml 列出这一项。
+        空字符串，使 libxr_config.yaml 列出这一项。key 是实例设置的键，例如 SPI.spi1。
         The section attribute text for dma_section in the instance settings; an empty string
         when it is not set, and dma_section is then recorded as an empty string so that
-        libxr_config.yaml lists it.
+        libxr_config.yaml lists it. key is the key of the instance settings, such as SPI.spi1.
         """
-        dma_section = instance_config.get("dma_section") or ""
+        dma_section = _text(f"{key}.dma_section", instance_config.get("dma_section"))
         instance_config["dma_section"] = dma_section
         return f' __attribute__((section("{dma_section}")))' if dma_section else ""
 
@@ -1032,10 +1098,9 @@ def generate_dma_resources(project_data: dict) -> str:
         match = re.match(r"([A-Za-z0-9]+?)(\d*)$", p_type_raw)
         p_type_base = match.group(1).upper() if match else p_type_raw.upper()
 
-        # 确保该外设的设置字典存在
-        # Ensure settings dict exists for this peripheral
-        if p_type_base not in libxr_settings:
-            libxr_settings[p_type_base] = {}
+        # 确保该外设的设置段存在
+        # Ensure the settings section of this peripheral exists
+        _settings(p_type_base)
 
         # SPI 和 USART 外设；parse 把 USART、UART 和 LPUART 实例都放在 USART 下。
         # SPI and USART; parse puts USART, UART and LPUART instances all under USART.
@@ -1046,7 +1111,7 @@ def generate_dma_resources(project_data: dict) -> str:
                 tx_dma = config.get("DMA_TX", "DISABLE") == "ENABLE"
                 rx_dma = config.get("DMA_RX", "DISABLE") == "ENABLE"
                 instance_lower = instance.lower()
-                instance_config = libxr_settings[p_type_base].setdefault(instance_lower, {})
+                instance_config = _settings(p_type_base, instance_lower)
                 key = f"{p_type_base}.{instance_lower}"
                 tx_size = _integer(
                     f"{key}.tx_buffer_size",
@@ -1060,7 +1125,7 @@ def generate_dma_resources(project_data: dict) -> str:
                         "rx_buffer_size", DMA_DEFAULT_SIZES[p_type_base]["rx"]
                     ),
                 )
-                sec_str = section_attribute(instance_config)
+                sec_str = section_attribute(key, instance_config)
 
                 buf_code = []
                 if tx_dma:
@@ -1079,14 +1144,15 @@ def generate_dma_resources(project_data: dict) -> str:
         elif p_type_base in ["I2C", "ADC"]:
             for instance, config in instances.items():
                 instance_lower = instance.lower()
-                instance_config = libxr_settings[p_type_base].setdefault(instance_lower, {})
+                instance_config = _settings(p_type_base, instance_lower)
+                key = f"{p_type_base}.{instance_lower}"
                 buf_size = _integer(
-                    f"{p_type_base}.{instance_lower}.buffer_size",
+                    f"{key}.buffer_size",
                     instance_config.setdefault(
                         "buffer_size", DMA_DEFAULT_SIZES[p_type_base]["buffer"]
                     ),
                 )
-                sec_str = section_attribute(instance_config)
+                sec_str = section_attribute(key, instance_config)
 
                 # ADC 缓冲区为 uint16_t，I2C 为 uint8_t
                 # ADC buffer is uint16_t, I2C is uint8_t
@@ -1191,8 +1257,12 @@ def _instance_settings(group: str, instance: str) -> dict:
     旧版本按 CubeMX 的写法保存的键（如 CAN 下的 CAN1）改为小写，并记录一条提示。
     A key that older versions saved as CubeMX writes it, such as CAN1 under CAN, is renamed to
     lower case with a notice.
+
+    Raises:
+        LibXRConfigError: group 或实例的设置不是映射。
+            The settings of group or of the instance are not a mapping.
     """
-    settings = libxr_settings.setdefault(group, {})
+    settings = _settings(group)
     key = instance.lower()
     for old_key in [k for k in settings if k != key and str(k).lower() == key]:
         value = settings.pop(old_key)
@@ -1204,7 +1274,7 @@ def _instance_settings(group: str, instance: str) -> dict:
                 f"libxr_config.yaml：已把 {group}.{old_key} 改为 {group}.{key}",
             )
         )
-    return settings.setdefault(key, {})
+    return _settings(group, key)
 
 
 class PeripheralFactory:
@@ -1262,7 +1332,7 @@ class PeripheralFactory:
             if config.get("DMA") == "ENABLE"
             else config.get("Channels", [])
         )
-        adc_config = libxr_settings["ADC"].setdefault(instance.lower(), {})
+        adc_config = _settings("ADC", instance.lower())
         vref = _number(f"ADC.{instance.lower()}.vref", adc_config.setdefault("vref", 3.3))
 
         channels_code = f"  static STM32ADC {instance.lower()}(&h{instance.lower()}, {instance.lower()}_buf, {{{', '.join(conversions)}}}, {vref});\n"
@@ -1296,7 +1366,7 @@ class PeripheralFactory:
         channels = config.get("Channels", {})
         if not channels:
             return "", ""
-        dac_config = libxr_settings["DAC"].setdefault(instance.lower(), {})
+        dac_config = _settings("DAC", instance.lower())
         init_voltage = _number(
             f"DAC.{instance.lower()}.init_voltage", dac_config.setdefault("init_voltage", 0.0)
         )
@@ -1331,7 +1401,7 @@ class PeripheralFactory:
         tx_buf = f"{instance.lower()}_tx_buf" if tx_dma else "{nullptr, 0}"
         rx_buf = f"{instance.lower()}_rx_buf" if rx_dma else "{nullptr, 0}"
 
-        uart_config = libxr_settings["USART"].setdefault(instance.lower(), {})
+        uart_config = _settings("USART", instance.lower())
         tx_queue = _integer(
             f"USART.{instance.lower()}.tx_queue_size", uart_config.setdefault("tx_queue_size", 5)
         )
@@ -1349,7 +1419,7 @@ class PeripheralFactory:
         Generate the STM32I2C object with the <instance>_buf buffer; dma_enable_min_size
         defaults to 3.
         """
-        i2c_config = libxr_settings["I2C"].setdefault(instance.lower(), {})
+        i2c_config = _settings("I2C", instance.lower())
         dma_min_size = _integer(
             f"I2C.{instance.lower()}.dma_enable_min_size",
             i2c_config.setdefault("dma_enable_min_size", 3),
@@ -1440,7 +1510,7 @@ class PeripheralFactory:
         tx_enabled = config.get("DMA_TX", "DISABLE") == "ENABLE"
         rx_enabled = config.get("DMA_RX", "DISABLE") == "ENABLE"
 
-        spi_config = libxr_settings["SPI"].setdefault(instance.lower(), {})
+        spi_config = _settings("SPI", instance.lower())
         dma_min_size = _integer(
             f"SPI.{instance.lower()}.dma_enable_min_size",
             spi_config.setdefault("dma_enable_min_size", 3),
@@ -1467,7 +1537,7 @@ class PeripheralFactory:
         """
         if not config.get("Enabled"):
             return "", ""
-        iwdg_config = libxr_settings["IWDG"].setdefault(instance.lower(), {})
+        iwdg_config = _settings("IWDG", instance.lower())
         key = f"IWDG.{instance.lower()}"
         timeout_ms = _integer(f"{key}.timeout_ms", iwdg_config.setdefault("timeout_ms", 1000))
         feed_ms = _integer(
@@ -1500,8 +1570,10 @@ class PeripheralFactory:
         registered as UART.
 
         Raises:
-            ValueError: 设置了 cdc_count；复合 USB 设备应在 BSP 用户代码中定义。
-                cdc_count is set; a composite USB device belongs in BSP user code.
+            LibXRConfigError: 设置了 cdc_count（复合 USB 设备应在 BSP 用户代码中定义），或某个
+                设置无效（见 _usb_settings()）。
+                cdc_count is set (a composite USB device belongs in BSP user code), or a
+                setting is invalid (see _usb_settings()).
         """
         usb = _usb_settings(instance)
         if usb is None:
@@ -1559,9 +1631,9 @@ class PeripheralFactory:
         vid = number["vid"]
         pid = number["pid"]
         bcd = number["bcd"]
-        manufacturer = str(inst_cfg["manufacturer"]).replace('"', '\\"')
-        product = str(inst_cfg["product"]).replace('"', '\\"')
-        serial = str(inst_cfg["serial"]).replace('"', '\\"')
+        manufacturer = inst_cfg["manufacturer"].replace('"', '\\"')
+        product = inst_cfg["product"].replace('"', '\\"')
+        serial = inst_cfg["serial"].replace('"', '\\"')
 
         # EP0 包大小的枚举值
         # Size enum for EP0
@@ -1922,7 +1994,7 @@ def _priority_level(key: str, value) -> str:
     on ThreadX), so the generated code names the enumerator instead of a number.
 
     Raises:
-        ValueError: value 既不是 0-4 也不是等级名；key 是出错的设置。
+        LibXRConfigError: value 既不是 0-4 也不是等级名；key 是出错的设置。
             value is neither 0-4 nor a level name; key names the setting.
     """
     if isinstance(value, int) and not isinstance(value, bool):
@@ -1930,11 +2002,11 @@ def _priority_level(key: str, value) -> str:
             return _PRIORITY_LEVELS[value]
     elif isinstance(value, str) and value.strip().upper() in _PRIORITY_LEVELS:
         return value.strip().upper()
-    raise ValueError(
-        tr(
-            f"{key} {value!r} is not a priority level; use 0-4 or {', '.join(_PRIORITY_LEVELS)}",
-            f"{key} {value!r} 不是优先级等级；请使用 0-4 或 {'、'.join(_PRIORITY_LEVELS)}",
-        )
+    raise _invalid_setting(
+        key,
+        value,
+        f"a priority level; use 0-4 or {', '.join(_PRIORITY_LEVELS)}",
+        f"优先级等级；请使用 0-4 或 {'、'.join(_PRIORITY_LEVELS)}",
     )
 
 
@@ -2014,8 +2086,8 @@ def configure_watchdog(project_data: dict) -> str:
     if not watchdog_instances:
         return code
 
-    wdg_config = libxr_settings.setdefault("Watchdog", {})
-    run_as_thread = wdg_config.setdefault("run_as_thread", False)
+    wdg_config = _settings("Watchdog")
+    run_as_thread = _flag("Watchdog.run_as_thread", wdg_config.setdefault("run_as_thread", False))
     feed_interval = _integer(
         "Watchdog.feed_interval_ms", wdg_config.setdefault("feed_interval_ms", 250)
     )
@@ -2059,7 +2131,7 @@ def configure_terminal(project_data: dict) -> str:
     _priority_level(); otherwise a software timer task runs it every 10 ms.
     """
     code = "  /* Terminal Configuration */\n"
-    terminal_source = libxr_settings.get("terminal_source", "").lower()
+    terminal_source = _text("terminal_source", libxr_settings.get("terminal_source")).lower()
 
     # 用户指定的终端来源
     # User-specified terminal source
@@ -2081,7 +2153,7 @@ def configure_terminal(project_data: dict) -> str:
         )
 
     if terminal_source != "":
-        term_config = libxr_settings.setdefault("Terminal", {})
+        term_config = _settings("Terminal")
         params = [
             _integer(f"Terminal.{key}", term_config.setdefault(key, default))
             for key, default in (
@@ -2092,7 +2164,9 @@ def configure_terminal(project_data: dict) -> str:
             )
         ]
 
-        run_as_thread = term_config.setdefault("run_as_thread", False)
+        run_as_thread = _flag(
+            "Terminal.run_as_thread", term_config.setdefault("run_as_thread", False)
+        )
 
         if run_as_thread:
             thread_stack_depth = _integer(

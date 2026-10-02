@@ -5,6 +5,7 @@ peripheral objects, GPIO names, User Code regions, and output independent of the
 """
 
 import contextlib
+import copy
 import io
 import os
 import subprocess
@@ -246,7 +247,8 @@ class PeripheralObjects(GeneratorTestCase):
         project = self.usb_otg_hs(cdc_count=2)
         with self.assertRaisesMessage(
             ValueError,
-            "USB cdc_count is not a generator option; define composite USB in BSP user code",
+            "libxr_config.yaml: USB.usb_otg_hs.cdc_count is not a generator option; define "
+            "composite USB in BSP user code",
         ):
             self.generate(project)
 
@@ -358,7 +360,8 @@ class PeripheralObjects(GeneratorTestCase):
                 generator.libxr_settings["software_timer"]["priority"] = value
                 with self.assertRaisesMessage(
                     ValueError,
-                    f"software_timer.priority {value!r} is not a priority level; use 0-4 or "
+                    f"libxr_config.yaml: software_timer.priority {value!r} is not a priority "
+                    "level; use 0-4 or "
                     "IDLE, LOW, MEDIUM, HIGH, REALTIME",
                 ):
                     self.generate()
@@ -827,22 +830,26 @@ class GenerationRuns(GeneratorTestCase):
         self.assertEqual(self.config(user)["CAN"], {"can1": {"queue_size": 7}})
         self.assertIn("INFO:root:libxr_config.yaml: renamed CAN.CAN1 to CAN.can1", logs)
 
-    def test_config_values_of_the_wrong_type_are_rejected(self):
+    def test_a_section_that_is_not_a_mapping_is_rejected_when_merged(self):
+        base = {"USART": {"usart1": {}}, "terminal_source": ""}
         for update, problem in (
-            ({"USART": 5}, "'USART': expected a mapping, got int"),
-            ({"terminal_source": {"usart1": {}}}, "'terminal_source': expected str, got a mapping"),
+            ({"USART": 5}, "USART 5"),
+            ({"USART": {"usart1": [115200]}}, "USART.usart1 [115200]"),
         ):
             with (
                 self.subTest(update=update),
                 self.assertRaisesMessage(
-                    LibXRConfigError, f"Config type conflict for key {problem}"
+                    LibXRConfigError, f"libxr_config.yaml: {problem} is not a mapping"
                 ),
             ):
-                generator._deep_merge({"USART": {}, "terminal_source": ""}, update)
-        # 空的段等同于空映射。
-        # An empty section counts as an empty mapping.
+                generator._deep_merge(copy.deepcopy(base), update)
+        # 空的段等同于空映射；单个值的类型在用到时检查。
+        # An empty section counts as an empty mapping; single values are checked where used.
         self.assertEqual(
-            generator._deep_merge({"I2C": {"i2c1": {}}}, {"I2C": None}), {"I2C": {"i2c1": {}}}
+            generator._deep_merge(
+                copy.deepcopy(base), {"USART": None, "terminal_source": {"device": "usart1"}}
+            ),
+            {"USART": {"usart1": {}}, "terminal_source": {"device": "usart1"}},
         )
 
     def test_an_invalid_ep0_packet_size_falls_back_to_8(self):
@@ -855,47 +862,99 @@ class GenerationRuns(GeneratorTestCase):
             logs.output,
         )
 
-    def test_numeric_settings_are_checked_before_they_reach_the_code(self):
-        # 以前这些值原样写进 C++，到编译时才报错。
-        # These values used to go into the C++ as they were and fail only at compile time.
+    def test_settings_are_checked_before_they_reach_the_code(self):
+        # 以前数值原样写进 C++，到编译时才报错；开关、文本和设置段不检查类型，例如写成映射的
+        # run_as_thread 被当作真。
+        # Numbers used to go into the C++ as they were and fail only at compile time; switches,
+        # text and settings sections had no type check, and a run_as_thread written as a
+        # mapping counted as true.
+        usart = {"USART": {"USART1": {}}}
         usb = {"USB": {"USB_OTG_FS": {}}}
-        for group, settings, peripherals, message in (
+        for settings, peripherals, problem in (
             (
-                "USART",
-                {"usart1": {"tx_queue_size": "five"}},
-                {"USART": {"USART1": {}}},
+                {"USART": {"usart1": {"tx_queue_size": "five"}}},
+                usart,
                 "USART.usart1.tx_queue_size 'five' is not a positive integer",
             ),
             (
-                "I2C",
-                {"i2c1": {"buffer_size": -8}},
+                {"I2C": {"i2c1": {"buffer_size": -8}}},
                 {"I2C": {"I2C1": {}}},
                 "I2C.i2c1.buffer_size -8 is not a positive integer",
             ),
             (
-                "ADC",
-                {"adc1": {"vref": "high"}},
+                {"ADC": {"adc1": {"vref": "high"}}},
                 {"ADC": {"ADC1": {"Channels": ["ADC_CHANNEL_0"]}}},
                 "ADC.adc1.vref 'high' is not a number",
             ),
             (
-                "USB",
-                {"usb_otg_fs": {"enable": True, "tx_fifo_size": "big"}},
+                {"USB": {"usb_otg_fs": {"enable": True, "tx_fifo_size": "big"}}},
                 usb,
                 "USB.usb_otg_fs.tx_fifo_size 'big' is not a positive integer",
             ),
             (
-                "USB",
-                {"usb_otg_fs": {"enable": True, "vid": 0x10000}},
+                {"USB": {"usb_otg_fs": {"enable": True, "vid": 0x10000}}},
                 usb,
                 "USB.usb_otg_fs.vid 65536 is not an integer from 0 to 65535",
             ),
+            (
+                {"USB": {"usb_otg_fs": {"enable": "yes"}}},
+                usb,
+                "USB.usb_otg_fs.enable 'yes' is not true or false",
+            ),
+            (
+                {"USB": {"usb_otg_fs": {"enable": True, "serial": 1}}},
+                usb,
+                "USB.usb_otg_fs.serial 1 is not a string",
+            ),
+            (
+                {"SPI": {"spi1": {"dma_section": 5}}},
+                {"SPI": {"SPI1": {}}},
+                "SPI.spi1.dma_section 5 is not a string",
+            ),
+            ({"USART": {"usart1": 5}}, usart, "USART.usart1 5 is not a mapping"),
+            (
+                {"terminal_source": {"device": "usart1"}},
+                usart,
+                "terminal_source {'device': 'usart1'} is not a string",
+            ),
+            (
+                {"terminal_source": "usart1", "Terminal": {"run_as_thread": {"enable": True}}},
+                usart,
+                "Terminal.run_as_thread {'enable': True} is not true or false",
+            ),
+            (
+                {"Watchdog": {"run_as_thread": "false"}},
+                {"IWDG": {"IWDG": {"Enabled": True}}},
+                "Watchdog.run_as_thread 'false' is not true or false",
+            ),
         ):
-            with self.subTest(message=message):
+            with self.subTest(problem=problem):
                 self.setUp()
-                generator.libxr_settings[group] = settings
-                with self.assertRaisesMessage(ValueError, message):
+                generator.libxr_settings.update(settings)
+                with self.assertRaisesMessage(LibXRConfigError, f"libxr_config.yaml: {problem}"):
                     self.generate(self.project(peripherals=peripherals))
+
+    def test_an_invalid_setting_names_the_config_file(self):
+        # 以前报错只写键，不写是哪个文件。
+        # Errors used to name only the key, not the file.
+        directory = self.root / "demo"
+        user = directory / "User"
+        user.mkdir(parents=True)
+        project = directory / "cubemx.yaml"
+        project.write_text(
+            yaml.safe_dump(self.project(peripherals={"USART": {"USART1": {}}})), encoding="utf-8"
+        )
+        config = user / "libxr_config.yaml"
+        config.write_text("terminal_source:\n  device: usart1\n", encoding="utf-8")
+        with self.assertLogs(level="ERROR") as logs, self.assertRaises(SystemExit):
+            generator.generate(str(project), str(user / "app_main.cpp"))
+        self.assertEqual(
+            logs.output,
+            [
+                f"ERROR:root:Generation failed: {config}: terminal_source "
+                "{'device': 'usart1'} is not a string"
+            ],
+        )
 
     def test_numbers_written_as_strings_are_accepted(self):
         generator.libxr_settings["USART"] = {"usart1": {"tx_queue_size": "7"}}

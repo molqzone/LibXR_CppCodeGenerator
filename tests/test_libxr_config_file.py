@@ -190,11 +190,12 @@ class LibXRConfigFile(GeneratorTestCase):
         ):
             generator.load_libxr_config(str(self.directory), "")
 
-    def test_type_conflict_is_an_error(self):
-        self.path.write_text("terminal_source:\n  device: usart1\n", encoding="utf-8")
+    def test_a_section_that_is_not_a_mapping_is_an_error(self):
+        # 以前报错不写是哪个文件。
+        # The error used to leave out which file it was about.
+        self.path.write_text("USART: 5\n", encoding="utf-8")
         with self.assertRaisesMessage(
-            config_file.LibXRConfigError,
-            "Config type conflict for key 'terminal_source': expected str, got a mapping",
+            config_file.LibXRConfigError, f"{self.path}: USART 5 is not a mapping"
         ):
             generator.load_libxr_config(str(self.directory), "")
 
