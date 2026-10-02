@@ -301,6 +301,52 @@ class PeripheralObjects(GeneratorTestCase):
             ],
         )
 
+    def test_a_usb_without_enable_follows_cubemx(self):
+        # 以前 enable 默认为 false，CubeMX 中启用的 USB 不生成，终端只报告未登记为 UART。
+        # enable used to default to false: a USB enabled in CubeMX was not generated, and the
+        # terminal only reported that it was not registered as UART.
+        disabled = (
+            "INFO:root:USB instance 'usb_otg_fs' is not generated: USB.usb_otg_fs.enable is "
+            "false in libxr_config.yaml"
+        )
+        for usb, enabled, notice in (
+            ({"USB_OTG_FS": {"Role": "Device"}}, True, []),
+            ({"USB_OTG_FS": {"Role": "Host"}}, False, [disabled]),
+            (
+                {"USB_OTG_FS": {"Role": "Device"}, "USB_DEVICE": {}},
+                False,
+                [
+                    "INFO:root:USB.usb_otg_fs.enable defaults to false: the CubeMX middleware "
+                    "USB_DEVICE uses the USB peripheral",
+                    disabled,
+                ],
+            ),
+        ):
+            with self.subTest(usb=usb):
+                self.setUp()
+                capture = (self.assertLogs if notice else self.assertNoLogs)(level="INFO")
+                with capture as logs:
+                    code = self.generate(self.project(peripherals={"USB": usb}), use_xrobot=False)
+                self.assertEqual(generator.libxr_settings["USB"]["usb_otg_fs"]["enable"], enabled)
+                self.assertEqual("static STM32USBDeviceOtgFS usb_fs(" in code, enabled)
+                if notice:
+                    self.assertEqual(logs.output, notice)
+
+    def test_a_terminal_on_a_disabled_usb_names_the_key(self):
+        generator.libxr_settings["USB"]["usb_otg_fs"] = {"enable": False}
+        generator.libxr_settings["terminal_source"] = "usb_otg_fs_cdc"
+        with self.assertLogs(level="WARNING") as logs:
+            code = self.generate(self.project(peripherals={"USB": {"USB_OTG_FS": {}}}))
+        self.assertNotIn("static Terminal", code)
+        self.assertEqual(
+            logs.output,
+            [
+                "WARNING:root:terminal_source 'usb_otg_fs_cdc' is the CDC serial port of USB "
+                "instance usb_otg_fs, which is not generated; set USB.usb_otg_fs.enable to true "
+                "in libxr_config.yaml. The terminal is not initialized."
+            ],
+        )
+
     def test_peripheral_objects_are_static_and_use_their_handles(self):
         project = self.project(
             gpio={"PA0": {"Label": "LED"}},

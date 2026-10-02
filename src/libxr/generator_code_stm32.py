@@ -923,21 +923,58 @@ def _number(key: str, value) -> float | int:
     raise _invalid_setting(key, value, "a number", "数字")
 
 
+# CubeMX 的这些中间件自己使用 USB 外设的句柄，与 LibXR 的 USB 设备不能同时使用。
+# These CubeMX middlewares use the handle of the USB peripheral themselves and cannot be used
+# together with the LibXR USB device.
+_USB_MIDDLEWARE = ("USB_DEVICE", "USB_HOST", "USBX")
+
+
+def _default_usb_enables(peripherals: dict) -> None:
+    """为 libxr_config 中还没有 enable 的 USB 实例写入默认值。
+    Write the default enable of the USB instances that have none in libxr_config.
+
+    CubeMX 中不是主机模式的 USB 实例默认启用；工程启用了 CubeMX 的 USB 中间件时都不启用，并记录
+    一条说明。
+    A USB instance that is not in host mode in CubeMX is enabled by default; when the project
+    enables a CubeMX USB middleware, none is, and a notice says why.
+    """
+    usb = peripherals.get("USB", {})
+    middleware = sorted(name for name in usb if name.upper() in _USB_MIDDLEWARE)
+    for instance, config in usb.items():
+        name = _USB_INSTANCES.get(instance.upper())
+        if name is None:
+            continue
+        settings = _settings("USB", name.lower())
+        if "enable" in settings:
+            continue
+        settings["enable"] = not middleware and config.get("Role") != "Host"
+        if middleware:
+            logging.info(
+                tr(
+                    f"USB.{name.lower()}.enable defaults to false: the CubeMX middleware "
+                    f"{', '.join(middleware)} uses the USB peripheral",
+                    f"USB.{name.lower()}.enable 默认为 false：CubeMX 的中间件 "
+                    f"{'、'.join(middleware)} 使用了这个 USB 外设",
+                )
+            )
+
+
 def _usb_settings(instance: str) -> tuple[str, dict] | None:
     """USB 实例的规范名和它在 libxr_settings["USB"] 中的设置；其他实例名（如 USB_DEVICE 中间件）
     为 None。
     The normalized name of a USB instance and its settings in libxr_settings["USB"]; None for
     any other instance name, such as the USB_DEVICE middleware.
 
-    未启用的实例只补上 enable: false。已启用的实例按固定顺序补上缺少的设置：包大小、缓冲区和
-    FIFO 大小、dma_section、CDC 的 FIFO 和队列长度，以及描述符（默认 1d50:6199 / 0x0100 /
-    "XRUSB-DEMO-"，1d50:6199 的分配记录见
+    enable 的默认值由 _default_usb_enables() 先行写入，仍然缺少时为 false；未启用的实例不再补其他
+    设置。已启用的实例按固定顺序补上缺少的设置：包大小、缓冲区和 FIFO 大小、dma_section、CDC 的
+    FIFO 和队列长度，以及描述符（默认 1d50:6199 / 0x0100 / "XRUSB-DEMO-"，1d50:6199 的分配记录见
     https://github.com/openmoko/openmoko-usb-oui/commit/27f3846d77e0d0d10271b809b831f70040c6197a）。
     ep0_packet_size 不是 8、16、32、64 时给出警告并改为 8；其余大小必须是正整数，vid、pid、bcd
     必须在 0 到 0xFFFF 之间。
-    A disabled instance only gets enable: false. An enabled instance gets its missing settings
-    in a fixed order: packet size, buffer and FIFO sizes, dma_section, CDC FIFO and queue
-    lengths, and the descriptor (default 1d50:6199 / 0x0100 / "XRUSB-DEMO-"; see the link
+    _default_usb_enables() writes the default enable first; when it is still missing it is
+    false, and a disabled instance gets no other setting. An enabled instance gets its missing
+    settings in a fixed order: packet size, buffer and FIFO sizes, dma_section, CDC FIFO and
+    queue lengths, and the descriptor (default 1d50:6199 / 0x0100 / "XRUSB-DEMO-"; see the link
     above for the allocation of 1d50:6199). An ep0_packet_size other than 8, 16, 32 or 64 is
     warned about and becomes 8; the other sizes must be positive integers, vid, pid and bcd
     must lie between 0 and 0xFFFF, and dma_section and the descriptor strings must be strings.
@@ -1583,8 +1620,10 @@ class PeripheralFactory:
         if not inst_cfg["enable"]:
             logging.info(
                 tr(
-                    f"USB instance '{inst_lower}' is disabled. Skipping generation.",
-                    f"USB 实例 '{inst_lower}' 未启用，跳过生成。",
+                    f"USB instance '{inst_lower}' is not generated: USB.{inst_lower}.enable is "
+                    "false in libxr_config.yaml",
+                    f"USB 实例 '{inst_lower}' 不生成：libxr_config.yaml 中 USB.{inst_lower}.enable "
+                    "为 false",
                 )
             )
             return "", ""
@@ -2122,13 +2161,16 @@ def configure_terminal(project_data: dict) -> str:
     Make the UART named by terminal_source the standard I/O and generate the RamFS and Terminal
     objects and the code that runs the terminal.
 
-    terminal_source 为空时只输出注释行；它未登记为 UART 时记录警告，不初始化终端。Terminal 的
+    terminal_source 为空时只输出注释行；它未登记为 UART 时记录警告，不初始化终端，它是 enable 为
+    false 的 USB 实例的 CDC 串口（如 usb_fs_cdc）时，警告写出要修改的键。Terminal 的
     run_as_thread 为真时终端运行于独立线程（优先级见 _priority_level()），否则由软件定时器任务每
     10 ms 运行一次。
     With an empty terminal_source only the comment line is produced; when it is not registered
-    as UART a warning is logged and the terminal is not initialized. With run_as_thread of
-    Terminal the terminal runs in a thread of its own, its priority given as in
-    _priority_level(); otherwise a software timer task runs it every 10 ms.
+    as UART a warning is logged and the terminal is not initialized, and when it is the CDC
+    serial port of a USB instance whose enable is false, such as usb_fs_cdc, the warning names
+    the key to change. With run_as_thread of Terminal the terminal runs in a thread of its own,
+    its priority given as in _priority_level(); otherwise a software timer task runs it every
+    10 ms.
     """
     code = "  /* Terminal Configuration */\n"
     terminal_source = _text("terminal_source", libxr_settings.get("terminal_source")).lower()
@@ -2139,6 +2181,24 @@ def configure_terminal(project_data: dict) -> str:
         # 设备必须已登记且类型为 UART，否则记录警告并跳过
         # Device must be registered and of type UART, otherwise log a warning and skip
         if registered_devices.get(terminal_source) != "UART":
+            usb = terminal_source.removesuffix("_cdc")
+            usb_settings = libxr_settings.get("USB", {}).get(usb)
+            if (
+                usb != terminal_source
+                and isinstance(usb_settings, dict)
+                and usb_settings.get("enable") is False
+            ):
+                logging.warning(
+                    tr(
+                        f"terminal_source '{terminal_source}' is the CDC serial port of USB "
+                        f"instance {usb}, which is not generated; set USB.{usb}.enable to true in "
+                        "libxr_config.yaml. The terminal is not initialized.",
+                        f"terminal_source '{terminal_source}' 是 USB 实例 {usb} 的 CDC 串口，而这个"
+                        f"实例没有生成；请在 libxr_config.yaml 中把 USB.{usb}.enable 设为 true。"
+                        "终端不初始化。",
+                    )
+                )
+                return code
             logging.warning(
                 tr(
                     f"terminal_source '{terminal_source}' is not registered as UART, terminal "
@@ -2301,6 +2361,7 @@ def generate_full_code(
     """
     if use_xrobot:
         reject_user_xrobot_main(existing_code)
+    _default_usb_enables(project_data.get("Peripherals", {}))
     user_code_def_3 = "" if use_xrobot else "  while(true) {\n    Thread::Sleep(UINT32_MAX);\n  }\n"
     components = [
         APP_MAIN_NOTICE,

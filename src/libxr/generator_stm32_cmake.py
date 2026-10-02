@@ -136,6 +136,54 @@ def uses_xrobot(app_main: str) -> bool:
     return False
 
 
+def _follow_xrobot_choice(content: str, use_xrobot: bool) -> str:
+    """让已有 LibXR.CMake 中的 XROBOT_MODULES_DIR 与入口源文件的选择一致，返回新内容。
+    Make XROBOT_MODULES_DIR in an existing LibXR.CMake agree with the choice of the entry
+    source and return the new content.
+
+    使用 XRobot 而没有这一设置时，在 add_subdirectory(Middlewares/Third_Party/LibXR) 之前插入
+    XROBOT_MODULES_DIR_LINE；找不到这一行时记录警告，内容不变。不使用 XRobot 而有这一设置时删除它。
+    每次改动都记录一条说明。
+    With XRobot and no such setting, XROBOT_MODULES_DIR_LINE is inserted before
+    add_subdirectory(Middlewares/Third_Party/LibXR); without that line a warning is logged and
+    the content stays. Without XRobot, an existing setting is removed. Each change is logged.
+    """
+    setting = re.compile(r"^\s*set\s*\(\s*XROBOT_MODULES_DIR\b[^\n]*\n?", re.MULTILINE)
+    line = XROBOT_MODULES_DIR_LINE.strip()
+    if use_xrobot and not setting.search(content):
+        anchor = re.compile(
+            r"^([ \t]*)add_subdirectory\s*\(\s*Middlewares/Third_Party/LibXR\s*\)", re.MULTILINE
+        )
+        if not anchor.search(content):
+            logging.warning(
+                tr(
+                    "User/app_main.cpp uses XRobot, but LibXR.CMake does not set "
+                    f"XROBOT_MODULES_DIR; add {line} before "
+                    "add_subdirectory(Middlewares/Third_Party/LibXR)",
+                    "User/app_main.cpp 使用了 XRobot，但 LibXR.CMake 没有设置 "
+                    "XROBOT_MODULES_DIR；请在 add_subdirectory(Middlewares/Third_Party/LibXR) "
+                    f"之前添加 {line}",
+                )
+            )
+            return content
+        logging.info(
+            tr(
+                f"LibXR.CMake: added {line}, as User/app_main.cpp uses XRobot",
+                f"LibXR.CMake：User/app_main.cpp 使用了 XRobot，已加入 {line}",
+            )
+        )
+        return anchor.sub(lambda m: m.group(1) + line + "\n" + m.group(0), content, 1)
+    if not use_xrobot and setting.search(content):
+        logging.info(
+            tr(
+                "LibXR.CMake: removed XROBOT_MODULES_DIR, as User/app_main.cpp does not use XRobot",
+                "LibXR.CMake：User/app_main.cpp 没有使用 XRobot，已删除 XROBOT_MODULES_DIR",
+            )
+        )
+        return setting.sub("", content)
+    return content
+
+
 def normalize_libxr_cmake(content: str, system: str) -> str:
     """把已有 LibXR.CMake 的内容调整为 C++20 和给定的 LIBXR_SYSTEM，返回新内容。
     Adjust the content of an existing LibXR.CMake to C++20 and the given LIBXR_SYSTEM and
@@ -219,18 +267,17 @@ def update_or_create_libxr_cmake(file_path: str, system: str, use_xrobot: bool) 
     """更新已有的 LibXR.CMake，或按模板新建它。
     Update an existing LibXR.CMake, or create it from the template.
 
-    已有文件经 normalize_libxr_cmake() 调整，内容变化时才写回；它属于用户，XROBOT_MODULES_DIR
-    的设置与 use_xrobot 不一致时只记录警告。新文件只在 use_xrobot 为真时设置 XROBOT_MODULES_DIR。
-    An existing file is adjusted by normalize_libxr_cmake() and written back only when it
-    changes; it belongs to the user, so an XROBOT_MODULES_DIR setting that disagrees with
-    use_xrobot only logs a warning. A new file sets XROBOT_MODULES_DIR only when use_xrobot is
-    true.
+    已有文件经 normalize_libxr_cmake() 和 _follow_xrobot_choice() 调整，内容变化时才写回。新文件
+    只在 use_xrobot 为真时设置 XROBOT_MODULES_DIR。
+    An existing file is adjusted by normalize_libxr_cmake() and _follow_xrobot_choice() and
+    written back only when it changes. A new file sets XROBOT_MODULES_DIR only when use_xrobot
+    is true.
     """
     cmake_path = Path(file_path)
 
     if cmake_path.exists():
         content = read_text_with_fallback(str(cmake_path))
-        new_content = normalize_libxr_cmake(content, system)
+        new_content = _follow_xrobot_choice(normalize_libxr_cmake(content, system), use_xrobot)
         if new_content != content:
             cmake_path.write_text(new_content, encoding="utf-8", newline="\n")
             logging.info(
@@ -244,32 +291,6 @@ def update_or_create_libxr_cmake(file_path: str, system: str, use_xrobot: bool) 
                 tr(
                     "LibXR.CMake already up to date, no changes needed.",
                     "LibXR.CMake 已是最新，无需修改。",
-                )
-            )
-        # 这里的已有文件属于用户，不一致时只报告。
-        # The existing file is user-owned here; report a mismatch only.
-        declares_modules = (
-            re.search(r"^\s*set\s*\(\s*XROBOT_MODULES_DIR\b", new_content, flags=re.MULTILINE)
-            is not None
-        )
-        if declares_modules and not use_xrobot:
-            logging.warning(
-                tr(
-                    "LibXR.CMake sets XROBOT_MODULES_DIR, but User/app_main.cpp was not "
-                    "generated with --xrobot; remove that line for a LibXR-only project.",
-                    "LibXR.CMake 设置了 XROBOT_MODULES_DIR，但 User/app_main.cpp 不是用 --xrobot "
-                    "生成的；仅使用 LibXR 的工程请删除这一行。",
-                )
-            )
-        elif use_xrobot and not declares_modules:
-            logging.warning(
-                tr(
-                    "User/app_main.cpp uses XRobot, but LibXR.CMake does not set "
-                    f"XROBOT_MODULES_DIR; add {XROBOT_MODULES_DIR_LINE.strip()} before "
-                    "add_subdirectory(Middlewares/Third_Party/LibXR)",
-                    "User/app_main.cpp 使用了 XRobot，但 LibXR.CMake 没有设置 "
-                    "XROBOT_MODULES_DIR；请在 add_subdirectory(Middlewares/Third_Party/LibXR) "
-                    f"之前添加 {XROBOT_MODULES_DIR_LINE.strip()}",
                 )
             )
     else:

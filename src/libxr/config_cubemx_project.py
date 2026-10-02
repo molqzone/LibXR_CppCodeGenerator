@@ -10,6 +10,7 @@ User directory, records the terminal device, then produces the configuration, th
 CMakeLists.txt as libxr parse, libxr gen and libxr stm32 cmake do.
 """
 
+import json
 import logging
 import os
 import re
@@ -75,14 +76,15 @@ def run_command(cmd: list[str], ignore_error=False):
     Run the command cmd, a list of arguments, without a shell and return its stdout; the log
     shows the arguments shell-quoted.
 
-    命令失败时，ignore_error 为 True 则记录警告并仍返回标准输出，否则记录错误并以退出码 1 结束进程。
-    On failure, ignore_error logs a warning and still returns stdout; otherwise the error is
-    logged and the process exits with code 1.
+    成功的命令只记入调试日志。命令失败时，ignore_error 为 True 则记录警告并仍返回标准输出，否则
+    记录错误并以退出码 1 结束进程。
+    A successful command goes to the debug log only. On failure, ignore_error logs a warning
+    and still returns stdout; otherwise the error is logged and the process exits with code 1.
     """
     result = subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="replace")
     command_line = " ".join(shlex.quote(str(argument)) for argument in cmd)
     if result.returncode == 0:
-        logging.info(tr(f"[OK] {command_line}", f"[完成] {command_line}"))
+        logging.debug(tr(f"[OK] {command_line}", f"[完成] {command_line}"))
         return result.stdout
     if ignore_error:
         logging.warning(
@@ -599,13 +601,14 @@ def setup_project(
     改动工程之前先用 check_project() 检查工程。commit 为空时以 libxr_version.py 中锁定的 commit
     为默认值。需要克隆 LibXR 时，git_source 为 auto 则在 GitHub、内置镜像、XR_GIT_MIRRORS 和
     git_mirrors（逗号分隔）中选出响应最快的源。xrobot_enable 为 None 时沿用工程现在的选择：
-    User/app_main.cpp 由 --xrobot 生成时继续生成 XRobot 代码。
+    User/app_main.cpp 由 --xrobot 生成时继续生成 XRobot 代码。结束时说明还需手动完成的步骤（见
+    _report_next_steps()）。
     check_project() checks the project before anything changes. With an empty commit, the
     commit locked in libxr_version.py is the default. When LibXR has to
     be cloned, git_source auto picks the fastest of GitHub, the built-in mirror,
     XR_GIT_MIRRORS and git_mirrors (comma-separated). With xrobot_enable None the project keeps
     its choice: XRobot code is generated again when User/app_main.cpp was generated with
-    --xrobot.
+    --xrobot. At the end it describes what is left to do by hand (see _report_next_steps()).
     """
     from libxr.generator_code_stm32 import generate
     from libxr.generator_stm32_cmake import integrate, project_uses_xrobot
@@ -710,6 +713,63 @@ def setup_project(
     integrate(project_dir)
 
     logging.info(tr("[Pass] All tasks completed.", "[通过] 全部任务已完成。"))
+    _report_next_steps(project_dir)
+
+
+def _report_next_steps(project_dir: str) -> None:
+    """说明 setup 之后还需手动完成的事：CubeMX 生成的源文件还没有调用 app_main() 时说明在哪里调用，
+    工程有 CMake preset 时给出构建命令。
+    Describe what is left to do by hand after setup: where to call app_main() when the
+    CubeMX sources do not call it yet, and the build commands when the project has CMake
+    presets.
+
+    FreeRTOS 工程在定义 StartDefaultTask 的源文件中调用，其他工程在 Core/Src/main.c 的 main()
+    中调用。构建命令使用第一个同时有 configure 和 build preset 的名字。
+    A FreeRTOS project calls it in the source file defining StartDefaultTask, any other
+    project in main() of Core/Src/main.c. The build commands use the first name that has
+    both a configure and a build preset.
+    """
+    sources = os.path.join(project_dir, "Core", "Src")
+    texts = {}
+    if os.path.isdir(sources):
+        for name in sorted(os.listdir(sources)):
+            if name.endswith(".c"):
+                with open(os.path.join(sources, name), encoding="utf-8", errors="replace") as f:
+                    texts[name] = f.read()
+    if not any(re.search(r"\bapp_main\s*\(\s*\)\s*;", text) for text in texts.values()):
+        task = next((name for name, text in texts.items() if "StartDefaultTask(" in text), None)
+        if task:
+            where_en = f"in the default task StartDefaultTask (Core/Src/{task})"
+            where_zh = f"在默认任务 StartDefaultTask（Core/Src/{task}）中"
+        else:
+            where_en, where_zh = "in main() of Core/Src/main.c", "在 Core/Src/main.c 的 main() 中"
+        logging.info(
+            tr(
+                f'Next: #include "app_main.h" and call app_main() {where_en}, inside USER CODE '
+                "sections, which CubeMX keeps when it regenerates the code.",
+                f'下一步：{where_zh} #include "app_main.h" 并调用 app_main()，写在 USER CODE 区域中，'
+                "CubeMX 重新生成代码时保留。",
+            )
+        )
+    preset = _build_preset(os.path.join(project_dir, "CMakePresets.json"))
+    if preset:
+        command = f"cmake --preset {preset} && cmake --build --preset {preset}"
+        logging.info(tr(f"Build: {command}", f"构建：{command}"))
+
+
+def _build_preset(path: str) -> str:
+    """CMakePresets.json 中第一个同时有 configure 和 build preset 的名字；没有或文件不可读时为空字符串。
+    The first name in CMakePresets.json with both a configure and a build preset; an empty
+    string when there is none or the file cannot be read.
+    """
+    try:
+        with open(path, encoding="utf-8") as f:
+            presets = json.load(f)
+        configure = [p["name"] for p in presets.get("configurePresets", []) if not p.get("hidden")]
+        build = {p["name"] for p in presets.get("buildPresets", [])}
+    except (OSError, ValueError, TypeError, KeyError, AttributeError):
+        return ""
+    return next((name for name in configure if name in build), "")
 
 
 if __name__ == "__main__":

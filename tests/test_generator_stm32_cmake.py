@@ -66,26 +66,47 @@ class Integration(GeneratorTestCase):
         (self.root / "User" / "app_main.cpp").write_text(code, encoding="utf-8")
         self.assertFalse(stm32_cmake.project_uses_xrobot(str(self.root)))
 
-    def test_existing_file_is_kept_and_mismatch_reported(self):
-        self.write_app_main(False)
-        (self.root / "cmake").mkdir()
-        existing = (
+    def test_an_existing_file_follows_the_xrobot_choice(self):
+        # 以前只给出警告，切换到 XRobot 后要手动加这一行，否则模块不参与构建。
+        # Only a warning used to be given; after switching to XRobot the line had to be added
+        # by hand, or the Modules were not built.
+        head = (
             "set(CMAKE_CXX_STANDARD 20)\nset(CMAKE_CXX_STANDARD_REQUIRED ON)\n\n"
             "set(LIBXR_SYSTEM None)\nset(LIBXR_DRIVER st)\n"
-            "set(XROBOT_MODULES_DIR ${CMAKE_CURRENT_SOURCE_DIR}/Modules)\n"
-            "target_compile_features(xr PUBLIC cxx_std_20)\n"
-            "set_target_properties(${CMAKE_PROJECT_NAME} PROPERTIES\n)\n"
         )
-        (self.root / "cmake" / "LibXR.CMake").write_text(existing, encoding="utf-8")
-        with self.assertLogs(level="WARNING") as logs:
-            self.assertEqual(self.run_cmake_generator(), existing)
-        self.assertEqual(
-            logs.output,
-            [
-                "WARNING:root:LibXR.CMake sets XROBOT_MODULES_DIR, but User/app_main.cpp was not "
-                "generated with --xrobot; remove that line for a LibXR-only project."
-            ],
-        )
+        modules = "set(XROBOT_MODULES_DIR ${CMAKE_CURRENT_SOURCE_DIR}/Modules)\n"
+        library = "add_subdirectory(Middlewares/Third_Party/LibXR)\n"
+        for use_xrobot, before, after, message in (
+            (
+                False,
+                head + modules + library,
+                head + library,
+                "INFO:root:LibXR.CMake: removed XROBOT_MODULES_DIR, as User/app_main.cpp does "
+                "not use XRobot",
+            ),
+            (
+                True,
+                head + library,
+                head + modules + library,
+                f"INFO:root:LibXR.CMake: added {modules.strip()}, as User/app_main.cpp uses XRobot",
+            ),
+            (
+                True,
+                head,
+                head,
+                "WARNING:root:User/app_main.cpp uses XRobot, but LibXR.CMake does not set "
+                f"XROBOT_MODULES_DIR; add {modules.strip()} before "
+                "add_subdirectory(Middlewares/Third_Party/LibXR)",
+            ),
+        ):
+            with self.subTest(use_xrobot=use_xrobot, before=before):
+                self.setUp()
+                self.write_app_main(use_xrobot)
+                (self.root / "cmake").mkdir()
+                (self.root / "cmake" / "LibXR.CMake").write_text(before, encoding="utf-8")
+                with self.assertLogs(level="INFO") as logs:
+                    self.assertEqual(self.run_cmake_generator(), after)
+                self.assertIn(message, logs.output)
 
     def test_build_directories_are_kept(self):
         (self.root / "build" / "debug").mkdir(parents=True)
@@ -103,25 +124,6 @@ class Integration(GeneratorTestCase):
         self.assertEqual(
             self.run_cmake_generator(),
             older.replace("GLOB LIBXR_USER_SOURCES", "GLOB LIBXR_USER_SOURCES CONFIGURE_DEPENDS"),
-        )
-
-    def test_a_missing_modules_directory_names_its_place(self):
-        self.write_app_main(True)
-        (self.root / "cmake").mkdir()
-        (self.root / "cmake" / "LibXR.CMake").write_text(
-            "set(LIBXR_SYSTEM None)\nset(LIBXR_DRIVER st)\n"
-            "add_subdirectory(Middlewares/Third_Party/LibXR)\n",
-            encoding="utf-8",
-        )
-        with self.assertLogs(level="WARNING") as logs:
-            self.run_cmake_generator()
-        self.assertEqual(
-            logs.output,
-            [
-                "WARNING:root:User/app_main.cpp uses XRobot, but LibXR.CMake does not set "
-                "XROBOT_MODULES_DIR; add set(XROBOT_MODULES_DIR ${CMAKE_CURRENT_SOURCE_DIR}/Modules) "
-                "before add_subdirectory(Middlewares/Third_Party/LibXR)"
-            ],
         )
 
     def test_an_include_in_any_spelling_is_not_appended_again(self):

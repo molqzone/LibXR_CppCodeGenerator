@@ -414,6 +414,40 @@ class SetupProject(GeneratorTestCase):
         cubemx_cfg.create_gitignore_file(str(self.root))
         self.assertEqual((self.root / ".gitignore").read_text(encoding="utf-8"), "*.bak\n")
 
+    def test_the_next_steps_name_the_call_site_and_the_build(self):
+        # 以前 setup 只报告完成，没有调用 app_main() 的固件编译通过后什么都不运行。
+        # setup used to report only that it finished; firmware without the app_main() call
+        # built and then ran nothing.
+        sources = self.root / "Core" / "Src"
+        sources.mkdir()
+        (sources / "main.c").write_text("int main(void) { return 0; }\n", encoding="utf-8")
+        (sources / "freertos.c").write_text(
+            "void StartDefaultTask(void *argument) {}\n", encoding="utf-8"
+        )
+        (self.root / "CMakePresets.json").write_text(
+            '{"configurePresets": [{"name": "default", "hidden": true}, {"name": "Debug"}],'
+            ' "buildPresets": [{"name": "Debug", "configurePreset": "Debug"}]}',
+            encoding="utf-8",
+        )
+        build = "INFO:root:Build: cmake --preset Debug && cmake --build --preset Debug"
+        with self.assertLogs(level="INFO") as logs:
+            cubemx_cfg._report_next_steps(str(self.root))
+        self.assertEqual(
+            logs.output,
+            [
+                'INFO:root:Next: #include "app_main.h" and call app_main() in the default task '
+                "StartDefaultTask (Core/Src/freertos.c), inside USER CODE sections, which CubeMX "
+                "keeps when it regenerates the code.",
+                build,
+            ],
+        )
+        (sources / "freertos.c").write_text(
+            "void StartDefaultTask(void *argument) {\n  app_main();\n}\n", encoding="utf-8"
+        )
+        with self.assertLogs(level="INFO") as logs:
+            cubemx_cfg._report_next_steps(str(self.root))
+        self.assertEqual(logs.output, [build])
+
 
 class SetupRun(LibXRRemote, GeneratorTestCase):
     """setup_project 依次加入 LibXR、写 .gitignore 和终端设备、解析 .ioc、生成代码并接入 CMake。
@@ -435,7 +469,15 @@ class SetupRun(LibXRRemote, GeneratorTestCase):
                 commit=self.default,
                 git_source=str(self.remote),
             )
-        self.assertEqual(logs.output[-1], "INFO:root:[Pass] All tasks completed.")
+        self.assertEqual(
+            logs.output[-2:],
+            [
+                "INFO:root:[Pass] All tasks completed.",
+                'INFO:root:Next: #include "app_main.h" and call app_main() in main() of '
+                "Core/Src/main.c, inside USER CODE sections, which CubeMX keeps when it "
+                "regenerates the code.",
+            ],
+        )
         checkout = project / "Middlewares" / "Third_Party" / "LibXR"
         self.assertEqual(git("rev-parse", "HEAD", cwd=checkout), self.default)
         self.assertEqual(
