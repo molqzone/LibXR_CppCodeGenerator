@@ -6,14 +6,17 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from fixtures import GeneratorTestCase
+from fixtures import CUBEMX_STARM, GeneratorTestCase
 
 from libxr import generator_stm32_cmake as stm32_cmake
 
 
-class ModulesDirectory(GeneratorTestCase):
-    """app_main 使用 XRobot 时 LibXR.CMake 设置 XROBOT_MODULES_DIR。
-    LibXR.CMake sets XROBOT_MODULES_DIR when app_main uses XRobot.
+class Integration(GeneratorTestCase):
+    """把 LibXR 接入工程：LibXR.CMake（XRobot 工程另设 XROBOT_MODULES_DIR）、CMakeLists.txt 的
+    include 和 starm-clang.cmake 的运行库配置。
+    Integrating LibXR into a project: LibXR.CMake (XRobot projects also set
+    XROBOT_MODULES_DIR), the include in CMakeLists.txt, and the runtime profile of
+    starm-clang.cmake.
     """
 
     def setUp(self):
@@ -138,6 +141,16 @@ class ModulesDirectory(GeneratorTestCase):
                     "\n# Add LibXR\n" + stm32_cmake.include_cmake_cmd if appended else ""
                 )
                 self.assertEqual(cmakelists.read_text(encoding="utf-8"), expected)
+
+    def test_the_st_arm_clang_profile_is_prepared(self):
+        (self.root / "cmake").mkdir()
+        toolchain = self.root / "cmake" / "starm-clang.cmake"
+        toolchain.write_text(CUBEMX_STARM, encoding="utf-8")
+        self.run_cmake_generator()
+        self.assertIn(
+            '  message(FATAL_ERROR "Unknown STARM_TOOLCHAIN_CONFIG: ${STARM_TOOLCHAIN_CONFIG}")\n',
+            toolchain.read_text(encoding="utf-8"),
+        )
 
     def test_a_directory_without_cmakelists_is_left_untouched(self):
         (self.root / "CMakeLists.txt").unlink()

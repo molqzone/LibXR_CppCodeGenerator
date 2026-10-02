@@ -2,6 +2,8 @@
 The libxr command (libxr.cli): platform recognition and the options the subcommands share.
 """
 
+import contextlib
+import io
 import logging
 import os
 import subprocess
@@ -147,19 +149,172 @@ class Options(TestCase):
             (0, f"libxr {update_notice.installed_version() or 'unknown'}\n"),
         )
 
-    def test_every_subcommand_takes_verbose(self):
-        parser = cli.build_parser()
-        for argv in (
-            ["parse"],
-            ["gen", "-i", "x", "-o", "y"],
-            ["stm32", "setup"],
-            ["stm32", "cubemx-gen"],
-            ["stm32", "cmake"],
-            ["stm32", "flash-info", "STM32F103C8T6"],
-            ["stm32", "toolchain", "gcc"],
+    def parsed(self, *argv):
+        """解析 argv，返回参数字典；run 换成处理函数的名字。
+        Parse argv and return the arguments as a dict, with run replaced by the handler's name.
+        """
+        arguments = vars(cli.build_parser().parse_args(argv))
+        arguments["run"] = arguments["run"].__name__
+        return arguments
+
+    def test_every_option_reaches_its_argument(self):
+        # 每个子命令一条只给必需参数的命令行（得到默认值）和一条给出全部选项的命令行。
+        # Per subcommand, one command line with only the required arguments, giving the
+        # defaults, and one with every option.
+        quiet = {"verbose": False}
+        loud = {"verbose": True}
+        setup = {"terminal": "", "commit": "", "git_source": "auto", "git_mirrors": ""}
+        toolchain = {"run": "cmd_stm32_toolchain"}
+        for argv, expected in (
+            (["parse"], {"directory": ".", "output": None, **quiet, "run": "cmd_parse"}),
+            (
+                ["parse", "-d", "p", "-o", "o.yaml", "--verbose"],
+                {"directory": "p", "output": "o.yaml", **loud, "run": "cmd_parse"},
+            ),
+            (
+                ["gen", "-i", "x", "-o", "y"],
+                {
+                    "input": "x",
+                    "directory": ".",
+                    "output": "y",
+                    "xrobot": None,
+                    "libxr_config": "",
+                    **quiet,
+                    "run": "cmd_gen",
+                },
+            ),
+            (
+                ["gen", "--input", "x", "--output", "y", "--directory", "p", "--xrobot"]
+                + ["--libxr-config", "c.yaml", "--verbose"],
+                {
+                    "input": "x",
+                    "directory": "p",
+                    "output": "y",
+                    "xrobot": True,
+                    "libxr_config": "c.yaml",
+                    **loud,
+                    "run": "cmd_gen",
+                },
+            ),
+            (
+                ["stm32", "setup", "--xrobot"],
+                {"directory": ".", "xrobot": True, **setup, **quiet, "run": "cmd_stm32_setup"},
+            ),
+            (
+                ["stm32", "setup", "-d", "p", "-t", "usart1", "--no-xrobot", "--commit", "abc"]
+                + ["--git-source", "github", "--git-mirrors", "m1,m2", "--verbose"],
+                {
+                    "directory": "p",
+                    "terminal": "usart1",
+                    "xrobot": False,
+                    "commit": "abc",
+                    "git_source": "github",
+                    "git_mirrors": "m1,m2",
+                    **loud,
+                    "run": "cmd_stm32_setup",
+                },
+            ),
+            (
+                ["stm32", "cubemx-gen"],
+                {
+                    "directory": ".",
+                    "ioc": "",
+                    "cubemx_cmd": "",
+                    "java_cmd": "",
+                    "launch_mode": "auto",
+                    "generate_code_dir": "",
+                    "expect_path": None,
+                    "log_dir": "",
+                    "script_path": "",
+                    "keep_script": False,
+                    "silent": False,
+                    "firmware": None,
+                    "download": False,
+                    "timeout": 1200,
+                    **quiet,
+                    "run": "cmd_stm32_cubemx_gen",
+                },
+            ),
+            (
+                ["stm32", "cubemx-gen", "-d", "p", "--ioc", "a.ioc", "--cubemx-cmd", "c"]
+                + ["--java-cmd", "j", "--launch-mode", "java", "--generate-code-dir", "g"]
+                + ["--expect-path", "a", "--expect-path", "b", "--log-dir", "l"]
+                + ["--script-path", "s", "--keep-script", "--silent", "--firmware", "migrate"]
+                + ["--download", "--timeout", "60", "--verbose"],
+                {
+                    "directory": "p",
+                    "ioc": "a.ioc",
+                    "cubemx_cmd": "c",
+                    "java_cmd": "j",
+                    "launch_mode": "java",
+                    "generate_code_dir": "g",
+                    "expect_path": ["a", "b"],
+                    "log_dir": "l",
+                    "script_path": "s",
+                    "keep_script": True,
+                    "silent": True,
+                    "firmware": "migrate",
+                    "download": True,
+                    "timeout": 60,
+                    **loud,
+                    "run": "cmd_stm32_cubemx_gen",
+                },
+            ),
+            (["stm32", "cmake"], {"directory": ".", **quiet, "run": "cmd_stm32_cmake"}),
+            (
+                ["stm32", "cmake", "-d", "p", "--verbose"],
+                {"directory": "p", **loud, "run": "cmd_stm32_cmake"},
+            ),
+            (
+                ["stm32", "flash-info", "STM32F103C8T6", "--verbose"],
+                {"model": "STM32F103C8T6", **loud, "run": "cmd_stm32_flash_info"},
+            ),
+            (
+                ["stm32", "toolchain", "gcc"],
+                {"directory": ".", "compiler": "gcc", "std": None, **quiet, **toolchain},
+            ),
+            (
+                ["stm32", "toolchain", "clang", "-d", "p", "-n", "--verbose"],
+                {"directory": "p", "compiler": "clang", "std": "newlib", **loud, **toolchain},
+            ),
+            (
+                ["stm32", "toolchain", "clang", "--hybrid"],
+                {"directory": ".", "compiler": "clang", "std": "hybrid", **quiet, **toolchain},
+            ),
+            (
+                ["stm32", "toolchain", "clang", "-p"],
+                {"directory": ".", "compiler": "clang", "std": "picolibc", **quiet, **toolchain},
+            ),
         ):
-            with self.subTest(command=argv):
-                self.assertTrue(parser.parse_args([*argv, "--verbose"]).verbose)
+            with self.subTest(argv=argv):
+                self.assertEqual(self.parsed(*argv), expected)
+
+    def test_a_missing_required_argument_is_named(self):
+        for argv, message in (
+            (
+                ["gen", "-o", "y"],
+                "libxr gen: error: the following arguments are required: -i/--input",
+            ),
+            (
+                ["gen", "-i", "x"],
+                "libxr gen: error: the following arguments are required: -o/--output",
+            ),
+            (
+                ["stm32", "flash-info"],
+                "libxr stm32 flash-info: error: the following arguments are required: model",
+            ),
+            (
+                ["stm32", "toolchain"],
+                "libxr stm32 toolchain: error: the following arguments are required: compiler",
+            ),
+        ):
+            with (
+                self.subTest(argv=argv),
+                contextlib.redirect_stderr(io.StringIO()) as error,
+                self.assertRaises(SystemExit) as exit,
+            ):
+                cli.build_parser().parse_args(argv)
+            self.assertEqual((exit.exception.code, error.getvalue().splitlines()[-1]), (2, message))
 
     def test_a_cubemx_gen_failure_logs_the_traceback_under_verbose(self):
         with (

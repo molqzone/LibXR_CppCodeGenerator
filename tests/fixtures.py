@@ -75,6 +75,21 @@ IOC = textwrap.dedent("""\
     USB_OTG_HS.VirtualMode-Device_Only_FS=Device_Only_FS
     """)
 
+# CubeMX 生成的 cmake/starm-clang.cmake 中的运行库配置段。
+# The profile section of a CubeMX-generated cmake/starm-clang.cmake.
+CUBEMX_STARM = textwrap.dedent("""\
+    set(CMAKE_SYSTEM_NAME               Generic)
+    set(CMAKE_SYSTEM_PROCESSOR          arm)
+
+    set(STARM_TOOLCHAIN_CONFIG "STARM_PICOLIBC")
+
+    if(STARM_TOOLCHAIN_CONFIG STREQUAL "STARM_HYBRID")
+      set(TOOLCHAIN_MULTILIBS "--hybrid")
+    elseif (STARM_TOOLCHAIN_CONFIG STREQUAL "STARM_NEWLIB")
+      set(TOOLCHAIN_MULTILIBS "--config=newlib.cfg")
+    endif()
+    """)
+
 
 def run_libxr(*argv):
     """以这些参数运行 libxr 命令（不查询 PyPI），返回退出码、标准输出和标准错误。

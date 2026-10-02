@@ -5,6 +5,7 @@ keep their arguments with their meaning.
 
 import contextlib
 import io
+import logging
 import os
 import re
 import subprocess
@@ -92,17 +93,90 @@ class LegacyCommands(TestCase):
                 self.assertEqual(exit.exception.code, 0)
 
     def test_the_old_required_arguments_are_still_required(self):
-        for old in ("xr_parse", "xr_parse_ioc", "xr_cubemx_cfg", "xr_cubemx_generate"):
-            with self.subTest(old=old):
-                code, _, err = self.run_old(old)
-                self.assertEqual(code, 2)
-                self.assertIn("-d/--directory", err)
-        code, _, err = self.run_old("xr_stm32_cmake")
-        self.assertEqual(code, 2)
-        self.assertIn("input_dir", err)
-        for new in (["parse"], ["stm32", "setup"], ["stm32", "cubemx-gen"]):
-            with self.subTest(new=new):
-                self.assertEqual(cli.build_parser().parse_args(new).directory, ".")
+        # 新命令的 -d 默认为当前目录，旧命令仍然必须给出。
+        # The -d of the new commands defaults to the current directory; the old ones still
+        # need it.
+        for old, argv, missing in (
+            ("xr_parse", [], "-d/--directory"),
+            ("xr_parse_ioc", [], "-d/--directory"),
+            ("xr_cubemx_cfg", [], "-d/--directory"),
+            ("xr_cubemx_generate", [], "-d/--directory"),
+            ("xr_stm32_cmake", [], "input_dir"),
+            ("xr_gen_code", ["-o", "y"], "-i/--input"),
+            ("xr_gen_code_stm32", ["-i", "x"], "-o/--output"),
+        ):
+            with self.subTest(old=old, argv=argv):
+                code, _, err = self.run_old(old, *argv)
+                self.assertEqual(
+                    (code, err.splitlines()[-1]),
+                    (2, f"{old}: error: the following arguments are required: {missing}"),
+                )
+
+    def test_every_old_option_reaches_the_new_command(self):
+        root = logging.getLogger()
+        self.addCleanup(root.setLevel, root.level)
+        for old, argv, command, expected in (
+            (
+                "xr_parse",
+                ["-d", "p", "-o", "o.yaml", "--verbose"],
+                "cmd_parse",
+                {"directory": "p", "output": "o.yaml", "verbose": True},
+            ),
+            (
+                "xr_cubemx_cfg",
+                ["-d", "p", "-t", "usart1", "--xrobot", "--commit", "abc"]
+                + ["--git-source", "github", "--git-mirrors", "m1"],
+                "cmd_stm32_setup",
+                {
+                    "directory": "p",
+                    "terminal": "usart1",
+                    "xrobot": True,
+                    "commit": "abc",
+                    "git_source": "github",
+                    "git_mirrors": "m1",
+                },
+            ),
+            (
+                "xr_cubemx_generate",
+                ["-d", "p", "--ioc", "a.ioc", "--cubemx-cmd", "c", "--java-cmd", "j"]
+                + ["--launch-mode", "java", "--generate-code-dir", "g", "--expect-path", "a"]
+                + ["--expect-path", "b", "--log-dir", "l", "--script-path", "s"]
+                + ["--keep-script", "--silent", "--auto-confirm", "--timeout", "60"],
+                "cmd_stm32_cubemx_gen",
+                {
+                    "directory": "p",
+                    "ioc": "a.ioc",
+                    "cubemx_cmd": "c",
+                    "java_cmd": "j",
+                    "launch_mode": "java",
+                    "generate_code_dir": "g",
+                    "expect_path": ["a", "b"],
+                    "log_dir": "l",
+                    "script_path": "s",
+                    "keep_script": True,
+                    "silent": True,
+                    "auto_confirm": True,
+                    "timeout": 60,
+                    "firmware": "migrate",
+                    "download": True,
+                },
+            ),
+            (
+                "xr_stm32_toolchain_switch",
+                ["clang", "--gnu"],
+                "cmd_stm32_toolchain",
+                {"compiler": "clang", "std": "hybrid", "directory": "."},
+            ),
+            (
+                "xr_stm32_toolchain_switch",
+                ["clang", "-p"],
+                "cmd_stm32_toolchain",
+                {"compiler": "clang", "std": "picolibc", "directory": "."},
+            ),
+        ):
+            with self.subTest(old=old, argv=argv), mock.patch(f"libxr.cli.{command}") as new:
+                self.assertEqual(self.run_old(old, *argv)[0], 0)
+                self.assertEqual(vars(new.call_args.args[0]), expected)
 
     def test_xr_gen_code_takes_the_platform_from_the_input_directory(self):
         project = self.root / "project"
@@ -155,12 +229,12 @@ class LegacyCommands(TestCase):
         self.assertEqual(self.run_old("xr_stm32_cmake", "-d", "project")[0], 2)
 
     def test_xr_stm32_flash_takes_exactly_one_model(self):
-        code, out, err = self.run_old("xr_stm32_flash")
-        self.assertEqual((code, out), (1, ""))
-        self.assertIn("xr_stm32_flash <STM32_MODEL>", err)
-        code, out, _ = self.run_old("xr_stm32_flash", "--help")
-        self.assertEqual(code, 0)
-        self.assertIn("xr_stm32_flash STM32F103C8T6", out)
+        usage = (
+            "STM32 Flash Information Tool\nUsage:\n  xr_stm32_flash <STM32_MODEL>\n\nExamples:\n"
+            "  xr_stm32_flash STM32F103C8T6\n  xr_stm32_flash STM32L476RG\n"
+        )
+        self.assertEqual(self.run_old("xr_stm32_flash"), (1, "", usage))
+        self.assertEqual(self.run_old("xr_stm32_flash", "--help"), (0, usage, ""))
         self.assertEqual(self.run_old("xr_stm32_flash", "STM32F103C8T6", "extra")[0], 1)
         # 无法处理的型号沿用旧的退出码 2；新命令用 1。
         # A model that cannot be processed keeps the old exit code 2; the new command uses 1.

@@ -1,7 +1,8 @@
-"""libxr stm32 setup（libxr.config_cubemx_project）：写入 libxr_config.yaml 的终端设备，以及 LibXR
-子模块的检出策略。
+"""libxr stm32 setup（libxr.config_cubemx_project）：写入 libxr_config.yaml 的终端设备、LibXR
+子模块的检出策略、改动前的工程检查和完整的 setup 流程。
 libxr stm32 setup (libxr.config_cubemx_project): the terminal device written to libxr_config.yaml,
-and the checkout policy of the LibXR submodule.
+the checkout policy of the LibXR submodule, the project check before any change, and the whole
+setup run.
 """
 
 import contextlib
@@ -15,10 +16,11 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from fixtures import GeneratorTestCase, TestCase
+from fixtures import IOC, GeneratorTestCase, TestCase
 
 from libxr import config_cubemx_project as cubemx_cfg
 from libxr import generator_code_stm32 as generator
+from libxr import generator_stm32_cmake as stm32_cmake
 
 
 class TerminalOption(TestCase):
@@ -92,10 +94,11 @@ def commit_file(repo, name, text):
     return git("rev-parse", "HEAD", cwd=repo)
 
 
-class LibXRSubmodule(TestCase):
-    """add_libxr 保留已有的 LibXR 检出，只在明确要求或目录为空时检出指定 commit。
-    add_libxr keeps an existing LibXR checkout and checks out a commit only when asked or when
-    the directory is empty.
+class LibXRRemote:
+    """测试类的混入：setUpClass 建一个代替 LibXR 的本地裸仓库 remote，setUp 建临时目录 tmp
+    并允许 git 使用 file 协议。
+    A test class mixin: setUpClass creates a local bare repository, remote, standing in for
+    LibXR, and setUp creates the temporary directory tmp and lets git use the file protocol.
     """
 
     @classmethod
@@ -132,6 +135,13 @@ class LibXRSubmodule(TestCase):
         patcher = mock.patch.dict(os.environ, GIT_ALLOW_PROTOCOL="file")
         patcher.start()
         self.addCleanup(patcher.stop)
+
+
+class LibXRSubmodule(LibXRRemote, TestCase):
+    """add_libxr 保留已有的 LibXR 检出，只在明确要求或目录为空时检出指定 commit。
+    add_libxr keeps an existing LibXR checkout and checks out a commit only when asked or when
+    the directory is empty.
+    """
 
     def project(self, recorded, checked_out):
         """以 LibXR 为子模块的工程：gitlink 记录 recorded，检出停在 checked_out；返回
@@ -397,6 +407,54 @@ class SetupProject(GeneratorTestCase):
                 "ERROR:root:git was not found on PATH; LibXR is added to the project as a Git "
                 "submodule"
             ],
+        )
+
+    def test_an_existing_gitignore_is_kept(self):
+        (self.root / ".gitignore").write_text("*.bak\n", encoding="utf-8")
+        cubemx_cfg.create_gitignore_file(str(self.root))
+        self.assertEqual((self.root / ".gitignore").read_text(encoding="utf-8"), "*.bak\n")
+
+
+class SetupRun(LibXRRemote, GeneratorTestCase):
+    """setup_project 依次加入 LibXR、写 .gitignore 和终端设备、解析 .ioc、生成代码并接入 CMake。
+    setup_project adds LibXR, writes .gitignore and the terminal device, parses the .ioc file,
+    generates the code and integrates CMake, in that order.
+    """
+
+    def test_a_cubemx_project_is_set_up(self):
+        project = self.tmp / "project"
+        (project / "Core").mkdir(parents=True)
+        (project / "demo.ioc").write_text(IOC, encoding="utf-8")
+        (project / "CMakeLists.txt").write_text("project(demo)\n", encoding="utf-8")
+        git("init", "-q", "-b", "master", cwd=project)
+        with contextlib.redirect_stdout(io.StringIO()), self.assertLogs(level="INFO") as logs:
+            cubemx_cfg.setup_project(
+                str(project),
+                terminal_source="usart1",
+                xrobot_enable=False,
+                commit=self.default,
+                git_source=str(self.remote),
+            )
+        self.assertEqual(logs.output[-1], "INFO:root:[Pass] All tasks completed.")
+        checkout = project / "Middlewares" / "Third_Party" / "LibXR"
+        self.assertEqual(git("rev-parse", "HEAD", cwd=checkout), self.default)
+        self.assertEqual(
+            (project / ".gitignore").read_text(encoding="utf-8"),
+            "build/**\n.history/**\n.cache/**\n.config.yaml\nCMakeFiles/**\n",
+        )
+        self.assertTrue((project / ".config.yaml").is_file())
+        user = project / "User"
+        self.assertIn(
+            "terminal_source: usart1\n", (user / "libxr_config.yaml").read_text(encoding="utf-8")
+        )
+        self.assertIn(
+            "  STDIO::read_ = usart1.read_port_;\n",
+            (user / "app_main.cpp").read_text(encoding="utf-8"),
+        )
+        self.assertTrue(
+            (project / "CMakeLists.txt")
+            .read_text(encoding="utf-8")
+            .endswith(stm32_cmake.include_cmake_cmd)
         )
 
 

@@ -7,6 +7,38 @@ import unittest
 import yaml
 from fixtures import TestCase, run_libxr
 
+from libxr.stm32_flash_generator import flash_info_to_dict, layout_flash
+
+
+class SectorLayouts(TestCase):
+    """布局规则按等大小、按序列或分 bank 排出扇区。
+    Layout rules place the sectors as uniform sizes, as a sequence, or in banks.
+    """
+
+    def test_sequences_and_banks(self):
+        # 除 H743VG 外，这些扇区表与 STM32CubeProgrammer 器件数据库一致（G474RB 为默认的双
+        # bank）；数据库中没有 1 MB 的 H743。
+        # Except for H743VG, these sector tables match the STM32CubeProgrammer device database
+        # (G474RB in its default dual-bank mode); the database has no 1 MB H743.
+        f4_bank = ((16, 4), (64, 1), (128, 7))
+        for model, banks in (
+            ("STM32F746IGT6", {0x08000000: ((32, 4), (128, 1), (256, 3))}),
+            ("STM32F413ZHT6", {0x08000000: ((16, 4), (64, 1), (128, 11))}),
+            ("STM32F407IGH6", {0x08000000: f4_bank}),
+            ("STM32F427ZIT6", {0x08000000: f4_bank, 0x08100000: f4_bank}),
+            ("STM32G474RBT6", {0x08000000: ((2, 32),), 0x08040000: ((2, 32),)}),
+            ("STM32H743VGT6", {0x08000000: ((128, 4),), 0x08100000: ((128, 4),)}),
+        ):
+            expected = []
+            for address, runs in banks.items():
+                for size_kb, count in runs:
+                    for _ in range(count):
+                        expected.append((f"0x{address:08X}", float(size_kb)))
+                        address += size_kb * 1024
+            with self.subTest(model=model):
+                sectors = flash_info_to_dict(layout_flash(model))["sectors"]
+                self.assertEqual([(s["address"], s["size_kb"]) for s in sectors], expected)
+
 
 class CommandLine(TestCase):
     """布局写到标准输出，用法写到标准输出或标准错误，报错以错误日志给出。

@@ -11,29 +11,13 @@ import os
 import shutil
 import subprocess
 import tempfile
-import textwrap
 import unittest
 from pathlib import Path
 
-from fixtures import TestCase
+from fixtures import CUBEMX_STARM, TestCase
 
 from libxr import generator_stm32_cmake as stm32_cmake
 from libxr import stm32_toolchain_switch as toolchain_switch
-
-# CubeMX 生成的 cmake/starm-clang.cmake 中的运行库配置段。
-# The profile section of a CubeMX-generated cmake/starm-clang.cmake.
-CUBEMX_STARM = textwrap.dedent("""\
-    set(CMAKE_SYSTEM_NAME               Generic)
-    set(CMAKE_SYSTEM_PROCESSOR          arm)
-
-    set(STARM_TOOLCHAIN_CONFIG "STARM_PICOLIBC")
-
-    if(STARM_TOOLCHAIN_CONFIG STREQUAL "STARM_HYBRID")
-      set(TOOLCHAIN_MULTILIBS "--hybrid")
-    elseif (STARM_TOOLCHAIN_CONFIG STREQUAL "STARM_NEWLIB")
-      set(TOOLCHAIN_MULTILIBS "--config=newlib.cfg")
-    endif()
-    """)
 
 # 早期版本的 xr_stm32_cmake（libxr stm32 cmake）改写后的同一段。
 # The same section as earlier xr_stm32_cmake (libxr stm32 cmake) versions rewrote it.
@@ -103,7 +87,20 @@ class StarmProfile(TestCase):
         text = self.normalize(CUBEMX_STARM)
         self.assertEqual(text.count('set(STARM_TOOLCHAIN_CONFIG "'), 1)
         self.assertIn('set(STARM_TOOLCHAIN_CONFIG "STARM_PICOLIBC")\n# LibXR:', text)
-        self.assertIn("Unknown STARM_TOOLCHAIN_CONFIG", text)
+        # CubeMX 的块对拼错的配置名不报错，TOOLCHAIN_MULTILIBS 也没有定义。
+        # CubeMX's block accepts a misspelled profile silently and leaves TOOLCHAIN_MULTILIBS
+        # undefined.
+        self.assertIn(
+            'set(TOOLCHAIN_MULTILIBS "")\n\n'
+            'if(STARM_TOOLCHAIN_CONFIG STREQUAL "STARM_HYBRID")\n'
+            '  set(TOOLCHAIN_MULTILIBS "--hybrid")\n'
+            'elseif (STARM_TOOLCHAIN_CONFIG STREQUAL "STARM_NEWLIB")\n'
+            '  set(TOOLCHAIN_MULTILIBS "--config=newlib.cfg")\n'
+            'elseif(NOT STARM_TOOLCHAIN_CONFIG STREQUAL "STARM_PICOLIBC")\n'
+            '  message(FATAL_ERROR "Unknown STARM_TOOLCHAIN_CONFIG: ${STARM_TOOLCHAIN_CONFIG}")\n'
+            "endif()\n",
+            text,
+        )
         self.assertEqual(self.normalize(text), text)
         self.switch("STARM_NEWLIB")
         self.assertEqual(
@@ -230,23 +227,35 @@ class SwitchToolchain(TestCase):
             self.presets.write_text(json.dumps(presets("starm-clang.cmake")), encoding="utf-8")
             (self.project / "cmake" / "gcc-arm-none-eabi.cmake").unlink()
 
+        cmake = self.project / "cmake"
         cases = (
-            ("gcc with a library", lambda: None, ("gcc", "hybrid")),
-            ("missing clang toolchain", self.starm.unlink, ("clang", "hybrid")),
-            ("missing gcc toolchain", missing_gcc, ("gcc",)),
+            (
+                lambda: None,
+                ("gcc", "hybrid"),
+                "Standard library option (-g/-n/-p) cannot be used with gcc.",
+            ),
+            (self.starm.unlink, ("clang", "hybrid"), f"{cmake / 'starm-clang.cmake'} not found."),
+            (missing_gcc, ("gcc",), f"{cmake / 'gcc-arm-none-eabi.cmake'} not found."),
         )
-        for name, prepare, arguments in cases:
-            with self.subTest(case=name):
+        for prepare, arguments, message in cases:
+            with self.subTest(arguments=arguments):
                 prepare()
                 before = self.presets.read_text(encoding="utf-8")
-                self.assertEqual(self.switch(*arguments), 1)
+                with self.assertLogs(level="ERROR") as logs:
+                    self.assertEqual(self.switch(*arguments), 1)
+                self.assertEqual(logs.output, [f"ERROR:root:{message}"])
                 self.assertEqual(self.presets.read_text(encoding="utf-8"), before)
                 self.assertIn("build", self.folders())
 
     def test_a_profile_line_is_needed_before_anything_changes(self):
         before = self.presets.read_text(encoding="utf-8")
         self.starm.write_text("set(CMAKE_SYSTEM_NAME Generic)\n", encoding="utf-8")
-        self.assertEqual(self.switch("clang", "hybrid"), 1)
+        with self.assertLogs(level="ERROR") as logs:
+            self.assertEqual(self.switch("clang", "hybrid"), 1)
+        self.assertEqual(
+            logs.output,
+            [f"ERROR:root:Could not find 'set(STARM_TOOLCHAIN_CONFIG ...)' in {self.starm}"],
+        )
         self.assertEqual(self.presets.read_text(encoding="utf-8"), before)
         self.assertIn("build", self.folders())
 

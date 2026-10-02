@@ -198,27 +198,65 @@ class PeripheralObjects(GeneratorTestCase):
         generator.libxr_settings.setdefault("USB", {})["usb_otg_hs"] = {"enable": True, **settings}
         return self.project(peripherals={"USB": {"USB_OTG_HS": {"enable": True}}})
 
-    def test_only_single_cdc_otg_hs_is_generated(self):
+    def test_an_otg_device_takes_its_settings(self):
+        # 参数顺序与 LibXR 的 STM32USBDeviceOtgHS 和 CDCUart 构造函数一致；只生成一个 CDC。
+        # The argument order follows the STM32USBDeviceOtgHS and CDCUart constructors of
+        # LibXR; only one CDC is generated.
         project = self.usb_otg_hs(
-            tx_buffer_size=128,
-            rx_buffer_size=128,
-            tx_fifo_size=128,
-            rx_fifo_size=256,
-            cdc_tx_fifo_size=128,
-            cdc_rx_fifo_size=128,
-            cdc_queue_size=3,
+            ep0_packet_size=64,
+            tx_buffer_size=64,
+            rx_buffer_size=256,
+            tx_fifo_size=192,
+            rx_fifo_size=512,
+            cdc_tx_fifo_size=96,
+            cdc_rx_fifo_size=80,
+            cdc_queue_size=4,
+            vid=0x1234,
+            pid=0x5678,
+            bcd=0x0200,
+            manufacturer="ACME",
+            product='Board "X"',
+            serial="SN-",
+            dma_section=".dma",
         )
-        code = self.generate(project)
-        self.assertIn("static LibXR::USB::CDCUart usb_otg_hs_cdc(", code)
-        self.assertIn("static STM32USBDeviceOtgHS usb_hs(", code)
-        for absent in (
-            "usb_otg_hs_cdc2",
-            "usb_otg_hs_ep2_out_buf",
-            "usb_otg_hs_ep3_in_buf",
-            "usb_otg_hs_ep4_in_buf",
-        ):
-            with self.subTest(absent=absent):
-                self.assertNotIn(absent, code)
+        code = self.generate(project, use_xrobot=False)
+        self.assertEqual(
+            [line for line in code.splitlines() if line.startswith("alignas(4) static uint8_t")],
+            [
+                f'alignas(4) static uint8_t usb_otg_hs_{name}[{size}] __attribute__((section(".dma")));'
+                for name, size in (
+                    ("ep0_in_buf", 64),
+                    ("ep0_out_buf", 64),
+                    ("ep1_in_buf", 64),
+                    ("ep1_out_buf", 256),
+                    ("ep2_in_buf", 16),
+                )
+            ],
+        )
+        endpoint = "LibXR::USB::Endpoint::EPNumber::"
+        self.assertIn(
+            "  static constexpr auto USB_OTG_HS_LANG_PACK = LibXR::USB::DescriptorStrings::"
+            "MakeLanguagePack(LibXR::USB::DescriptorStrings::Language::EN_US, "
+            '"ACME", "Board \\"X\\"", "SN-");\n'
+            f"  static LibXR::USB::CDCUart usb_otg_hs_cdc({endpoint}EP1, {endpoint}EP1, "
+            f"{endpoint}EP2, 80, 96, 4);\n"
+            "\n"
+            "  static STM32USBDeviceOtgHS usb_hs(\n"
+            "      &hpcd_USB_OTG_HS,\n"
+            "      512,\n"
+            "      {usb_otg_hs_ep0_out_buf, usb_otg_hs_ep1_out_buf},\n"
+            "      {{usb_otg_hs_ep0_in_buf, 64}, {usb_otg_hs_ep1_in_buf, 192}, "
+            "{usb_otg_hs_ep2_in_buf, 16}},\n"
+            "      USB::DeviceDescriptor::PacketSize0::SIZE_64,\n"
+            "      0x1234, 0x5678, 0x200,\n"
+            "      {&USB_OTG_HS_LANG_PACK},\n"
+            "      {{&usb_otg_hs_cdc}},\n"
+            "      {reinterpret_cast<void *>(UID_BASE), 12}\n"
+            "  );\n"
+            "  usb_hs.Init(false);\n"
+            "  usb_hs.Start(false);\n",
+            code,
+        )
 
     def test_removed_cdc_count_is_not_silently_accepted(self):
         project = self.usb_otg_hs(cdc_count=2)
@@ -263,7 +301,7 @@ class PeripheralObjects(GeneratorTestCase):
             ],
         )
 
-    def test_resident_peripherals_channels_and_terminal_are_static(self):
+    def test_peripheral_objects_are_static_and_use_their_handles(self):
         project = self.project(
             gpio={"PA0": {"Label": "LED"}},
             peripherals={
@@ -273,31 +311,52 @@ class PeripheralObjects(GeneratorTestCase):
                 "SPI": {"SPI1": {}},
                 "CAN": {"CAN1": {}},
                 "FDCAN": {"FDCAN2": {}},
-                "TIM": {"TIM1": {"Channels": {"CH1": {}}}},
+                "TIM": {"TIM1": {"Channels": {"CH1": {}, "CH1N": {"Complementary": True}}}},
+                "DAC": {"DAC": {"Channels": {"OUT1": "DAC_OUT1"}}},
             },
         )
         generator.libxr_settings["terminal_source"] = "usart1"
         generator.libxr_settings["Terminal"]["run_as_thread"] = True
         code = self.generate(project)
-        for declaration in (
-            "STM32Timebase timebase",
-            "STM32PowerManager power_manager",
-            "STM32GPIO LED",
-            "STM32ADC adc1",
-            "auto& adc1_adc_channel_0",
-            "STM32UART usart1",
-            "STM32I2C i2c1",
-            "STM32SPI spi1",
-            "STM32CAN can1",
-            "STM32CANFD fdcan2",
-            "STM32PWM pwm_tim1_ch1",
-            "RamFS ramfs",
-            "Terminal<32, 32, 5, 5> terminal",
-            "LibXR::Thread term_thread",
-        ):
-            with self.subTest(declaration=declaration):
-                self.assertIn("static " + declaration, code)
+        self.assertIn(
+            "/* External HAL Declarations */\n"
+            "extern ADC_HandleTypeDef hadc1;\n"
+            "extern CAN_HandleTypeDef hcan1;\n"
+            "extern DAC_HandleTypeDef hdac;\n"
+            "extern FDCAN_HandleTypeDef hfdcan2;\n"
+            "extern I2C_HandleTypeDef hi2c1;\n"
+            "extern SPI_HandleTypeDef hspi1;\n"
+            "extern TIM_HandleTypeDef htim1;\n"
+            "extern UART_HandleTypeDef huart1;\n\n",
+            code,
+        )
+        self.assertEqual(
+            [line for line in code.splitlines() if line.startswith("  static ")],
+            [
+                "  static STM32Timebase timebase;",
+                "  static STM32PowerManager power_manager;",
+                "  static STM32GPIO LED(LED_GPIO_Port, LED_Pin);",
+                "  static STM32ADC adc1(&hadc1, adc1_buf, {ADC_CHANNEL_0}, 3.3);",
+                "  static auto& adc1_adc_channel_0 = adc1.GetChannel(0);",
+                "  static STM32PWM pwm_tim1_ch1(&htim1, TIM_CHANNEL_1, false);",
+                "  static STM32PWM pwm_tim1_ch1n(&htim1, TIM_CHANNEL_1, true);",
+                "  static STM32UART usart1(&huart1,",
+                "  static STM32I2C i2c1(&hi2c1, i2c1_buf, 3);",
+                "  static STM32SPI spi1(&hspi1, {nullptr, 0}, {nullptr, 0}, 3);",
+                "  static STM32CAN can1(&hcan1, 5);",
+                "  static STM32CANFD fdcan2(&hfdcan2, 5);",
+                "  static STM32DAC dac_out1(&hdac, DAC_CHANNEL_1, 0.0, 3.3);",
+                '  static RamFS ramfs("XRobot");',
+                "  static Terminal<32, 32, 5, 5> terminal(ramfs);",
+                "  static LibXR::Thread term_thread;",
+            ],
+        )
         self.assertLess(code.index('extern "C" void app_main'), code.index("static STM32Timebase"))
+
+    def test_a_disabled_watchdog_gets_no_object(self):
+        code = self.generate(self.project(peripherals={"IWDG": {"IWDG": {"Enabled": False}}}))
+        self.assertNotIn("STM32Watchdog", code)
+        self.assertNotIn("iwdg.Feed()", code)
 
     def test_thread_priorities_are_libxr_levels(self):
         # LibXR 按 RTOS 的优先级数换算等级，原样写数值在 configMAX_PRIORITIES 较大的 FreeRTOS
@@ -359,7 +418,7 @@ class PeripheralObjects(GeneratorTestCase):
         self.assertIn("#if defined(__SCB_DCACHE_LINE_SIZE)", code)
         self.assertIn("#define XR_DCACHE_LINE_SIZE 32U", code)
 
-    def test_uart_buffers_follow_the_dma_directions(self):
+    def test_uart_and_spi_buffers_follow_the_dma_directions(self):
         code = self.generate(
             self.project(
                 peripherals={
@@ -367,7 +426,8 @@ class PeripheralObjects(GeneratorTestCase):
                         "USART1": {"DMA_TX": "ENABLE", "DMA_RX": "ENABLE"},
                         "USART2": {"DMA_RX": "ENABLE"},
                         "USART3": {},
-                    }
+                    },
+                    "SPI": {"SPI1": {"DMA_TX": "ENABLE"}},
                 }
             )
         )
@@ -378,12 +438,14 @@ class PeripheralObjects(GeneratorTestCase):
         ):
             with self.subTest(uart=uart):
                 self.assertIn(f"static STM32UART {uart},\n              {buffers}, 5);", code)
+        self.assertIn("static STM32SPI spi1(&hspi1, {nullptr, 0}, spi1_tx_buf, 3);", code)
         self.assertEqual(
             [line for line in code.splitlines() if line.startswith("alignas(4) static uint8_t")],
             [
                 "alignas(4) static uint8_t usart1_tx_buf[128];",
                 "alignas(4) static uint8_t usart1_rx_buf[128];",
                 "alignas(4) static uint8_t usart2_rx_buf[128];",
+                "alignas(4) static uint8_t spi1_tx_buf[32];",
             ],
         )
 
