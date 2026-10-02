@@ -61,19 +61,13 @@ class UpdateNotice(TestCase):
                 cli.main(list(argv or self.FLASH_INFO))
         return [line for line in logs.output if line.startswith("WARNING") and "marker" not in line]
 
-    def notice(self, command):
-        """升级到 6.1.0 的提示，升级命令为 command。
-        The notice of 6.1.0 with the upgrade command command.
+    def notice(self, command, latest="6.1.0"):
+        """升级到 latest 的提示，升级命令为 command。
+        The notice of latest with the upgrade command command.
         """
         return [
-            f"WARNING:root:libxr 6.1.0 is available (installed: 6.0.0); upgrade with `{command}`"
+            f"WARNING:root:libxr {latest} is available (installed: 6.0.0); upgrade with `{command}`"
         ]
-
-    def test_a_newer_version_is_reported_at_the_end(self):
-        # 升级命令用当前 Python 的 pip；以前的 pip install -U libxr 可能是另一个环境的 pip。
-        # The upgrade uses the pip of the running Python; the earlier pip install -U libxr may
-        # be the pip of another environment.
-        self.assertEqual(self.run_with_latest("6.1.0"), self.notice(self.pip))
 
     def test_the_notice_follows_a_failed_command_too(self):
         self.assertEqual(
@@ -86,14 +80,17 @@ class UpdateNotice(TestCase):
         self.assertEqual(self.run_with_latest("6.1.0", editable=True), [])
         self.assertEqual(self.queries, 0)
 
-    def test_the_result_is_cached_for_a_day(self):
+    def test_a_newer_version_is_reported_and_cached_for_a_day(self):
+        # 升级命令用当前 Python 的 pip；以前的 pip install -U libxr 可能是另一个环境的 pip。
+        # The upgrade uses the pip of the running Python; the earlier pip install -U libxr may
+        # be the pip of another environment.
         self.assertEqual(self.run_with_latest("6.1.0"), self.notice(self.pip))
         self.assertEqual(self.run_with_latest("6.2.0"), self.notice(self.pip))
         self.assertEqual(self.queries, 1)
         stale = json.loads(self.cache.read_text(encoding="utf-8"))
         stale["checked"] -= update_notice.INTERVAL
         self.cache.write_text(json.dumps(stale), encoding="utf-8")
-        self.assertIn("libxr 6.2.0 is available", self.run_with_latest("6.2.0")[0])
+        self.assertEqual(self.run_with_latest("6.2.0"), self.notice(self.pip, "6.2.0"))
         self.assertEqual(self.queries, 2)
 
     def test_a_failed_query_is_not_repeated_within_a_day(self):

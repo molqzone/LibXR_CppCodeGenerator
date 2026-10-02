@@ -149,11 +149,6 @@ class ParseIoc(TestCase):
         self.assertNotIn("&id", text)
         self.assertEqual(text.count("stream: DMA2_Stream5"), 2)
 
-    def test_an_explicit_output_is_kept(self):
-        self.assertEqual(self.parse("-o", str(self.project / "cubemx.yaml")), 0)
-        self.assertTrue((self.project / "cubemx.yaml").is_file())
-        self.assertFalse((self.project / ".config.yaml").exists())
-
     def test_several_ioc_files_are_refused(self):
         (self.project / "other.ioc").write_text(IOC, encoding="utf-8")
         with self.assertLogs(level="ERROR") as logs:

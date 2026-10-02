@@ -226,14 +226,19 @@ class SwitchToolchain(TestCase):
         self.assertEqual(self.starm.read_text(encoding="utf-8"), CUBEMX_STARM)
 
     def test_a_failed_check_changes_nothing(self):
-        before = self.presets.read_text(encoding="utf-8")
+        def missing_gcc():
+            self.presets.write_text(json.dumps(presets("starm-clang.cmake")), encoding="utf-8")
+            (self.project / "cmake" / "gcc-arm-none-eabi.cmake").unlink()
+
         cases = (
             ("gcc with a library", lambda: None, ("gcc", "hybrid")),
             ("missing clang toolchain", self.starm.unlink, ("clang", "hybrid")),
+            ("missing gcc toolchain", missing_gcc, ("gcc",)),
         )
         for name, prepare, arguments in cases:
             with self.subTest(case=name):
                 prepare()
+                before = self.presets.read_text(encoding="utf-8")
                 self.assertEqual(self.switch(*arguments), 1)
                 self.assertEqual(self.presets.read_text(encoding="utf-8"), before)
                 self.assertIn("build", self.folders())
@@ -286,13 +291,6 @@ class SwitchToolchain(TestCase):
         self.assertEqual(self.switch("gcc"), 0)
         self.assertEqual(self.toolchain_file(), "${sourceDir}/cmake/gcc-arm-none-eabi.cmake")
         self.assertIn('"displayName": "调试"', self.presets.read_text(encoding="utf-8"))
-
-    def test_a_missing_gcc_toolchain_changes_nothing(self):
-        self.presets.write_text(json.dumps(presets("starm-clang.cmake")), encoding="utf-8")
-        before = self.presets.read_text(encoding="utf-8")
-        (self.project / "cmake" / "gcc-arm-none-eabi.cmake").unlink()
-        self.assertEqual(self.switch("gcc"), 1)
-        self.assertEqual(self.presets.read_text(encoding="utf-8"), before)
 
 
 if __name__ == "__main__":

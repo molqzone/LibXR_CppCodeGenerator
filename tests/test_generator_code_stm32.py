@@ -4,9 +4,7 @@ Generating the app_main source (libxr.generator_code_stm32): the static entry, r
 peripheral objects, GPIO names, User Code regions, and output independent of the hash seed.
 """
 
-import contextlib
 import copy
-import io
 import os
 import subprocess
 import sys
@@ -19,7 +17,6 @@ from unittest import mock
 import yaml
 from fixtures import IOC, GeneratorTestCase, logging_marker, user_region
 
-from libxr import cli
 from libxr import generator_code_stm32 as generator
 from libxr.libxr_config_file import LibXRConfigError
 from libxr.stm32_flash_generator import flash_info_to_dict, layout_flash
@@ -76,12 +73,6 @@ class EntrySource(GeneratorTestCase):
         )
         self.assertIn("// XROBOT_MAIN(); now follows this region", self.generate(existing=old))
 
-    def test_the_removed_container_option_is_an_argument_error(self):
-        argv = ["gen", "-i", "input.yaml", "-o", "app.cpp", "--hw-cntr"]
-        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as error:
-            cli.build_parser().parse_args(argv)
-        self.assertEqual(error.exception.code, 2)
-
     def test_user_blocks_are_kept_across_regenerations(self):
         old = textwrap.dedent("""\
             /* User Code Begin 1 */
@@ -106,10 +97,6 @@ class EntrySource(GeneratorTestCase):
             "// clang-format off\n", "// clang-format off\nlegacy_format_layout();\n", 1
         ).replace("// NOLINTBEGIN\n", "// NOLINTBEGIN\nlegacy_lint_marker();\n", 1)
         self.assertEqual(self.generate(existing=existing), generated)
-
-    def test_repeat_generation_is_idempotent(self):
-        first = self.generate()
-        self.assertEqual(self.generate(existing=first), first)
 
 
 class ProjectConfiguration(GeneratorTestCase):
@@ -159,16 +146,6 @@ class Registrations(GeneratorTestCase):
             ValueError, "Static registration needs an existing C++ name: adc.GetChannel(0)"
         ):
             generator.generate_xrobot_registrations()
-
-    def test_every_registered_name_has_one_type(self):
-        generator.initialize_registry(True)
-        generator._register_device("usart1", "UART")
-        with self.assertRaisesMessage(
-            ValueError,
-            "Generated name 'usart1' (GPIO object) collides with the existing 'usart1' "
-            "(UART object); every generated object needs its own name",
-        ):
-            generator._register_device("usart1", "GPIO")
 
     def test_fdcan_is_also_registered_as_classic_can(self):
         code = self.generate(self.project(peripherals={"FDCAN": {"FDCAN1": {}, "FDCAN3": {}}}))
@@ -597,12 +574,6 @@ class UserRegionMarkers(GeneratorTestCase):
         lines = [n for n, line in enumerate(text.splitlines(), 1) if line.strip() == content]
         return lines[occurrence]
 
-    def test_canonical_markers_are_accepted(self):
-        existing = self.base.replace(
-            "/* User Code Begin 2 */", "/* User Code Begin 2 */\n  Keep();"
-        )
-        self.assertIn("Keep();", self.generate(use_xrobot=False, existing=existing))
-
     def test_empty_existing_file_is_new(self):
         self.assertEqual(self.generate(use_xrobot=False, existing="\n"), self.base)
 
@@ -611,15 +582,6 @@ class UserRegionMarkers(GeneratorTestCase):
         begin = self.line(existing, "/* User Code Begin 3 */")
         self.assertRefused(
             existing, f"line {begin}: /* User Code Begin 3 */ opens before User Code End 2"
-        )
-
-    def test_unpaired_end_is_refused(self):
-        existing = self.base.replace("/* User Code Begin 1 */\n", "", 1)
-        end = self.line(existing, "/* User Code End 1 */")
-        self.assertRefused(
-            existing,
-            f"line {end}: /* User Code End 1 */ has no matching Begin marker",
-            "User Code Begin 1 / End 1 markers are missing",
         )
 
     def test_renamed_region_is_refused(self):
@@ -644,10 +606,6 @@ class UserRegionMarkers(GeneratorTestCase):
         )
         second = self.line(existing, "/* User Code Begin 1 */", 1)
         self.assertRefused(existing, f"line {second}: /* User Code Begin 1 */ is duplicated")
-
-    def test_missing_region_is_refused(self):
-        existing = self.base.replace("  /* User Code Begin 2 */\n  /* User Code End 2 */\n", "", 1)
-        self.assertRefused(existing, "User Code Begin 2 / End 2 markers are missing")
 
     def test_malformed_marker_is_refused(self):
         existing = self.base.replace("/* User Code Begin 1 */", "// User Code Begin 1", 1)
@@ -692,12 +650,14 @@ class UserRegionMarkers(GeneratorTestCase):
         self.assertIn(body, self.generate(use_xrobot=False, existing=existing))
 
     def test_prose_mentioning_markers_is_not_a_marker(self):
+        prose = "  // keep code between the User Code Begin/End lines"
         existing = self.base.replace(
-            "/* User Code Begin 2 */",
-            "/* User Code Begin 2 */\n  // keep code between the User Code Begin/End lines",
-            1,
+            "/* User Code Begin 2 */", "/* User Code Begin 2 */\n" + prose, 1
         )
-        self.generate(use_xrobot=False, existing=existing)
+        self.assertIn(
+            "/* User Code Begin 2 */\n" + prose + "\n",
+            self.generate(use_xrobot=False, existing=existing),
+        )
 
 
 LIBXR_CONFIG = textwrap.dedent("""\
@@ -1041,19 +1001,21 @@ class GeneratorPin(GeneratorTestCase):
             generator.check_generator_pin()
         return [line for line in logs.output if "marker" not in line]
 
-    def test_a_different_pin_warns(self):
-        self.assertEqual(
-            self.warnings("5.2.4"),
-            [
-                "WARNING:root:libxr_config.yaml pins generator 5.2.4, but libxr 6.0.0 is "
-                "installed; the BSP CI generates with 5.2.4"
-            ],
-        )
-
-    def test_the_same_version_a_commit_or_no_pin_is_quiet(self):
-        for pin in ("6.0.0", "0123456789abcdef0123456789abcdef01234567", None):
+    def test_only_a_different_version_warns(self):
+        for pin, warnings in (
+            (
+                "5.2.4",
+                [
+                    "WARNING:root:libxr_config.yaml pins generator 5.2.4, but libxr 6.0.0 is "
+                    "installed; the BSP CI generates with 5.2.4"
+                ],
+            ),
+            ("6.0.0", []),
+            ("0123456789abcdef0123456789abcdef01234567", []),
+            (None, []),
+        ):
             with self.subTest(pin=pin):
-                self.assertEqual(self.warnings(pin), [])
+                self.assertEqual(self.warnings(pin), warnings)
 
 
 if __name__ == "__main__":

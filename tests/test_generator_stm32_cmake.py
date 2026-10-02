@@ -39,22 +39,22 @@ class ModulesDirectory(GeneratorTestCase):
         stm32_cmake.integrate(str(self.root))
         return (self.root / "cmake" / "LibXR.CMake").read_text(encoding="utf-8")
 
-    def test_xrobot_project_sets_modules_directory(self):
-        self.write_app_main(True)
-        self.assertIn(
+    def test_the_modules_directory_follows_app_main(self):
+        libxr = "set(LIBXR_DRIVER st)\nadd_subdirectory(Middlewares/Third_Party/LibXR)"
+        xrobot = (
             "set(LIBXR_DRIVER st)\nset(XROBOT_MODULES_DIR ${CMAKE_CURRENT_SOURCE_DIR}/Modules)\n"
-            "add_subdirectory(Middlewares/Third_Party/LibXR)",
-            self.run_cmake_generator(),
+            "add_subdirectory(Middlewares/Third_Party/LibXR)"
         )
-
-    def test_libxr_project_does_not_set_modules_directory(self):
-        self.write_app_main(False)
-        text = self.run_cmake_generator()
-        self.assertNotIn("XROBOT_MODULES_DIR", text)
-        self.assertIn("set(LIBXR_DRIVER st)\nadd_subdirectory(Middlewares/Third_Party/LibXR)", text)
-
-    def test_project_without_generated_code_is_libxr_only(self):
-        self.assertNotIn("XROBOT_MODULES_DIR", self.run_cmake_generator())
+        # 还没有生成 app_main 的工程按纯 LibXR 工程处理。
+        # A project without a generated app_main counts as a LibXR-only project.
+        for use_xrobot, block in ((True, xrobot), (False, libxr), (None, libxr)):
+            with self.subTest(use_xrobot=use_xrobot):
+                self.setUp()
+                if use_xrobot is not None:
+                    self.write_app_main(use_xrobot)
+                text = self.run_cmake_generator()
+                self.assertIn(block, text)
+                self.assertEqual("XROBOT_MODULES_DIR" in text, use_xrobot is True)
 
     def test_include_inside_user_code_is_not_the_xrobot_choice(self):
         code = self.write_app_main(False).replace(

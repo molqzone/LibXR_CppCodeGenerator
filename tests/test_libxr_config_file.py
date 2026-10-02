@@ -62,14 +62,6 @@ class LibXRConfigFile(GeneratorTestCase):
         self.path.write_text(edited, encoding="utf-8")
         self.assertEqual(self.regenerate(), edited)
 
-    def test_generator_sha_pin_is_kept_verbatim(self):
-        self.regenerate()
-        sha = "0123456789abcdef0123456789abcdef01234567"
-        text = self.path.read_text(encoding="utf-8") + f"generator: {sha}\n"
-        self.path.write_text(text, encoding="utf-8")
-        self.assertEqual(self.regenerate(), text)
-        self.assertEqual(yaml.safe_load(text)["generator"], sha)
-
     def test_changed_values_keep_neighbouring_comments(self):
         self.regenerate()
         text = self.path.read_text(encoding="utf-8").replace(

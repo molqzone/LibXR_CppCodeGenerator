@@ -181,6 +181,11 @@ class LibXRSubmodule(TestCase):
                 "Middlewares/Third_Party/LibXR) and commit the gitlink."
             )
 
+        # 已有的检出不需要下载源。
+        # An existing checkout needs no source to download from.
+        patcher = mock.patch.object(cubemx_cfg, "pick_git_base", side_effect=AssertionError)
+        patcher.start()
+        self.addCleanup(patcher.stop)
         for recorded, checked_out, relation in (
             (self.default, self.old, "older than"),
             (self.old, self.old, "older than"),
@@ -263,12 +268,6 @@ class LibXRSubmodule(TestCase):
         self.assertEqual(self.head(checkout), self.default)
         staged = git("ls-files", "-s", "--", cubemx_cfg.SUBMODULE_PATH, cwd=project).split()[1]
         self.assertEqual(staged, self.default)
-
-    def test_an_existing_checkout_needs_no_source(self):
-        project, checkout = self.project(self.default, self.default)
-        with mock.patch.object(cubemx_cfg, "pick_git_base", side_effect=AssertionError):
-            self.add_libxr(project)
-        self.assertEqual(self.head(checkout), self.default)
 
     def test_a_local_source_is_cloned_without_a_global_file_permission(self):
         # git 2.38 起子模块默认不能从本地路径克隆；这里不设 GIT_ALLOW_PROTOCOL。
