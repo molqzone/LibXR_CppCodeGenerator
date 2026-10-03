@@ -3,11 +3,13 @@
 """libxr stm32 setup：把 STM32CubeMX 工程配置为使用 LibXR 的工程。
 libxr stm32 setup: set up an STM32CubeMX project to use LibXR.
 
-依次加入 LibXR 子模块（Middlewares/Third_Party/LibXR），创建 .gitignore 和 User 目录，记录终端设备，
-再像 libxr parse、libxr gen 和 libxr stm32 cmake 一样生成配置、C++ 代码和 CMakeLists.txt。
-In order it adds the LibXR submodule (Middlewares/Third_Party/LibXR), creates .gitignore and the
-User directory, records the terminal device, then produces the configuration, the C++ code and
-CMakeLists.txt as libxr parse, libxr gen and libxr stm32 cmake do.
+依次加入 LibXR 子模块（Middlewares/Third_Party/LibXR），创建 .gitignore、.gitattributes 和 User
+目录，记录终端设备，再像 libxr parse、libxr gen 和 libxr stm32 cmake 一样生成配置、C++ 代码和
+CMake 集成。
+In order it adds the LibXR submodule (Middlewares/Third_Party/LibXR), creates .gitignore,
+.gitattributes and the User directory, records the terminal device, then produces the
+configuration, the C++ code and the CMake integration as libxr parse, libxr gen and libxr stm32
+cmake do.
 """
 
 import json
@@ -232,6 +234,53 @@ def create_gitignore_file(project_dir):
 .config.yaml
 CMakeFiles/**
 """)
+
+
+# .gitattributes 中的行：仓库内的文本文件统一为 LF，签出时按平台转换；脚本的换行与平台无关，
+# .bat 为 CRLF。后面的行覆盖前面的，所以 * text=auto 在最前。
+# The lines of .gitattributes: text files are LF in the repository and converted on checkout by
+# platform; shell scripts are LF everywhere and .bat files CRLF. Later lines override earlier
+# ones, so * text=auto comes first.
+GITATTRIBUTES_COMMENT = (
+    "# Text files are LF in the repository; the working tree follows the platform."
+)
+GITATTRIBUTES_LINES = ("* text=auto", "*.sh text eol=lf", "*.bat text eol=crlf")
+
+
+def create_gitattributes_file(project_dir):
+    """工程目录没有 .gitattributes 时创建一个，写入 GITATTRIBUTES_LINES；已有的文件只补上缺少
+    的行，其余内容不动。
+    Create a .gitattributes in the project directory with GITATTRIBUTES_LINES; an existing file
+    only gets the missing lines appended and keeps everything else.
+
+    第一次提交就是 LF，之后无论谁在哪个平台用 CubeMX 重新生成，提交的差异里都只有真实的改动，
+    没有换行符。已有文件的换行符（LF 或 CRLF）沿用到补上的行。
+    The first commit is LF, so whoever regenerates with CubeMX on whatever platform afterwards,
+    the commit shows only real changes and no line endings. The line ending of an existing file,
+    LF or CRLF, carries over to the appended lines.
+    """
+    path = os.path.join(project_dir, ".gitattributes")
+    if not os.path.exists(path):
+        logging.info(tr("Creating .gitattributes file...", "正在创建 .gitattributes 文件……"))
+        with open(path, "w", encoding="utf-8", newline="\n") as stream:
+            stream.write("\n".join((GITATTRIBUTES_COMMENT, *GITATTRIBUTES_LINES)) + "\n")
+        return
+    with open(path, encoding="utf-8", newline="") as stream:
+        text = stream.read()
+    present = {line.strip() for line in text.splitlines()}
+    missing = [line for line in GITATTRIBUTES_LINES if line not in present]
+    if not missing:
+        return
+    eol = "\r\n" if "\r\n" in text else "\n"
+    separator = "" if not text or text.endswith("\n") else eol
+    with open(path, "w", encoding="utf-8", newline="") as stream:
+        stream.write(text + separator + eol.join(missing) + eol)
+    logging.info(
+        tr(
+            f"Added {', '.join(missing)} to .gitattributes",
+            f"已在 .gitattributes 中补上 {'、'.join(missing)}",
+        )
+    )
 
 
 def get_git_head(path):
@@ -595,8 +644,9 @@ def setup_project(
     git_source: str = "auto",
     git_mirrors: str = "",
 ) -> None:
-    """加入 LibXR 子模块，再生成配置、C++ 代码和 CMakeLists.txt。
-    Add the LibXR submodule, then generate the configuration, the C++ code and CMakeLists.txt.
+    """加入 LibXR 子模块，写 .gitignore 和 .gitattributes，再生成配置、C++ 代码和 CMake 集成。
+    Add the LibXR submodule, write .gitignore and .gitattributes, then generate the
+    configuration, the C++ code and the CMake integration.
 
     改动工程之前先用 check_project() 检查工程。commit 为空时以 libxr_version.py 中锁定的 commit
     为默认值。需要克隆 LibXR 时，git_source 为 auto 则在 GitHub、内置镜像、XR_GIT_MIRRORS 和
@@ -689,6 +739,7 @@ def setup_project(
     logging.info(tr(f"Found .ioc file: {ioc_file}", f"找到 .ioc 文件：{ioc_file}"))
 
     create_gitignore_file(project_dir)
+    create_gitattributes_file(project_dir)
 
     # 创建 User 目录。
     # Create user directory

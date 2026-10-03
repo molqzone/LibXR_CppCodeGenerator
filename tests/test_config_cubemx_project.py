@@ -423,6 +423,36 @@ class SetupProject(GeneratorTestCase):
         cubemx_cfg.create_gitignore_file(str(self.root))
         self.assertEqual((self.root / ".gitignore").read_text(encoding="utf-8"), "*.bak\n")
 
+    def test_gitattributes_keeps_text_files_lf_in_the_repository(self):
+        cubemx_cfg.create_gitattributes_file(str(self.root))
+        self.assertEqual(
+            (self.root / ".gitattributes").read_text(encoding="utf-8"),
+            "# Text files are LF in the repository; the working tree follows the platform.\n"
+            "* text=auto\n*.sh text eol=lf\n*.bat text eol=crlf\n",
+        )
+
+    def test_an_existing_gitattributes_only_gets_the_missing_lines(self):
+        path = self.root / ".gitattributes"
+        for before, after in (
+            ("* text=auto\n", "* text=auto\n*.sh text eol=lf\n*.bat text eol=crlf\n"),
+            (
+                "*.png binary\n* text=auto",
+                "*.png binary\n* text=auto\n*.sh text eol=lf\n*.bat text eol=crlf\n",
+            ),
+            (
+                "* text=auto\r\n*.png binary\r\n",
+                "* text=auto\r\n*.png binary\r\n*.sh text eol=lf\r\n*.bat text eol=crlf\r\n",
+            ),
+            (
+                "# mine\n*.bat text eol=crlf\n*.sh text eol=lf\n* text=auto\n",
+                "# mine\n*.bat text eol=crlf\n*.sh text eol=lf\n* text=auto\n",
+            ),
+        ):
+            with self.subTest(before=before):
+                path.write_bytes(before.encode("utf-8"))
+                cubemx_cfg.create_gitattributes_file(str(self.root))
+                self.assertEqual(path.read_bytes().decode("utf-8"), after)
+
     def test_the_next_steps_name_the_call_site_and_the_build(self):
         # 以前 setup 只报告完成，没有调用 app_main() 的固件编译通过后什么都不运行。
         # setup used to report only that it finished; firmware without the app_main() call
@@ -464,9 +494,10 @@ class SetupProject(GeneratorTestCase):
 
 
 class SetupRun(LibXRRemote, GeneratorTestCase):
-    """setup_project 依次加入 LibXR、写 .gitignore 和终端设备、解析 .ioc、生成代码并接入 CMake。
-    setup_project adds LibXR, writes .gitignore and the terminal device, parses the .ioc file,
-    generates the code and integrates CMake, in that order.
+    """setup_project 依次加入 LibXR、写 .gitignore、.gitattributes 和终端设备、解析 .ioc、生成代码
+    并接入 CMake。
+    setup_project adds LibXR, writes .gitignore, .gitattributes and the terminal device, parses
+    the .ioc file, generates the code and integrates CMake, in that order.
     """
 
     def test_a_cubemx_project_is_set_up(self):
@@ -497,6 +528,10 @@ class SetupRun(LibXRRemote, GeneratorTestCase):
         self.assertEqual(
             (project / ".gitignore").read_text(encoding="utf-8"),
             "build/**\n.history/**\n.cache/**\n.config.yaml\nCMakeFiles/**\n",
+        )
+        self.assertIn(
+            "* text=auto\n*.sh text eol=lf\n*.bat text eol=crlf\n",
+            (project / ".gitattributes").read_text(encoding="utf-8"),
         )
         self.assertTrue((project / ".config.yaml").is_file())
         user = project / "User"
