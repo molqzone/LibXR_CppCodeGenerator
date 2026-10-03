@@ -86,9 +86,10 @@ class GeneratedFormat(GeneratorTestCase):
 
 @requires_clang_format
 class RealProjects(GeneratedFormat):
-    """DevC（STM32F407，没有数据 cache）和 MC02（STM32H723，有数据 cache，缓冲区放在指定的段）。
-    DevC (STM32F407, no data cache) and MC02 (STM32H723, with a data cache and the buffers in
-    given sections).
+    """DevC（STM32F407，没有数据 cache；USB OTG HS 带两路 CDC，启用数据库）和 MC02（STM32H723，
+    有数据 cache，缓冲区放在指定的段）。
+    DevC (STM32F407, no data cache; the USB OTG HS with two CDCs and the database enabled) and
+    MC02 (STM32H723, with a data cache and the buffers in given sections).
     """
 
     def assertProjectFormatted(self, name: str) -> None:
