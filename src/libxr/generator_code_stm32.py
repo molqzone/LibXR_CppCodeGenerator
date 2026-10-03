@@ -2091,6 +2091,82 @@ class PeripheralFactory:
         return "usb", lines
 
 
+# 驱动头文件定义的名字：User Code 区域中的手写代码用到其中一个名字时，生成的文件仍然 include
+# 这个头文件。
+# The names the driver headers define: when hand-written code in a User Code region uses one of
+# them, the generated file still includes that header.
+_HEADER_NAMES = {
+    "cdc_uart.hpp": ("CDCUart",),
+    "flash_map.hpp": ("FLASH_REGIONS", "FLASH_REGION_NUMBER"),
+    "stm32_adc.hpp": ("STM32ADC",),
+    "stm32_can.hpp": ("STM32CAN",),
+    "stm32_canfd.hpp": ("STM32CANFD",),
+    "stm32_dac.hpp": ("STM32DAC",),
+    "stm32_flash.hpp": ("STM32Flash",),
+    "stm32_gpio.hpp": ("STM32GPIO",),
+    "stm32_i2c.hpp": ("STM32I2C",),
+    "stm32_pwm.hpp": ("STM32PWM",),
+    "stm32_spi.hpp": ("STM32SPI",),
+    "stm32_uart.hpp": ("STM32UART",),
+    "stm32_usb_dev.hpp": ("STM32USBDeviceDevFs", "STM32USBDeviceOtgFS", "STM32USBDeviceOtgHS"),
+    "stm32_watchdog.hpp": ("STM32Watchdog",),
+}
+# Peripherals 中的段与它们的 HAL 句柄类型；句柄名是 h 加小写的实例名。
+# The sections of Peripherals and their HAL handle types; a handle is named h plus the instance
+# name in lowercase.
+_HANDLE_TYPES = {
+    "ADC": "ADC_HandleTypeDef",
+    "CAN": "CAN_HandleTypeDef",
+    "DAC": "DAC_HandleTypeDef",
+    "FDCAN": "FDCAN_HandleTypeDef",
+    "I2C": "I2C_HandleTypeDef",
+    "IWDG": "IWDG_HandleTypeDef",
+    "SPI": "SPI_HandleTypeDef",
+    "TIM": "TIM_HandleTypeDef",
+}
+
+
+def _use_names_of_user_code(project_data: dict, existing_code: str, flash_map: bool) -> None:
+    """记录 User Code 区域中的手写代码用到的驱动头文件和 HAL 句柄，让生成的文件仍然 include
+    和声明它们。
+    Record the driver headers and HAL handles that hand-written code in the User Code regions
+    uses, so that the generated file still includes and declares them.
+
+    只看区域内的标识符，注释和字符串不算；工程中没有的外设不会得到句柄声明。标记有问题的
+    已有代码在这里跳过，由 validate_user_regions() 报告。
+    Only identifiers in the regions count, not comments or strings, and a peripheral that the
+    project does not have gets no handle declaration. Existing code with a faulty marker is
+    skipped here and reported by validate_user_regions().
+    """
+    if not existing_code.strip():
+        return
+    try:
+        names = {
+            occurrence.text
+            for region in CppDocument.parse(existing_code).user_regions()
+            for occurrence in identifier_occurrences(region.body_text)
+        }
+    except ValueError:
+        return
+    for header, symbols in _HEADER_NAMES.items():
+        if names.intersection(symbols) and (flash_map or header != "flash_map.hpp"):
+            _use_header(header)
+    peripherals = project_data.get("Peripherals", {})
+    handles = {
+        f"h{instance.lower()}": handle_type
+        for section, handle_type in _HANDLE_TYPES.items()
+        for instance in peripherals.get(section, {})
+    }
+    for instance, config in peripherals.get("USB", {}).items():
+        handle = _pcd_handle(instance, config if isinstance(config, dict) else {})
+        if handle:
+            handles[handle] = "PCD_HandleTypeDef"
+    for instance in peripherals.get("USART", {}):
+        handles["h" + instance.lower().replace("usart", "uart")] = "UART_HandleTypeDef"
+    for handle in sorted(names.intersection(handles)):
+        _use_handle(handles[handle], handle)
+
+
 def _generate_header_includes(use_xrobot: bool = False) -> list[str]:
     """生成 app_main 的 #include 行和 ``using namespace LibXR;``：只含用到的驱动头文件。
     Generate the #include lines of app_main and ``using namespace LibXR;``: only the driver
@@ -2766,6 +2842,7 @@ def generate_full_code(
     peripherals = generate_peripheral_instances(project_data, use_xrobot)
     terminal = configure_terminal(project_data)
     database = generate_database(flash_map)
+    _use_names_of_user_code(project_data, existing_code, flash_map)
     watchdog = peripherals.get("watchdog", [])
     if watchdog:
         watchdog = watchdog + configure_watchdog(project_data)

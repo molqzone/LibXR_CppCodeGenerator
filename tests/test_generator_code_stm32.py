@@ -908,6 +908,79 @@ class Database(GeneratorTestCase):
             self.generate(self.project({"PA0": {"Label": "database"}}))
 
 
+class UserCodeNames(GeneratorTestCase):
+    """手写在 User Code 区域中的代码用到的驱动头文件和 HAL 句柄仍然被 include 和声明。
+    The driver headers and HAL handles that hand-written code in the User Code regions uses are
+    still included and declared.
+    """
+
+    def existing(self, body: str, region: int = 3) -> str:
+        """生成一次，再把 body 放进第 region 个 User Code 区域，作为已有的代码。
+        Generate once, then put body into the User Code region number region as the existing
+        code.
+        """
+        code = self.generate()
+        marker = f"/* User Code Begin {region} */"
+        return code.replace(marker, f"{marker}\n{body}", 1)
+
+    def test_the_drivers_that_the_user_code_uses_are_included(self):
+        existing = self.existing(
+            "  static STM32Flash flash(FLASH_REGIONS, FLASH_REGION_NUMBER);\n"
+            "  static DatabaseRaw<32> database(flash);\n"
+        )
+        code = self.generate(existing=existing)
+        self.assertIn('#include "flash_map.hpp"\n', code)
+        self.assertIn('#include "stm32_flash.hpp"\n', code)
+        self.assertEqual(self.generate(existing=code), code)
+
+    def test_flash_map_is_not_included_without_a_flash_layout(self):
+        existing = self.existing("  static STM32Flash flash(FLASH_REGIONS, FLASH_REGION_NUMBER);\n")
+        generator.initialize_registry(True)
+        code = generator.generate_full_code(self.project(), True, existing, flash_map=False)
+        self.assertIn('#include "stm32_flash.hpp"\n', code)
+        self.assertNotIn("flash_map.hpp", code)
+
+    def test_names_in_comments_and_strings_do_not_count(self):
+        existing = self.existing(
+            '  // STM32Flash and htim5 are used elsewhere\n  Log("STM32SPI htim5");\n'
+        )
+        code = self.generate(self.project(peripherals={"TIM": {"TIM5": {}}}), existing=existing)
+        self.assertNotIn("stm32_flash.hpp", code)
+        self.assertNotIn("stm32_spi.hpp", code)
+        self.assertNotIn("extern TIM_HandleTypeDef htim5;", code)
+
+    def test_a_name_outside_the_user_regions_does_not_count(self):
+        existing = self.generate().replace(
+            "using namespace LibXR;", "using namespace LibXR;\nSTM32Flash* flash;"
+        )
+        self.assertNotIn("stm32_flash.hpp", self.generate(existing=existing))
+
+    def test_the_handles_that_the_user_code_uses_are_declared(self):
+        project = self.project(
+            peripherals={
+                "TIM": {"TIM5": {}, "TIM7": {}},
+                "USART": {"USART2": {}},
+                "USB": {"USB_OTG_HS": {"Role": "Device"}},
+            }
+        )
+        existing = self.existing(
+            "  HAL_TIM_Base_Start(&htim5);\n  HAL_UART_Abort(&huart2);\n"
+            "  hpcd_USB_OTG_HS.Instance = nullptr;\n  HAL_ADC_Start(&hadc9);\n"
+        )
+        code = self.generate(project, existing=existing)
+        self.assertIn("extern PCD_HandleTypeDef hpcd_USB_OTG_HS;\n", code)
+        self.assertIn("extern TIM_HandleTypeDef htim5;\n", code)
+        self.assertIn("extern UART_HandleTypeDef huart2;\n", code)
+        # htim7 is not used, and the project has no ADC9.
+        self.assertNotIn("extern TIM_HandleTypeDef htim7;", code)
+        self.assertNotIn("extern ADC_HandleTypeDef", code)
+
+    def test_existing_code_with_a_faulty_marker_is_still_reported(self):
+        existing = self.generate().replace("/* User Code End 3 */", "/* User Code End 4 */")
+        with self.assertRaises(ValueError):
+            self.generate(existing=existing)
+
+
 class GpioObjectNames(GeneratorTestCase):
     """GPIO 标签成为 app_main 中的 C++ 对象名。
     GPIO labels become C++ object names inside app_main.
