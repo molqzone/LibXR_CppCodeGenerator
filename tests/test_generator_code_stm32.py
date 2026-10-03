@@ -840,6 +840,74 @@ class PeripheralObjects(GeneratorTestCase):
         self.assertIn("alignas(4) static uint16_t adc3_buf[192];", code)
 
 
+class Database(GeneratorTestCase):
+    """database 设置：STM32Flash 和 DatabaseRaw 数据库，登记为 database。
+    The database setting: STM32Flash and a DatabaseRaw database, registered as database.
+    """
+
+    def test_an_enabled_database_gets_a_flash_and_is_registered(self):
+        generator.libxr_settings["database"] = {"enable": True, "block_size": 1}
+        code = self.generate()
+        self.assertIn(
+            "  // Flash and database\n"
+            "  static STM32Flash flash(FLASH_REGIONS, FLASH_REGION_NUMBER);\n"
+            "  static DatabaseRaw<1> database(flash);\n",
+            code,
+        )
+        self.assertIn("  XR_REGISTER(database, LibXR::Database);\n", code)
+        self.assertIn('#include "flash_map.hpp"\n', code)
+        self.assertIn('#include "stm32_flash.hpp"\n', code)
+
+    def test_the_block_size_is_the_template_argument(self):
+        generator.libxr_settings["database"] = {"enable": True, "block_size": 32}
+        self.assertIn("  static DatabaseRaw<32> database(flash);\n", self.generate())
+
+    def test_a_disabled_database_adds_nothing_and_is_listed_in_the_settings(self):
+        code = self.generate()
+        for text in ("STM32Flash", "DatabaseRaw", "flash_map.hpp", "stm32_flash.hpp"):
+            with self.subTest(text=text):
+                self.assertNotIn(text, code)
+        self.assertEqual(generator.libxr_settings["database"], {"enable": False, "block_size": 1})
+
+    def test_the_database_comes_after_the_terminal_and_before_the_registrations(self):
+        generator.libxr_settings["database"] = {"enable": True}
+        generator.libxr_settings["terminal_source"] = "usart1"
+        code = self.generate(self.project(peripherals={"USART": {"USART1": {}}}))
+        self.assertLess(code.index("// Terminal on"), code.index("// Flash and database"))
+        self.assertLess(code.index("// Flash and database"), code.index("// Hardware registration"))
+
+    def test_a_database_needs_a_flash_layout(self):
+        generator.libxr_settings["database"] = {"enable": True}
+        generator.initialize_registry(True)
+        with self.assertRaisesMessage(
+            LibXRConfigError,
+            "libxr_config.yaml: database.enable is true, but no flash_map.hpp can be generated "
+            "for this MCU, so the database has no Flash layout",
+        ):
+            generator.generate_full_code(self.project(), True, "", flash_map=False)
+
+    def test_invalid_settings_are_rejected(self):
+        for settings, problem in (
+            ({"enable": "yes"}, "database.enable 'yes' is not true or false"),
+            ({"enable": True, "block_size": 0}, "database.block_size 0 is not a positive integer"),
+            ({"block_size": "wide"}, "database.block_size 'wide' is not a positive integer"),
+        ):
+            with self.subTest(settings=settings):
+                self.setUp()
+                generator.libxr_settings["database"] = settings
+                with self.assertRaisesMessage(LibXRConfigError, f"libxr_config.yaml: {problem}"):
+                    self.generate()
+
+    def test_a_gpio_label_cannot_take_the_name_of_the_database(self):
+        generator.libxr_settings["database"] = {"enable": True}
+        with self.assertRaisesMessage(
+            ValueError,
+            "Generated name 'database' (Database object) collides with the existing 'database' "
+            "(GPIO label database on PA0); every generated object needs its own name",
+        ):
+            self.generate(self.project({"PA0": {"Label": "database"}}))
+
+
 class GpioObjectNames(GeneratorTestCase):
     """GPIO 标签成为 app_main 中的 C++ 对象名。
     GPIO labels become C++ object names inside app_main.
@@ -1198,6 +1266,24 @@ class GenerationRuns(GeneratorTestCase):
         self.assertIn(
             "INFO:root:libxr_config.yaml: removed FlashLayout, which is no longer used", logs
         )
+
+    def test_a_database_without_a_flash_layout_stops_generation(self):
+        user = self.root / "demo" / "User"
+        user.mkdir(parents=True)
+        project = self.root / "demo" / "cubemx.yaml"
+        project.write_text(yaml.safe_dump(self.project(mcu="STM32X999ZZT6")), encoding="utf-8")
+        config = user / "libxr_config.yaml"
+        config.write_text("database:\n  enable: true\n", encoding="utf-8")
+        with self.assertLogs(level="ERROR") as logs, self.assertRaises(SystemExit):
+            generator.generate(str(project), str(user / "app_main.cpp"))
+        self.assertEqual(
+            logs.output,
+            [
+                f"ERROR:root:Generation failed: {config}: database.enable is true, but no "
+                "flash_map.hpp can be generated for this MCU, so the database has no Flash layout"
+            ],
+        )
+        self.assertEqual(sorted(path.name for path in user.iterdir()), ["libxr_config.yaml"])
 
     def test_without_a_flash_layout_the_old_map_is_removed(self):
         self.run_generator("demo", self.project())

@@ -239,6 +239,8 @@ class RandomProjects(GeneratedFormat):
         if uarts and rng.random() < 0.7:
             settings["terminal_source"] = rng.choice(uarts)
             settings["Terminal"] = {"run_as_thread": rng.random() < 0.5}
+        if rng.random() < 0.5:
+            settings["database"] = {"enable": True, "block_size": rng.choice([1, 4, 32])}
         project = {
             "Mcu": {"Type": mcu, "Family": family},
             "GPIO": gpio,

@@ -67,6 +67,7 @@ DEFAULT_SETTINGS = {
         "max_arg_number": 5,
         "max_history_number": 5,
     },
+    "database": {"enable": False, "block_size": 1},
     "SYSTEM": "None",
 }
 # 生效的设置：DEFAULT_SETTINGS 合并 libxr_config.yaml，生成过程中再补上缺少的默认值。
@@ -2405,6 +2406,51 @@ def generate_gpio_config(project_data: dict) -> list[str]:
     return [f"{INDENT}// GPIO"] + lines
 
 
+# --------------------------
+# Flash 与数据库 / Flash and Database
+# --------------------------
+def generate_database(flash_map: bool) -> list[str]:
+    """database.enable 为真时生成 STM32Flash 对象和 DatabaseRaw 数据库，并把数据库登记为
+    database；否则为空列表。
+    With database.enable, generate the STM32Flash object and the DatabaseRaw database and
+    register the database as database; an empty list otherwise.
+
+    STM32Flash 使用 flash_map.hpp 中的扇区表和末尾两个扇区，分别作主块和备份块。block_size 是
+    DatabaseRaw 的模板参数，即 Flash 的最小写入单元（字节，默认 1）。flash_map 为假表示没有
+    flash_map.hpp。
+    STM32Flash uses the sector table of flash_map.hpp and its last two sectors, the main and the
+    backup block. block_size is the template argument of DatabaseRaw, the minimum write unit of
+    the Flash in bytes (default 1). Without flash_map there is no flash_map.hpp.
+
+    Raises:
+        LibXRConfigError: enable 不是布尔值，block_size 不是正整数，或没有 flash_map.hpp。
+            enable is not a boolean, block_size is not a positive integer, or there is no
+            flash_map.hpp.
+    """
+    database = _settings("database")
+    enable = _flag("database.enable", database.setdefault("enable", False))
+    block_size = _integer("database.block_size", database.setdefault("block_size", 1))
+    if not enable:
+        return []
+    if not flash_map:
+        raise LibXRConfigError(
+            tr(
+                f"{libxr_config_origin}: database.enable is true, but no flash_map.hpp can be "
+                "generated for this MCU, so the database has no Flash layout",
+                f"{libxr_config_origin}：database.enable 为 true，但无法为这个 MCU 生成 "
+                "flash_map.hpp，数据库没有 Flash 布局",
+            )
+        )
+    _use_header("stm32_flash.hpp")
+    _use_header("flash_map.hpp")
+    _register_device("database", "Database")
+    return [
+        f"{INDENT}// Flash and database",
+        f"{INDENT}static STM32Flash flash(FLASH_REGIONS, FLASH_REGION_NUMBER);",
+        f"{INDENT}static DatabaseRaw<{block_size}> database(flash);",
+    ]
+
+
 # 看门狗
 # Watchdog
 def configure_watchdog(project_data: dict) -> list[str]:
@@ -2685,18 +2731,22 @@ def _app_main_notice(project_data: dict) -> list[str]:
     ]
 
 
-def generate_full_code(project_data: dict, use_xrobot: bool, existing_code: str) -> str:
+def generate_full_code(
+    project_data: dict, use_xrobot: bool, existing_code: str, flash_map: bool = True
+) -> str:
     """生成 app_main 源文件的完整内容，并填回已有代码中 User Code 区域的内容。
     Generate the full content of the app_main source file and put back the User Code bodies of
     the existing code.
 
     输出已按 LibXR 的 clang-format 风格排版（见 libxr.cpp_layout），不再用 clang-format 和
     NOLINT 标记保护。启用 XRobot 时为每个生成的对象输出 XR_REGISTER，并在 User Code 3 之后调用
-    XROBOT_MAIN()；否则 User Code 3 的默认内容是一个无限休眠的循环。
+    XROBOT_MAIN()；否则 User Code 3 的默认内容是一个无限休眠的循环。flash_map 为假表示没有
+    flash_map.hpp，这时不能启用数据库。
     The output is laid out in the clang-format style of LibXR (see libxr.cpp_layout) and is
     not protected by clang-format and NOLINT markers. With XRobot every generated object gets
     an XR_REGISTER line and XROBOT_MAIN() is called after User Code 3; otherwise the default
-    body of User Code 3 is a loop that sleeps forever.
+    body of User Code 3 is a loop that sleeps forever. Without flash_map there is no
+    flash_map.hpp, and the database cannot be enabled.
 
     Raises:
         ValueError: 生成的对象名冲突，或 GPIO 名字、User Code 标记、遗留的 XROBOT_MAIN() 调用
@@ -2715,6 +2765,7 @@ def generate_full_code(project_data: dict, use_xrobot: bool, existing_code: str)
     gpio = generate_gpio_config(project_data)
     peripherals = generate_peripheral_instances(project_data, use_xrobot)
     terminal = configure_terminal(project_data)
+    database = generate_database(flash_map)
     watchdog = peripherals.get("watchdog", [])
     if watchdog:
         watchdog = watchdog + configure_watchdog(project_data)
@@ -2723,7 +2774,7 @@ def generate_full_code(project_data: dict, use_xrobot: bool, existing_code: str)
         registrations = [f"{INDENT}// Hardware registration"] + registrations
     sections = [core, gpio]
     sections += [peripherals.get(name, []) for name in ("adc", "dac", "pwm", "comm", "usb")]
-    sections += [terminal, watchdog, registrations]
+    sections += [terminal, database, watchdog, registrations]
 
     default_3 = (
         []
@@ -2961,7 +3012,7 @@ def generate(
         flash_info = flash_layout(project_data)
         files = {
             os.path.basename(output_path): generate_full_code(
-                project_data, use_xrobot, existing_code
+                project_data, use_xrobot, existing_code, flash_info is not None
             ),
             "app_main.h": APP_MAIN_HEADER,
         }
