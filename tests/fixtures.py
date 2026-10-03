@@ -11,8 +11,12 @@ import importlib
 import io
 import logging
 import os
+import shutil
+import subprocess
+import sys
 import textwrap
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from xr_syntax.cpp import CppDocument
@@ -89,6 +93,63 @@ CUBEMX_STARM = textwrap.dedent("""\
       set(TOOLCHAIN_MULTILIBS "--config=newlib.cfg")
     endif()
     """)
+
+
+# 生成的 C++ 文件按这个版本的 clang-format 和 LibXR 的 .clang-format 核对；别的版本排版可能不同。
+# The generated C++ files are checked against this version of clang-format and the .clang-format
+# of LibXR; another version may format differently.
+CLANG_FORMAT_VERSION = "21.1.8"
+LIBXR_CLANG_FORMAT = Path(__file__).with_name("libxr.clang-format")
+DATA = Path(__file__).with_name("data")
+
+
+def clang_format_command() -> str | None:
+    """固定版本的 clang-format 可执行文件；没有安装或版本不同时为 None。
+    The clang-format executable of the pinned version; None when it is not installed or has
+    another version.
+
+    先找 PATH，再找运行测试的 Python 的脚本目录（pip install clang-format==21.1.8 装到那里）。
+    PATH is searched first, then the scripts directory of the Python running the tests, where
+    pip install clang-format==21.1.8 puts it.
+    """
+    candidates = [shutil.which("clang-format")]
+    scripts = Path(sys.executable).parent
+    candidates += [str(scripts / name) for name in ("clang-format", "clang-format.exe")]
+    for candidate in candidates:
+        if not candidate or not Path(candidate).is_file():
+            continue
+        version = subprocess.run([candidate, "--version"], capture_output=True, text=True)
+        if version.returncode == 0 and CLANG_FORMAT_VERSION in version.stdout:
+            return candidate
+    return None
+
+
+requires_clang_format = unittest.skipUnless(
+    clang_format_command(),
+    f"clang-format {CLANG_FORMAT_VERSION} is not installed "
+    f"(pip install clang-format=={CLANG_FORMAT_VERSION})",
+)
+
+
+def clang_format(text: str, file_name: str) -> str:
+    """text 按 LibXR 的风格由 clang-format 排版的结果，视作名为 file_name 的文件。
+    The text formatted by clang-format in the style of LibXR, as if it were the file named
+    file_name.
+
+    文件名决定 app_main.h 是否是 app_main.cpp 的 main header。
+    The file name decides whether app_main.h is the main header of app_main.cpp.
+    """
+    result = subprocess.run(
+        [
+            clang_format_command(),
+            f"--style=file:{LIBXR_CLANG_FORMAT}",
+            f"--assume-filename={file_name}",
+        ],
+        input=text.encode("utf-8"),
+        capture_output=True,
+        check=True,
+    )
+    return result.stdout.decode("utf-8")
 
 
 def run_libxr(*argv):

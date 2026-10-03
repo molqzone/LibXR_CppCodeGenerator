@@ -240,6 +240,11 @@ jobs:
             pip install $pkg.FullName
           }
 
+      # The formatting tests check the generated C++ against this clang-format and are
+      # skipped without it; another version may format differently, so move the pin on purpose.
+      - name: Install the pinned clang-format
+        run: python -m pip install clang-format==21.1.8
+
       # The tests import every module of the installed package (src layout), so a module
       # missing from the wheel fails them.
       - name: Candidate source regression tests
