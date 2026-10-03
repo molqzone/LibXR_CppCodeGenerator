@@ -1,32 +1,20 @@
 """libxr stm32 toolchain（libxr.stm32_toolchain_switch）：切换工具链和 ST Arm Clang 运行库
-配置，以及运行库配置的 -D 选择。
+配置。
 libxr stm32 toolchain (libxr.stm32_toolchain_switch): switching the toolchain and the ST
-Arm Clang runtime profile, and the -D selection of the profile.
+Arm Clang runtime profile.
 """
 
 import contextlib
 import io
 import json
 import os
-import shutil
-import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 
 from fixtures import CUBEMX_STARM, TestCase
 
-from libxr import generator_stm32_cmake as stm32_cmake
 from libxr import stm32_toolchain_switch as toolchain_switch
-
-# 早期版本的 xr_stm32_cmake（libxr stm32 cmake）改写后的同一段。
-# The same section as earlier xr_stm32_cmake (libxr stm32 cmake) versions rewrote it.
-CACHED_STARM = CUBEMX_STARM.replace(
-    'set(STARM_TOOLCHAIN_CONFIG "STARM_PICOLIBC")\n\n',
-    'set(STARM_TOOLCHAIN_CONFIG "STARM_PICOLIBC" CACHE STRING "ST Arm Clang runtime profile")\n'
-    "set_property(CACHE STARM_TOOLCHAIN_CONFIG PROPERTY STRINGS\n"
-    "             STARM_HYBRID STARM_NEWLIB STARM_PICOLIBC)\n",
-)
 
 
 # CubeMX 生成的 CMakePresets.json 的 default preset 部分。
@@ -51,9 +39,9 @@ def presets(toolchain):
 
 
 class StarmProfile(TestCase):
-    """libxr stm32 cmake 规范化运行库配置行，libxr stm32 toolchain 只改写这一行。
-    libxr stm32 cmake normalizes the profile line, and libxr stm32 toolchain rewrites only
-    that line.
+    """libxr stm32 toolchain 只改写 CubeMX 写出的那一行 set(STARM_TOOLCHAIN_CONFIG ...)。
+    libxr stm32 toolchain rewrites only the set(STARM_TOOLCHAIN_CONFIG ...) line that CubeMX
+    wrote.
     """
 
     def setUp(self):
@@ -63,17 +51,10 @@ class StarmProfile(TestCase):
         self.project = Path(self.temporary.name)
         (self.project / "cmake").mkdir()
         self.toolchain = self.project / "cmake" / "starm-clang.cmake"
+        self.toolchain.write_text(CUBEMX_STARM, encoding="utf-8")
         (self.project / "CMakePresets.json").write_text(
             json.dumps(presets("starm-clang.cmake")), encoding="utf-8"
         )
-
-    def normalize(self, text):
-        """写入工具链文件并规范化，返回结果。
-        Write the toolchain file, normalize it and return the result.
-        """
-        self.toolchain.write_text(text, encoding="utf-8")
-        stm32_cmake.normalize_starm_clang_toolchain(self.toolchain)
-        return self.toolchain.read_text(encoding="utf-8")
 
     def switch(self, profile):
         """以 libxr stm32 toolchain clang 把工程的运行库配置切换为 profile。
@@ -83,84 +64,39 @@ class StarmProfile(TestCase):
         with contextlib.redirect_stderr(io.StringIO()):
             toolchain_switch.switch_toolchain(str(self.project), "clang", std)
 
-    def test_default_line_stays_the_only_switch_target(self):
-        text = self.normalize(CUBEMX_STARM)
-        self.assertEqual(text.count('set(STARM_TOOLCHAIN_CONFIG "'), 1)
-        self.assertIn('set(STARM_TOOLCHAIN_CONFIG "STARM_PICOLIBC")\n# LibXR:', text)
-        # CubeMX 的块对拼错的配置名不报错，TOOLCHAIN_MULTILIBS 也没有定义。
-        # CubeMX's block accepts a misspelled profile silently and leaves TOOLCHAIN_MULTILIBS
-        # undefined.
-        self.assertIn(
-            'set(TOOLCHAIN_MULTILIBS "")\n\n'
-            'if(STARM_TOOLCHAIN_CONFIG STREQUAL "STARM_HYBRID")\n'
-            '  set(TOOLCHAIN_MULTILIBS "--hybrid")\n'
-            'elseif (STARM_TOOLCHAIN_CONFIG STREQUAL "STARM_NEWLIB")\n'
-            '  set(TOOLCHAIN_MULTILIBS "--config=newlib.cfg")\n'
-            'elseif(NOT STARM_TOOLCHAIN_CONFIG STREQUAL "STARM_PICOLIBC")\n'
-            '  message(FATAL_ERROR "Unknown STARM_TOOLCHAIN_CONFIG: ${STARM_TOOLCHAIN_CONFIG}")\n'
-            "endif()\n",
-            text,
-        )
-        self.assertEqual(self.normalize(text), text)
+    def test_only_the_default_line_changes(self):
         self.switch("STARM_NEWLIB")
         self.assertEqual(
             self.toolchain.read_text(encoding="utf-8"),
-            text.replace('"STARM_PICOLIBC")\n# LibXR:', '"STARM_NEWLIB")\n# LibXR:'),
+            CUBEMX_STARM.replace('"STARM_PICOLIBC"', '"STARM_NEWLIB"'),
+        )
+        self.switch("STARM_HYBRID")
+        self.assertEqual(
+            self.toolchain.read_text(encoding="utf-8"),
+            CUBEMX_STARM.replace('"STARM_PICOLIBC"', '"STARM_HYBRID"'),
         )
 
     def test_the_current_profile_is_not_rewritten(self):
-        self.normalize(CUBEMX_STARM)
         os.utime(self.toolchain, ns=(10**9, 10**9))
         self.switch("STARM_PICOLIBC")
         self.assertEqual(self.toolchain.stat().st_mtime_ns, 10**9)
 
-    def test_cached_default_from_earlier_versions_is_converted(self):
-        def lines(text):
-            return [line for line in text.splitlines() if line.strip()]
-
-        self.assertEqual(lines(self.normalize(CACHED_STARM)), lines(self.normalize(CUBEMX_STARM)))
-
-    @unittest.skipUnless(shutil.which("cmake"), "cmake is required to configure a build directory")
-    def test_command_line_selection_and_switch_reach_the_build_directory(self):
-        (self.project / "CMakeLists.txt").write_text(
-            "cmake_minimum_required(VERSION 3.20)\nproject(demo NONE)\n"
-            'message(STATUS "PROFILE=${STARM_TOOLCHAIN_CONFIG}")\n',
-            encoding="utf-8",
+    def test_the_default_line_of_earlier_versions_is_found_after_the_selection_block(self):
+        # 旧版本的选择块在默认行之后，其中的 set(STARM_TOOLCHAIN_CONFIG ${...} ...) 不是切换的目标。
+        # The selection block of earlier versions follows the default line, and its
+        # set(STARM_TOOLCHAIN_CONFIG ${...} ...) is not the target of the switch.
+        text = CUBEMX_STARM.replace(
+            'set(STARM_TOOLCHAIN_CONFIG "STARM_PICOLIBC")\n',
+            'set(STARM_TOOLCHAIN_CONFIG "STARM_PICOLIBC")\n'
+            "set(_xr_starm_default ${STARM_TOOLCHAIN_CONFIG})\n"
+            'set(STARM_TOOLCHAIN_CONFIG ${_xr_starm_default} CACHE STRING "profile" FORCE)\n',
         )
-        self.normalize(CUBEMX_STARM)
-
-        def configure(build, *arguments):
-            if not (self.project / build).exists():
-                arguments = (
-                    "-S",
-                    ".",
-                    "-B",
-                    build,
-                    "-DCMAKE_TOOLCHAIN_FILE=cmake/starm-clang.cmake",
-                ) + arguments
-            else:
-                arguments = (build,) + arguments
-            result = subprocess.run(
-                ["cmake", *arguments], cwd=self.project, check=True, capture_output=True, text=True
-            )
-            return [
-                line.split("=", 1)[1]
-                for line in result.stdout.splitlines()
-                if line.startswith("-- PROFILE=")
-            ]
-
-        self.assertEqual(configure("default"), ["STARM_PICOLIBC"])
-        self.assertEqual(
-            configure("selected", "-DSTARM_TOOLCHAIN_CONFIG=STARM_HYBRID"), ["STARM_HYBRID"]
-        )
-        self.assertEqual(configure("selected"), ["STARM_HYBRID"])
+        self.toolchain.write_text(text, encoding="utf-8")
         self.switch("STARM_NEWLIB")
-        self.assertEqual(configure("default"), ["STARM_NEWLIB"])
-        self.assertEqual(configure("selected"), ["STARM_NEWLIB"])
         self.assertEqual(
-            configure("default", "-DSTARM_TOOLCHAIN_CONFIG=STARM_HYBRID"), ["STARM_HYBRID"]
+            self.toolchain.read_text(encoding="utf-8"),
+            text.replace('"STARM_PICOLIBC"', '"STARM_NEWLIB"', 1),
         )
-        self.assertEqual(configure("default"), ["STARM_HYBRID"])
 
 
 class SwitchToolchain(TestCase):

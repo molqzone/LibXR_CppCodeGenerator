@@ -1,21 +1,178 @@
-"""libxr stm32 cmake 写入的 CMake 集成（libxr.generator_stm32_cmake）。
-The CMake integration written by libxr stm32 cmake (libxr.generator_stm32_cmake).
+"""libxr stm32 cmake 写入的 CMake 集成（libxr.generator_stm32_cmake）：固定结构的 LibXR.CMake、
+旧格式的迁移，以及 ST Arm Clang 工具链文件的恢复。
+The CMake integration written by libxr stm32 cmake (libxr.generator_stm32_cmake): LibXR.CMake
+in its fixed structure, the migration of earlier formats, and the restoring of the ST Arm Clang
+toolchain file.
 """
 
+import logging
 import tempfile
 import unittest
 from pathlib import Path
 
-from fixtures import CUBEMX_STARM, GeneratorTestCase
+from fixtures import CUBEMX_STARM, GeneratorTestCase, TestCase
 
 from libxr import generator_stm32_cmake as stm32_cmake
 
+# DevC 在迁移之前的 LibXR.CMake：旧模板加上 LIBXR_SOURCE_DIR 和两段编译器警告设置。
+# The LibXR.CMake of DevC before the migration: the earlier template plus LIBXR_SOURCE_DIR and
+# two compiler warning settings.
+DEVC_LIBXR_CMAKE = """\
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# LibXR
+set(LIBXR_SYSTEM FreeRTOS)
+set(LIBXR_DRIVER st)
+set(XROBOT_MODULES_DIR ${CMAKE_CURRENT_SOURCE_DIR}/Modules)
+set(LIBXR_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/Middlewares/Third_Party/LibXR"
+    CACHE PATH "Existing LibXR source checkout")
+add_subdirectory("${LIBXR_SOURCE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/LibXR")
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU")
+    target_compile_options(xr PRIVATE -Wno-tautological-compare -Wno-maybe-uninitialized)
+endif()
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    target_compile_options(xr PRIVATE -Wno-deprecated-volatile)
+endif()
+target_link_libraries(xr
+    PUBLIC stm32cubemx
+)
+
+
+target_compile_features(xr PUBLIC cxx_std_20)
+target_include_directories(xr
+    PUBLIC $<TARGET_PROPERTY:stm32cubemx,INTERFACE_INCLUDE_DIRECTORIES>
+    PUBLIC Core/Inc
+    PUBLIC User
+)
+
+# Add include paths
+set_target_properties(${CMAKE_PROJECT_NAME} PROPERTIES
+    CXX_STANDARD 20
+    CXX_STANDARD_REQUIRED ON
+)
+
+target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
+    # Add user defined include paths
+    PUBLIC $<TARGET_PROPERTY:xr,INTERFACE_INCLUDE_DIRECTORIES>
+    PUBLIC User
+)
+
+# Add linked libraries
+target_link_libraries(${CMAKE_PROJECT_NAME}
+    stm32cubemx
+
+    # Add user defined libraries
+    xr
+)
+
+file(
+    GLOB LIBXR_USER_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/User/*.cpp")
+
+
+target_sources(${CMAKE_PROJECT_NAME}
+    PRIVATE ${LIBXR_USER_SOURCES}
+)
+
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    target_compile_options(${CMAKE_PROJECT_NAME} PRIVATE -Og)
+    target_compile_options(xr PRIVATE -O2)
+    if(TARGET FreeRTOS)
+        target_compile_options(FreeRTOS PRIVATE -O2)
+    endif()
+
+    if(TARGET STM32_Drivers)
+        target_compile_options(STM32_Drivers PRIVATE -O2)
+    endif()
+
+    if(TARGET USB_Device_Library)
+        target_compile_options(USB_Device_Library PRIVATE -O2)
+    endif()
+endif()
+"""
+
+# OpenCR 的 LibXR.CMake：按镜像选择系统，没有 User 源文件的 GLOB，也没有优化选项。
+# The LibXR.CMake of OpenCR: the system chosen by image, no glob of the User sources, and no
+# optimization options.
+OPENCR_LIBXR_CMAKE = """\
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+if(OPENCR_IMAGE STREQUAL "bootloader")
+    set(LIBXR_SYSTEM FreeRTOS)
+else()
+    set(LIBXR_SYSTEM None)
+endif()
+set(LIBXR_DRIVER st)
+set(XROBOT_MODULES_DIR ${CMAKE_CURRENT_SOURCE_DIR}/Modules)
+
+add_subdirectory(Middlewares/Third_Party/LibXR)
+
+target_compile_features(xr PUBLIC cxx_std_20)
+target_link_libraries(xr PUBLIC stm32cubemx)
+
+target_link_libraries(${CMAKE_PROJECT_NAME} stm32cubemx xr)
+"""
+
+# 新工程的 “Project settings” 块中 LIBXR_SYSTEM 和 LIBXR_DRIVER 之后的行。
+# The lines of the "Project settings" block of a new project after LIBXR_SYSTEM and
+# LIBXR_DRIVER.
+SOURCES_AND_LEVELS = [
+    '# User sources of the application; "" when CMakeLists.txt adds them itself.',
+    'set(LIBXR_USER_SOURCES_GLOB "${CMAKE_CURRENT_SOURCE_DIR}/User/*.cpp")',
+    "# Optimization level of the application in Debug builds and of everything in Release builds.",
+    'set(LIBXR_OPT_DEBUG "-Og")',
+    'set(LIBXR_OPT_RELEASE "-O3")',
+]
+
+# CubeMX 的工具链文件中 CMAKE_<LANG>_FLAGS_<配置> 的设置。
+# The CMAKE_<LANG>_FLAGS_<configuration> settings of a CubeMX toolchain file.
+GCC_TOOLCHAIN = """\
+set(CMAKE_C_FLAGS_DEBUG "-Og -g3")
+set(CMAKE_C_FLAGS_RELEASE "-O3 -g0")
+set(CMAKE_CXX_FLAGS_DEBUG "-Og -g3")
+set(CMAKE_CXX_FLAGS_RELEASE "-O3 -g0")
+"""
+CLANG_TOOLCHAIN = GCC_TOOLCHAIN.replace("-O3", "-Oz")
+
+# 旧版本加进 starm-clang.cmake 的内容：默认行之后的选择块、multilib 块之前的初始化和块中的检查。
+# What earlier versions added to starm-clang.cmake: the selection block after the default line,
+# the initialization before the multilib block and the check inside the block.
+EARLIER_STARM = CUBEMX_STARM.replace(
+    'set(STARM_TOOLCHAIN_CONFIG "STARM_PICOLIBC")\n',
+    'set(STARM_TOOLCHAIN_CONFIG "STARM_PICOLIBC")\n'
+    "# LibXR: -DSTARM_TOOLCHAIN_CONFIG=<profile> selects the profile of a build\n"
+    "# directory; a default changed by libxr stm32 toolchain also reaches\n"
+    "# existing build directories.\n"
+    "set(_xr_starm_default ${STARM_TOOLCHAIN_CONFIG})\n"
+    "unset(STARM_TOOLCHAIN_CONFIG)\n"
+    "if(NOT DEFINED CACHE{STARM_TOOLCHAIN_CONFIG} OR\n"
+    "   (DEFINED CACHE{XR_STARM_TOOLCHAIN_DEFAULT} AND\n"
+    "    NOT XR_STARM_TOOLCHAIN_DEFAULT STREQUAL _xr_starm_default))\n"
+    "  set(STARM_TOOLCHAIN_CONFIG ${_xr_starm_default} CACHE STRING "
+    '"ST Arm Clang runtime profile" FORCE)\n'
+    "endif()\n"
+    "set(XR_STARM_TOOLCHAIN_DEFAULT ${_xr_starm_default} CACHE INTERNAL "
+    '"Default STARM_TOOLCHAIN_CONFIG of this file")\n'
+    "set_property(CACHE STARM_TOOLCHAIN_CONFIG PROPERTY STRINGS STARM_HYBRID STARM_NEWLIB "
+    "STARM_PICOLIBC)\n"
+    '\nset(TOOLCHAIN_MULTILIBS "")\n',
+    1,
+).replace(
+    '--config=newlib.cfg")\nendif()\n',
+    '--config=newlib.cfg")\n'
+    'elseif(NOT STARM_TOOLCHAIN_CONFIG STREQUAL "STARM_PICOLIBC")\n'
+    '  message(FATAL_ERROR "Unknown STARM_TOOLCHAIN_CONFIG: ${STARM_TOOLCHAIN_CONFIG}")\n'
+    "endif()\n",
+    1,
+)
+
 
 class Integration(GeneratorTestCase):
-    """把 LibXR 接入工程：LibXR.CMake（XRobot 工程另设 XROBOT_MODULES_DIR）、CMakeLists.txt 的
-    include 和 starm-clang.cmake 的运行库配置。
-    Integrating LibXR into a project: LibXR.CMake (XRobot projects also set
-    XROBOT_MODULES_DIR), the include in CMakeLists.txt, and the runtime profile of
+    """把 LibXR 接入工程：固定结构的 LibXR.CMake（XRobot 工程另设 XROBOT_MODULES_DIR）、
+    CMakeLists.txt 的 include 和 starm-clang.cmake 的恢复。
+    Integrating LibXR into a project: LibXR.CMake in its fixed structure (XRobot projects also
+    set XROBOT_MODULES_DIR), the include in CMakeLists.txt, and the restoring of
     starm-clang.cmake.
     """
 
@@ -25,7 +182,9 @@ class Integration(GeneratorTestCase):
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
         (self.root / "User").mkdir()
+        (self.root / "cmake").mkdir()
         (self.root / "CMakeLists.txt").write_text("project(demo)\n", encoding="utf-8")
+        self.libxr_cmake = self.root / "cmake" / "LibXR.CMake"
 
     def write_app_main(self, use_xrobot):
         """生成并写入 User/app_main.cpp，返回其文本。
@@ -40,24 +199,67 @@ class Integration(GeneratorTestCase):
         Integrate LibXR into the project and return the text of cmake/LibXR.CMake.
         """
         stm32_cmake.integrate(str(self.root))
-        return (self.root / "cmake" / "LibXR.CMake").read_text(encoding="utf-8")
+        return self.libxr_cmake.read_text(encoding="utf-8")
+
+    def settings(self, text):
+        """LibXR.CMake 中 “Project settings” 块的内容。
+        The content of the "Project settings" block of LibXR.CMake.
+        """
+        return stm32_cmake.split_blocks(text)[stm32_cmake.SETTINGS_TITLE]
+
+    def test_a_new_file_has_the_fixed_structure(self):
+        text = self.run_cmake_generator()
+        self.assertEqual(
+            text.splitlines()[:3],
+            [
+                '# Generated by `libxr stm32 setup`; edit the values in the "Project settings" '
+                "block only.",
+                "",
+                "# ---- Project settings " + "-" * 56,
+            ],
+        )
+        self.assertEqual(
+            list(stm32_cmake.split_blocks(text)),
+            ["Project settings", "LibXR", "Application", "Library optimization"],
+        )
+        self.assertEqual(
+            self.settings(text).splitlines(),
+            [
+                "set(LIBXR_SYSTEM None)",
+                "set(LIBXR_DRIVER st)",
+                *SOURCES_AND_LEVELS,
+            ],
+        )
+        self.assertTrue(all(len(line) <= 100 for line in text.splitlines()))
+
+    def test_the_optimization_options_follow_the_toolchain_flags(self):
+        # 目标的编译选项排在 CMAKE_<LANG>_FLAGS_<CONFIG> 之后，最后一个 -O 决定优化级别。
+        # Target compile options come after CMAKE_<LANG>_FLAGS_<CONFIG>, and the last -O decides.
+        text = self.run_cmake_generator()
+        self.assertIn(
+            "target_compile_options(${CMAKE_PROJECT_NAME} PRIVATE\n"
+            "    $<$<CONFIG:Debug>:${LIBXR_OPT_DEBUG}> $<$<CONFIG:Release>:${LIBXR_OPT_RELEASE}>)",
+            text,
+        )
+        self.assertIn(
+            "    target_compile_options(${library} PRIVATE\n"
+            "        $<$<CONFIG:Debug>:-O2> $<$<CONFIG:Release>:${LIBXR_OPT_RELEASE}>)",
+            text,
+        )
+        self.assertIn("BUILDSYSTEM_TARGETS", text)
 
     def test_the_modules_directory_follows_app_main(self):
-        libxr = "set(LIBXR_DRIVER st)\nadd_subdirectory(Middlewares/Third_Party/LibXR)"
-        xrobot = (
-            "set(LIBXR_DRIVER st)\nset(XROBOT_MODULES_DIR ${CMAKE_CURRENT_SOURCE_DIR}/Modules)\n"
-            "add_subdirectory(Middlewares/Third_Party/LibXR)"
-        )
         # 还没有生成 app_main 的工程按纯 LibXR 工程处理。
         # A project without a generated app_main counts as a LibXR-only project.
-        for use_xrobot, block in ((True, xrobot), (False, libxr), (None, libxr)):
+        line = 'set(XROBOT_MODULES_DIR "${CMAKE_CURRENT_SOURCE_DIR}/Modules")'
+        for use_xrobot in (True, False, None):
             with self.subTest(use_xrobot=use_xrobot):
                 self.setUp()
                 if use_xrobot is not None:
                     self.write_app_main(use_xrobot)
                 text = self.run_cmake_generator()
-                self.assertIn(block, text)
-                self.assertEqual("XROBOT_MODULES_DIR" in text, use_xrobot is True)
+                self.assertEqual(line in self.settings(text), use_xrobot is True)
+                self.assertNotIn("XROBOT_MODULES_DIR", text.replace(self.settings(text), ""))
 
     def test_include_inside_user_code_is_not_the_xrobot_choice(self):
         code = self.write_app_main(False).replace(
@@ -66,55 +268,109 @@ class Integration(GeneratorTestCase):
         (self.root / "User" / "app_main.cpp").write_text(code, encoding="utf-8")
         self.assertFalse(stm32_cmake.project_uses_xrobot(str(self.root)))
 
+    def test_the_system_follows_the_cubemx_project(self):
+        for header, system in (("FreeRTOSConfig.h", "FreeRTOS"), ("app_threadx.h", "ThreadX")):
+            with self.subTest(header=header):
+                self.setUp()
+                (self.root / "Core" / "Inc").mkdir(parents=True)
+                (self.root / "Core" / "Inc" / header).write_text("", encoding="utf-8")
+                self.assertIn(f"set(LIBXR_SYSTEM {system})", self.run_cmake_generator())
+
+    def test_the_settings_block_keeps_what_the_user_edited(self):
+        text = self.run_cmake_generator()
+        edited = (
+            text.replace("set(LIBXR_DRIVER st)", "set(LIBXR_DRIVER st)  # my driver")
+            .replace('"-Og"', '"-O1"')
+            .replace('"-O3"', '"-O2"')
+            .replace("set(LIBXR_SYSTEM None)", "set(LIBXR_SYSTEM None)\nset(MY_FLAG ON)")
+            # 其他块中的改动在重写时恢复。
+            # Edits in the other blocks are undone on a rewrite.
+            .replace("target_compile_features(xr PUBLIC cxx_std_20)", "# edited")
+        )
+        self.libxr_cmake.write_text(edited, encoding="utf-8")
+        (self.root / "Core" / "Inc").mkdir(parents=True)
+        (self.root / "Core" / "Inc" / "FreeRTOSConfig.h").write_text("", encoding="utf-8")
+        rewritten = self.run_cmake_generator()
+        self.assertEqual(
+            self.settings(rewritten).splitlines()[:7],
+            [
+                "set(LIBXR_SYSTEM FreeRTOS)",
+                "set(MY_FLAG ON)",
+                "set(LIBXR_DRIVER st)  # my driver",
+                SOURCES_AND_LEVELS[0],
+                SOURCES_AND_LEVELS[1],
+                SOURCES_AND_LEVELS[2],
+                SOURCES_AND_LEVELS[3].replace('"-Og"', '"-O1"'),
+            ],
+        )
+        self.assertIn('set(LIBXR_OPT_RELEASE "-O2")', rewritten)
+        self.assertIn("target_compile_features(xr PUBLIC cxx_std_20)", rewritten)
+        self.assertNotIn("# edited", rewritten)
+
+    def test_an_unchanged_file_is_not_written(self):
+        self.run_cmake_generator()
+        stamp = self.libxr_cmake.stat().st_mtime_ns
+        with self.assertLogs(level="INFO") as logs:
+            logging.info("marker")
+            self.run_cmake_generator()
+        self.assertEqual(self.libxr_cmake.stat().st_mtime_ns, stamp)
+        self.assertIn("INFO:root:LibXR.CMake already up to date, no changes needed.", logs.output)
+
+    def test_missing_settings_are_added(self):
+        text = self.run_cmake_generator()
+        self.libxr_cmake.write_text(
+            text.replace('set(LIBXR_OPT_DEBUG "-Og")\n', "").replace("set(LIBXR_DRIVER st)\n", ""),
+            encoding="utf-8",
+        )
+        rewritten = self.run_cmake_generator()
+        self.assertIn("set(LIBXR_DRIVER st)\n", rewritten)
+        self.assertIn('set(LIBXR_OPT_DEBUG "-Og")\n', rewritten)
+
     def test_an_existing_file_follows_the_xrobot_choice(self):
         # 以前只给出警告，切换到 XRobot 后要手动加这一行，否则模块不参与构建。
         # Only a warning used to be given; after switching to XRobot the line had to be added
         # by hand, or the Modules were not built.
-        head = (
-            "set(CMAKE_CXX_STANDARD 20)\nset(CMAKE_CXX_STANDARD_REQUIRED ON)\n\n"
-            "set(LIBXR_SYSTEM None)\nset(LIBXR_DRIVER st)\n"
-        )
-        modules = "set(XROBOT_MODULES_DIR ${CMAKE_CURRENT_SOURCE_DIR}/Modules)\n"
-        library = "add_subdirectory(Middlewares/Third_Party/LibXR)\n"
+        line = 'set(XROBOT_MODULES_DIR "${CMAKE_CURRENT_SOURCE_DIR}/Modules")'
+        self.run_cmake_generator()
         for use_xrobot, before, after, messages in (
             (
                 False,
-                head + modules + library,
-                head + library,
+                True,
+                False,
                 [
                     "INFO:root:LibXR.CMake: removed XROBOT_MODULES_DIR, as User/app_main.cpp "
                     "does not use XRobot"
                 ],
             ),
-            (False, head + library, head + library, []),
+            (False, False, False, []),
             (
                 True,
-                head + library,
-                head + modules + library,
-                [
-                    f"INFO:root:LibXR.CMake: added {modules.strip()}, as User/app_main.cpp uses XRobot"
-                ],
-            ),
-            (
+                False,
                 True,
-                head,
-                head,
-                [
-                    "WARNING:root:User/app_main.cpp uses XRobot, but LibXR.CMake does not set "
-                    f"XROBOT_MODULES_DIR; add {modules.strip()} before "
-                    "add_subdirectory(Middlewares/Third_Party/LibXR)"
-                ],
+                [f"INFO:root:LibXR.CMake: added {line}, as User/app_main.cpp uses XRobot"],
             ),
         ):
             with self.subTest(use_xrobot=use_xrobot, before=before):
                 self.setUp()
                 self.write_app_main(use_xrobot)
-                (self.root / "cmake").mkdir()
-                (self.root / "cmake" / "LibXR.CMake").write_text(before, encoding="utf-8")
+                self.run_cmake_generator()
+                text = self.libxr_cmake.read_text(encoding="utf-8")
+                settings = self.settings(text)
+                if use_xrobot:
+                    settings = settings.replace(line + "\n", "")
+                elif before:
+                    settings = settings.replace(
+                        "set(LIBXR_DRIVER st)\n", f"set(LIBXR_DRIVER st)\n{line}\n"
+                    )
+                self.libxr_cmake.write_text(
+                    text.replace(self.settings(text), settings), encoding="utf-8"
+                )
                 with self.assertLogs(level="INFO") as logs:
-                    self.assertEqual(self.run_cmake_generator(), after)
+                    logging.info("marker")
+                    rewritten = self.run_cmake_generator()
+                self.assertEqual(line in self.settings(rewritten), after)
                 self.assertEqual(
-                    [line for line in logs.output if "XROBOT_MODULES_DIR" in line], messages
+                    [entry for entry in logs.output if "XROBOT_MODULES_DIR" in entry], messages
                 )
 
     def test_build_directories_are_kept(self):
@@ -123,16 +379,9 @@ class Integration(GeneratorTestCase):
         self.assertTrue((self.root / "build" / "debug").is_dir())
 
     def test_new_user_sources_are_globbed_at_build_time(self):
+        text = self.run_cmake_generator()
         self.assertIn(
-            'GLOB LIBXR_USER_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/User/*.cpp"',
-            self.run_cmake_generator(),
-        )
-        path = self.root / "cmake" / "LibXR.CMake"
-        older = path.read_text(encoding="utf-8").replace(" CONFIGURE_DEPENDS", "")
-        path.write_text(older, encoding="utf-8")
-        self.assertEqual(
-            self.run_cmake_generator(),
-            older.replace("GLOB LIBXR_USER_SOURCES", "GLOB LIBXR_USER_SOURCES CONFIGURE_DEPENDS"),
+            'file(GLOB LIBXR_USER_SOURCES CONFIGURE_DEPENDS "${LIBXR_USER_SOURCES_GLOB}")', text
         )
 
     def test_an_include_in_any_spelling_is_not_appended_again(self):
@@ -153,24 +402,230 @@ class Integration(GeneratorTestCase):
                 )
                 self.assertEqual(cmakelists.read_text(encoding="utf-8"), expected)
 
-    def test_the_st_arm_clang_profile_is_prepared(self):
-        (self.root / "cmake").mkdir()
+    def test_the_st_arm_clang_toolchain_is_restored(self):
         toolchain = self.root / "cmake" / "starm-clang.cmake"
-        toolchain.write_text(CUBEMX_STARM, encoding="utf-8")
+        toolchain.write_text(EARLIER_STARM, encoding="utf-8")
         self.run_cmake_generator()
-        self.assertIn(
-            '  message(FATAL_ERROR "Unknown STARM_TOOLCHAIN_CONFIG: ${STARM_TOOLCHAIN_CONFIG}")\n',
-            toolchain.read_text(encoding="utf-8"),
-        )
+        self.assertEqual(toolchain.read_text(encoding="utf-8"), CUBEMX_STARM)
 
     def test_a_directory_without_cmakelists_is_left_untouched(self):
         (self.root / "CMakeLists.txt").unlink()
+        (self.root / "cmake").rmdir()
         (self.root / "build").mkdir()
         with self.assertLogs(level="ERROR") as logs, self.assertRaises(SystemExit) as exit:
             self.run_cmake_generator()
         self.assertEqual(exit.exception.code, 1)
         self.assertEqual(logs.output, [f"ERROR:root:{self.root / 'CMakeLists.txt'} not found."])
         self.assertEqual(sorted(p.name for p in self.root.iterdir()), ["User", "build"])
+
+
+class Migration(GeneratorTestCase):
+    """旧格式的 LibXR.CMake 迁移到固定结构，设置的值和用到的优化级别保留。
+    A LibXR.CMake in an earlier format migrates to the fixed structure, keeping the values of its
+    settings and the optimization levels it uses.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        (self.root / "User").mkdir()
+        (self.root / "cmake").mkdir()
+        (self.root / "CMakeLists.txt").write_text("project(demo)\n", encoding="utf-8")
+        (self.root / "Core" / "Inc").mkdir(parents=True)
+        (self.root / "Core" / "Inc" / "FreeRTOSConfig.h").write_text("", encoding="utf-8")
+        self.libxr_cmake = self.root / "cmake" / "LibXR.CMake"
+        code = self.generate(use_xrobot=True)
+        (self.root / "User" / "app_main.cpp").write_text(code, encoding="utf-8")
+
+    def migrate(self, old, gcc="", clang=""):
+        """用旧文件 old 和给定的工具链文件迁移，返回新的 LibXR.CMake，并记下日志。
+        Migrate the old file old with the given toolchain files and return the new LibXR.CMake,
+        keeping the log.
+        """
+        self.libxr_cmake.write_text(old, encoding="utf-8")
+        for name, text in (("gcc-arm-none-eabi.cmake", gcc), ("starm-clang.cmake", clang)):
+            if text:
+                (self.root / "cmake" / name).write_text(text, encoding="utf-8")
+        with self.assertLogs(level="INFO") as logs:
+            logging.info("marker")
+            stm32_cmake.integrate(str(self.root))
+        self.log = [entry.removeprefix("INFO:root:") for entry in logs.output[1:]]
+        return self.libxr_cmake.read_text(encoding="utf-8")
+
+    def test_devc_keeps_its_settings_and_warning_options(self):
+        text = self.migrate(DEVC_LIBXR_CMAKE, GCC_TOOLCHAIN, CLANG_TOOLCHAIN)
+        blocks = stm32_cmake.split_blocks(text)
+        self.assertEqual(
+            blocks["Project settings"].splitlines(),
+            [
+                "set(LIBXR_SYSTEM FreeRTOS)",
+                "set(LIBXR_DRIVER st)",
+                'set(XROBOT_MODULES_DIR "${CMAKE_CURRENT_SOURCE_DIR}/Modules")',
+                *SOURCES_AND_LEVELS,
+            ],
+        )
+        self.assertEqual(
+            blocks["Kept from the earlier LibXR.CMake"],
+            'if(CMAKE_CXX_COMPILER_ID MATCHES "GNU")\n'
+            "    target_compile_options(xr PRIVATE -Wno-tautological-compare "
+            "-Wno-maybe-uninitialized)\n"
+            "endif()\n\n"
+            'if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")\n'
+            "    target_compile_options(xr PRIVATE -Wno-deprecated-volatile)\n"
+            "endif()",
+        )
+        # 其余块与新文件相同。
+        # The other blocks equal those of a new file.
+        for title in ("LibXR", "Application", "Library optimization"):
+            self.assertEqual(
+                blocks[title], stm32_cmake.split_blocks(stm32_cmake.render_libxr_cmake(""))[title]
+            )
+        self.assertIn(
+            'LibXR.CMake: kept if(CMAKE_CXX_COMPILER_ID MATCHES "GNU") of the earlier file in '
+            "the Kept block",
+            self.log,
+        )
+
+    def test_the_release_level_of_the_toolchain_files_is_noted_when_they_differ(self):
+        self.migrate(DEVC_LIBXR_CMAKE, GCC_TOOLCHAIN, CLANG_TOOLCHAIN)
+        self.assertIn(
+            "The Release levels of the toolchain files differ (gcc-arm-none-eabi.cmake -O3, "
+            "starm-clang.cmake -Oz); LIBXR_OPT_RELEASE is -O3 and applies to both toolchains",
+            self.log,
+        )
+        self.migrate(DEVC_LIBXR_CMAKE, GCC_TOOLCHAIN, GCC_TOOLCHAIN)
+        self.assertFalse([entry for entry in self.log if "differ" in entry])
+
+    def test_levels_come_from_the_toolchain_files_when_the_old_file_sets_none(self):
+        old = OPENCR_LIBXR_CMAKE
+        text = self.migrate(
+            old,
+            GCC_TOOLCHAIN.replace("-Og", "-O0").replace("-O3", "-Os"),
+        )
+        settings = stm32_cmake.split_blocks(text)["Project settings"]
+        self.assertIn('set(LIBXR_OPT_DEBUG "-O0")', settings)
+        self.assertIn('set(LIBXR_OPT_RELEASE "-Os")', settings)
+
+    def test_the_old_application_level_wins_over_the_toolchain_debug_level(self):
+        text = self.migrate(
+            DEVC_LIBXR_CMAKE.replace("PRIVATE -Og", "PRIVATE -O1"),
+            GCC_TOOLCHAIN.replace("-Og", "-O0"),
+        )
+        self.assertIn('set(LIBXR_OPT_DEBUG "-O1")', text)
+
+    def test_the_default_levels_apply_without_toolchain_files(self):
+        text = self.migrate(
+            DEVC_LIBXR_CMAKE.replace(
+                "target_compile_options(${CMAKE_PROJECT_NAME} PRIVATE -Og)", ""
+            )
+        )
+        self.assertIn('set(LIBXR_OPT_DEBUG "-Og")', text)
+        self.assertIn('set(LIBXR_OPT_RELEASE "-O3")', text)
+
+    def test_a_file_without_a_glob_keeps_adding_the_sources_in_cmakelists(self):
+        text = self.migrate(OPENCR_LIBXR_CMAKE)
+        settings = stm32_cmake.split_blocks(text)["Project settings"]
+        self.assertIn('set(LIBXR_USER_SOURCES_GLOB "")', settings)
+        self.assertIn('set(XROBOT_MODULES_DIR "${CMAKE_CURRENT_SOURCE_DIR}/Modules")', settings)
+
+    def test_statements_before_libxr_stay_in_the_settings_and_the_rest_is_kept_after(self):
+        text = self.migrate(OPENCR_LIBXR_CMAKE)
+        blocks = stm32_cmake.split_blocks(text)
+        self.assertTrue(
+            blocks["Project settings"].endswith(
+                'if(OPENCR_IMAGE STREQUAL "bootloader")\n'
+                "    set(LIBXR_SYSTEM FreeRTOS)\n"
+                "else()\n"
+                "    set(LIBXR_SYSTEM FreeRTOS)\n"
+                "endif()"
+            )
+        )
+        self.assertNotIn("Kept from the earlier LibXR.CMake", blocks)
+
+    def test_a_custom_user_glob_and_extra_libraries_are_kept(self):
+        old = DEVC_LIBXR_CMAKE.replace("User/*.cpp", "Src/*.cpp").replace(
+            "    stm32cubemx\n\n    # Add user defined libraries\n    xr\n",
+            "    stm32cubemx\n\n    # Add user defined libraries\n    xr\n    my_lib\n",
+        )
+        text = self.migrate(old, GCC_TOOLCHAIN)
+        blocks = stm32_cmake.split_blocks(text)
+        self.assertIn(
+            'set(LIBXR_USER_SOURCES_GLOB "${CMAKE_CURRENT_SOURCE_DIR}/Src/*.cpp")',
+            blocks["Project settings"],
+        )
+        self.assertIn(
+            "target_link_libraries(${CMAKE_PROJECT_NAME}\n    stm32cubemx\n\n"
+            "    # Add user defined libraries\n    xr\n    my_lib\n)",
+            blocks["Kept from the earlier LibXR.CMake"],
+        )
+
+    def test_the_migrated_file_is_stable(self):
+        text = self.migrate(DEVC_LIBXR_CMAKE, GCC_TOOLCHAIN, CLANG_TOOLCHAIN)
+        with self.assertLogs(level="INFO") as logs:
+            logging.info("marker")
+            stm32_cmake.integrate(str(self.root))
+        self.assertEqual(self.libxr_cmake.read_text(encoding="utf-8"), text)
+        self.assertIn("INFO:root:LibXR.CMake already up to date, no changes needed.", logs.output)
+
+
+class RestoredToolchain(TestCase):
+    """cmake/starm-clang.cmake 恢复为 CubeMX 写出的原文。
+    cmake/starm-clang.cmake is restored to what CubeMX wrote.
+    """
+
+    def setUp(self):
+        super().setUp()
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.path = Path(temporary.name) / "starm-clang.cmake"
+
+    def restore(self, text):
+        """写入工具链文件并恢复，返回 (是否写回, 结果)。
+        Write the toolchain file, restore it and return (whether it was written, the result).
+        """
+        self.path.write_bytes(text.encode("utf-8"))
+        changed = stm32_cmake.restore_starm_clang_toolchain(self.path)
+        return changed, self.path.read_bytes().decode("utf-8")
+
+    def test_what_earlier_versions_added_is_removed(self):
+        self.assertEqual(self.restore(EARLIER_STARM), (True, CUBEMX_STARM))
+
+    def test_a_file_that_cubemx_wrote_is_left_alone(self):
+        self.assertEqual(self.restore(CUBEMX_STARM), (False, CUBEMX_STARM))
+        self.assertFalse(stm32_cmake.restore_starm_clang_toolchain(self.path.with_name("none")))
+
+    def test_the_cache_form_of_still_earlier_versions_becomes_the_plain_line(self):
+        cached = CUBEMX_STARM.replace(
+            'set(STARM_TOOLCHAIN_CONFIG "STARM_PICOLIBC")\n\n',
+            'set(STARM_TOOLCHAIN_CONFIG "STARM_PICOLIBC" CACHE STRING "ST Arm Clang runtime '
+            'profile")\n'
+            "set_property(CACHE STARM_TOOLCHAIN_CONFIG PROPERTY STRINGS\n"
+            "             STARM_HYBRID STARM_NEWLIB STARM_PICOLIBC)\n",
+        )
+        _, text = self.restore(cached)
+        self.assertEqual(
+            [line for line in text.splitlines() if line.strip()],
+            [line for line in CUBEMX_STARM.splitlines() if line.strip()],
+        )
+
+    def test_the_users_own_edits_stay(self):
+        edited = EARLIER_STARM.replace('"STARM_PICOLIBC")\n#', '"STARM_NEWLIB")\n#', 1).replace(
+            "set(CMAKE_SYSTEM_PROCESSOR          arm)", "set(CMAKE_SYSTEM_PROCESSOR arm)"
+        )
+        _, text = self.restore(edited)
+        self.assertEqual(
+            text,
+            CUBEMX_STARM.replace('"STARM_PICOLIBC"', '"STARM_NEWLIB"').replace(
+                "set(CMAKE_SYSTEM_PROCESSOR          arm)", "set(CMAKE_SYSTEM_PROCESSOR arm)"
+            ),
+        )
+
+    def test_line_endings_stay_as_the_file_has_them(self):
+        crlf = EARLIER_STARM.replace("\n", "\r\n")
+        _, text = self.restore(crlf)
+        self.assertEqual(text, CUBEMX_STARM.replace("\n", "\r\n"))
 
 
 if __name__ == "__main__":
