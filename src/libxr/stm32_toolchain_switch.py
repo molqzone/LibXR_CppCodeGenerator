@@ -3,13 +3,15 @@
 libxr stm32 toolchain: switches the toolchain of the default preset of an STM32 CMake
 project and the standard library of starm-clang.
 
-修改工程中的 CMakePresets.json 和 cmake/starm-clang.cmake。CMake 不会在已有的构建目录中更换
-编译器（只警告 CMAKE_TOOLCHAIN_FILE 未被使用），所以工具链改变时删除用旧工具链配置过的 build/
-和 cmake-build* 目录。
-It edits CMakePresets.json and cmake/starm-clang.cmake of the project. CMake does not change the
-compiler of an existing build directory (it only warns that CMAKE_TOOLCHAIN_FILE was not used),
-so a changed toolchain removes the build/ and cmake-build* directories configured with the old
-one.
+修改工程中的 CMakePresets.json；选择 starm-clang 的标准库时，只改写 cmake/starm-clang.cmake 中
+CubeMX 写出的 set(STARM_TOOLCHAIN_CONFIG ...) 一行。CMake 不会在已有的构建目录中更换编译器
+（只警告 CMAKE_TOOLCHAIN_FILE 未被使用），所以工具链改变时删除用旧工具链配置过的 build/ 和
+cmake-build* 目录。
+It edits CMakePresets.json of the project; selecting the standard library of starm-clang rewrites
+only the set(STARM_TOOLCHAIN_CONFIG ...) line that CubeMX wrote in cmake/starm-clang.cmake. CMake
+does not change the compiler of an existing build directory (it only warns that
+CMAKE_TOOLCHAIN_FILE was not used), so a changed toolchain removes the build/ and cmake-build*
+directories configured with the old one.
 """
 
 import json
