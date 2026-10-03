@@ -242,18 +242,23 @@ def update(document: CommentedMap, values: dict) -> None:
     """使 ``document`` 恰好包含 ``values``。
     Make ``document`` hold exactly ``values``.
 
-    未变化的值保留原节点，因此其注释和引号不变；新键追加在末尾。被删除或替换的值之后的整行注释
-    留在原处。
-    Unchanged values keep their nodes, so their comments and quoting stay; new keys are
-    appended at the end. Comment lines that followed a removed or replaced value stay in place.
+    未变化的值保留原节点，因此其注释和引号不变；新键放在 ``values`` 中它前一个键之后，它是第一个
+    键时追加在末尾。被删除或替换的值之后的整行注释留在原处。
+    Unchanged values keep their nodes, so their comments and quoting stay; a new key goes after
+    the key before it in ``values``, or at the end when it is the first. Comment lines that
+    followed a removed or replaced value stay in place.
     """
     for key in [key for key in document if key not in values]:
         _delete(document, key)
+    previous = None
     for key, value in values.items():
-        if key not in document:
+        if key in document:
+            _update_value(document, key, value)
+        elif previous is None:
             document[key] = _to_node(value)
-            continue
-        _update_value(document, key, value)
+        else:
+            document.insert(list(document).index(previous) + 1, key, _to_node(value))
+        previous = key
 
 
 def set_value(document: CommentedMap, key, value) -> None:
@@ -324,6 +329,10 @@ def _to_node(value):
     CommentedSeq；标量原样返回。
     Convert plain dicts, lists and tuples recursively into ruamel.yaml CommentedMap and
     CommentedSeq nodes; scalars are returned as they are.
+
+    序列中只含标量的映射写成一行（flow 风格），例如 ``- {tx_fifo_size: 128, queue_size: 3}``。
+    A mapping in a sequence that holds only scalars is written on one line (flow style), such as
+    ``- {tx_fifo_size: 128, queue_size: 3}``.
     """
     if isinstance(value, dict):
         node = CommentedMap()
@@ -331,7 +340,13 @@ def _to_node(value):
             node[key] = _to_node(item)
         return node
     if isinstance(value, (list, tuple)):
-        return CommentedSeq(_to_node(item) for item in value)
+        items = [_to_node(item) for item in value]
+        for item in items:
+            if isinstance(item, CommentedMap) and not any(
+                isinstance(child, (CommentedMap, CommentedSeq)) for child in item.values()
+            ):
+                item.fa.set_flow_style()
+        return CommentedSeq(items)
     return value
 
 

@@ -120,6 +120,11 @@ class LibXRConfigFile(GeneratorTestCase):
             {"count": 8, "enable": True, "mode": "on", "time": "12:30", "flag": "no"},
         )
 
+    def test_a_new_key_goes_after_the_key_before_it(self):
+        document, _ = config_file.parse("a: 1\nc: 3  # keep\n", "test")
+        config_file.update(document, {"a": 1, "b": 2, "c": 3, "d": 4})
+        self.assertEqual(config_file.dump(document), "a: 1\nb: 2\nc: 3  # keep\nd: 4\n")
+
     def test_a_comment_only_file_keeps_its_comments(self):
         comments = "# generator: 6.0.0\n\n#  terminal_source: usart1\n"
         self.path.write_text(comments, encoding="utf-8")
