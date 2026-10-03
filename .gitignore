@@ -1,6 +1,7 @@
 .history/**
 .idea/**
 *.yaml
+!tests/data/*.yaml
 *.ioc
 *.cpp
 *.hpp
