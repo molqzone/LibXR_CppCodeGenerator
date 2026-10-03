@@ -70,6 +70,10 @@ class Platforms(TestCase):
         self.assertEqual(run_libxr("gen", "-i", str(config), "-o", str(output))[0], 0)
         self.assertTrue(output.is_file())
 
+    def test_parse_records_the_ioc_file(self):
+        _, config = self.parsed_elsewhere()
+        self.assertEqual(config.read_text(encoding="utf-8").splitlines()[2], "Ioc: demo.ioc")
+
     def test_without_a_recorded_platform_gen_reads_the_project_directory(self):
         # 旧版 parse 写出的 YAML 没有 Platform；默认的工程目录是当前目录，这里不是工程。
         # A YAML written by an older parse has no Platform; the default project directory is

@@ -2045,6 +2045,10 @@ def parse_project(directory: str, output: str | None = None, summary: bool = Tru
     ioc_file = ioc_files[0]
     logging.info(tr(f"Processing {ioc_file}...", f"正在处理 {ioc_file}……"))
     config_data = parse_ioc_file(os.path.join(directory, ioc_file))
+    if config_data:
+        # libxr gen 在生成文件的说明中写出 .ioc 文件名。
+        # libxr gen names the .ioc file in the notice of the files it generates.
+        config_data = {"Platform": config_data["Platform"], "Ioc": ioc_file, **config_data}
     output_path = output or os.path.join(directory, ".config.yaml")
     if not config_data or not save_to_yaml(config_data, output_path):
         sys.exit(1)
