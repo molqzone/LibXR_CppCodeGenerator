@@ -112,6 +112,19 @@ class Layout(TestCase):
             ],
         )
 
+    def test_a_list_with_a_braced_list_among_its_items_breaks_at_every_item(self):
+        buffers = [f"usb_otg_hs_ep{n}_out_buf" for n in range(4)]
+        self.assertEqual(
+            layout("static T x", ["&hpcd", "256", Braces(Braces(buffers[0], "8"), *buffers[1:])]),
+            [
+                "  static T x(&hpcd, 256,",
+                "             {{usb_otg_hs_ep0_out_buf, 8},",
+                "              usb_otg_hs_ep1_out_buf,",
+                "              usb_otg_hs_ep2_out_buf,",
+                "              usb_otg_hs_ep3_out_buf});",
+            ],
+        )
+
     def test_a_list_that_spans_lines_starts_a_line_after_two_arguments(self):
         entries = [Braces(f"usb_otg_hs_ep{n}_in_buf", "128") for n in range(4)]
         self.assertEqual(
@@ -176,6 +189,8 @@ class AgainstClangFormat(TestCase):
         A random argument: unbreakable text, or a braced list of text or lists of text.
         """
         if rng.random() < 0.35:
+            if rng.random() < 0.2:
+                return Braces(Braces(self.atom(rng), str(rng.randint(8, 256))), *self.items(rng))
             if rng.random() < 0.4:
                 return Braces(
                     *[
@@ -198,7 +213,13 @@ class AgainstClangFormat(TestCase):
                     f"static constexpr auto {name} = A::B::Make",
                 ]
             )
-            cases.append((head, [self.argument(rng) for _ in range(rng.randint(2, 9))]))
+            # 赋值只用于带文本参数的 MakeLanguagePack，不带列表。
+            # An assignment is written only for MakeLanguagePack, whose arguments are text and
+            # no lists.
+            arguments = [self.argument(rng) for _ in range(rng.randint(2, 9))]
+            if "=" in head:
+                arguments = [self.atom(rng) for _ in arguments]
+            cases.append((head, arguments))
         expected = format_lines([statement(head, args) for head, args in cases])
         mismatches = [
             statement(head, args)

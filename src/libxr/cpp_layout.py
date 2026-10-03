@@ -61,9 +61,9 @@ class _Token:
     One token for the layout.
 
     kind 为 atom、comma、open、close、assign 或 semi；depth 是它外面的括号层数；items 是
-    open 所开列表的元素个数，boxed 表示这个列表的元素全是花括号列表。
+    open 所开列表的元素个数，boxed 表示这个列表有元素是花括号列表。
     kind is atom, comma, open, close, assign or semi; depth is the number of brackets around
-    it; items is the number of items of the list that an open opens, boxed says that every
+    it; items is the number of items of the list that an open opens, boxed says that some
     item of that list is a braced list, and last that the list is the last item of its level.
     """
 
@@ -81,11 +81,11 @@ class _Scope:
     The layout state of one bracket level: the continuation indent, the start column of its
     latest line and the break flags.
 
-    pending 为真表示这一层之内断过行，下一个参数必须换行；boxed_mode 对元素全是花括号列表的
+    pending 为真表示这一层之内断过行，下一个参数必须换行；boxed_mode 对有元素是花括号列表的
     列表记录各元素是否都换行：0 未决定，1 都换行，2 都不换行；commas 是这一层已有的逗号数；
     late 表示这个列表接在同一行的其他参数之后开始，clang-format 不让这样的列表跨行。
     pending means a break inside this level has happened and the next argument must start a
-    new line; boxed_mode records, for a list whose items are all braced lists, whether every
+    new line; boxed_mode records, for a list with a braced list among its items, whether every
     item starts a line: 0 undecided, 1 all, 2 none; commas is the number of commas of this
     level so far; late means the list starts after other arguments on its line, which
     clang-format does not let span lines.
@@ -123,7 +123,7 @@ def _tokens(head: str, args: Sequence["str | Braces"]) -> list[_Token]:
             if isinstance(item, str):
                 tokens.append(_Token(item, "atom", depth))
                 continue
-            boxed = bool(item.items) and all(isinstance(inner, Braces) for inner in item.items)
+            boxed = any(isinstance(inner, Braces) for inner in item.items)
             last = position == len(items) - 1
             tokens.append(_Token("{", "open", depth, len(item.items), boxed, last))
             emit(item.items, depth + 1)
@@ -189,8 +189,9 @@ def _place(tokens: list[_Token], index: int, column: int, stack: tuple, newline:
     if newline:
         if not _can_break(tokens, index) or any(scope.late for scope in stack):
             return None
-        # 元素全是花括号列表的列表，只要其中断过行，各元素就都换行。
-        # A list of braced lists breaks at every item as soon as a line breaks inside it.
+        # 有元素是花括号列表的列表，只要其中断过行，各元素就都换行。
+        # A list with a braced list among its items breaks at every item as soon as a line
+        # breaks inside it.
         if any(scope.boxed and scope.boxed_mode == 2 for scope in stack):
             return None
         stack = tuple(
