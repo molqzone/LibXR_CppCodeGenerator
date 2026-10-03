@@ -207,9 +207,21 @@ class RandomProjects(GeneratedFormat):
                     "dma_section": rng.choice(["", ".axi_ram", self.word(rng, 3, 30)]),
                 }
         if rng.random() < 0.7:
-            settings["USB"]["usb_otg_hs"] = {
+            # STM32H5 的 USB 是 FSDEV 设备，其余型号用 OTG HS；一到三路 CDC。
+            # The USB of the STM32H5 is an FSDEV device, the other parts use OTG HS; one to
+            # three CDCs.
+            fsdev = family == "STM32H5"
+            usb = {
                 "enable": True,
                 "dma_section": rng.choice(["", ".axi_ram", ".dma_buffers_in_a_long_section"]),
+                "cdc": [
+                    {
+                        "tx_fifo_size": rng.choice([64, 128, 512]),
+                        "rx_fifo_size": rng.choice([64, 128, 512]),
+                        "queue_size": rng.randint(1, 12),
+                    }
+                    for _ in range(rng.randint(1, 3))
+                ],
                 "manufacturer": self.word(rng, 3, 40),
                 "product": self.word(rng, 3, 40),
                 "serial": self.word(rng, 3, 50),
@@ -217,7 +229,12 @@ class RandomProjects(GeneratedFormat):
                 "pid": rng.randint(0, 0xFFFF),
                 "bcd": rng.randint(0, 0xFFFF),
             }
-            peripherals["USB"] = {"USB_OTG_HS": {"Role": "Device"}}
+            if fsdev:
+                settings["USB"]["usb_fs"] = usb
+                peripherals["USB"] = {"USB": {"Role": "Device", "PCDHandle": "hpcd_USB_DRD_FS"}}
+            else:
+                settings["USB"]["usb_otg_hs"] = usb
+                peripherals["USB"] = {"USB_OTG_HS": {"Role": "Device"}}
         uarts = [f"usart{n}" for n in range(1, 7) if f"USART{n}" in peripherals.get("USART", {})]
         if uarts and rng.random() < 0.7:
             settings["terminal_source"] = rng.choice(uarts)

@@ -120,6 +120,75 @@ class LibXRConfigFile(GeneratorTestCase):
             {"count": 8, "enable": True, "mode": "on", "time": "12:30", "flag": "no"},
         )
 
+    def test_single_cdc_settings_are_written_back_as_a_cdc_list(self):
+        project = {
+            "Mcu": {"Type": "STM32F407IGH6", "Family": "STM32F4"},
+            "GPIO": {},
+            "Peripherals": {"USB": {"USB_OTG_HS": {"Role": "Device"}}},
+        }
+        old = (
+            "USB:\n"
+            "  usb_otg_hs:\n"
+            "    enable: true\n"
+            "    dma_section: .dma  # DMA RAM\n"
+            "    cdc_tx_fifo_size: 96\n"
+            "    cdc_rx_fifo_size: 80\n"
+            "    cdc_queue_size: 4\n"
+            "    vid: 5840\n"
+        )
+        self.path.write_text(old, encoding="utf-8")
+        importlib.reload(generator)
+        generator.load_libxr_config(str(self.directory), "")
+        self.generate(project, False)
+        generator.save_libxr_config(str(self.path))
+        text = self.path.read_text(encoding="utf-8")
+        self.assertIn(
+            "    dma_section: .dma  # DMA RAM\n"
+            "    cdc:\n"
+            "    - {tx_fifo_size: 96, rx_fifo_size: 80, queue_size: 4}\n"
+            "    vid: 5840\n",
+            text,
+        )
+        self.assertNotIn("cdc_", text)
+        # 再生成一次，文件不变。
+        # Generating again leaves the file as it is.
+        importlib.reload(generator)
+        generator.load_libxr_config(str(self.directory), "")
+        self.generate(project, False)
+        generator.save_libxr_config(str(self.path))
+        self.assertEqual(self.path.read_text(encoding="utf-8"), text)
+
+    def test_a_cdc_list_written_in_block_style_keeps_its_style(self):
+        project = {
+            "Mcu": {"Type": "STM32F407IGH6", "Family": "STM32F4"},
+            "GPIO": {},
+            "Peripherals": {"USB": {"USB_OTG_HS": {"Role": "Device"}}},
+        }
+        self.path.write_text(
+            "USB:\n"
+            "  usb_otg_hs:\n"
+            "    enable: true\n"
+            "    cdc:\n"
+            "    - tx_fifo_size: 64  # first\n"
+            "      rx_fifo_size: 64\n"
+            "      queue_size: 3\n"
+            "    - {tx_fifo_size: 128}\n",
+            encoding="utf-8",
+        )
+        importlib.reload(generator)
+        generator.load_libxr_config(str(self.directory), "")
+        self.generate(project, False)
+        generator.save_libxr_config(str(self.path))
+        text = self.path.read_text(encoding="utf-8")
+        self.assertIn(
+            "    cdc:\n"
+            "    - tx_fifo_size: 64  # first\n"
+            "      rx_fifo_size: 64\n"
+            "      queue_size: 3\n"
+            "    - {tx_fifo_size: 128, rx_fifo_size: 128, queue_size: 3}\n",
+            text,
+        )
+
     def test_a_new_key_goes_after_the_key_before_it(self):
         document, _ = config_file.parse("a: 1\nc: 3  # keep\n", "test")
         config_file.update(document, {"a": 1, "b": 2, "c": 3, "d": 4})

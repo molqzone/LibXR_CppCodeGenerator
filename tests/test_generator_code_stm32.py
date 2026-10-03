@@ -238,18 +238,16 @@ class PeripheralObjects(GeneratorTestCase):
         return self.project(peripherals={"USB": {"USB_OTG_HS": {"enable": True}}})
 
     def test_an_otg_device_takes_its_settings(self):
-        # 参数顺序与 LibXR 的 STM32USBDeviceOtgHS 和 CDCUart 构造函数一致；只生成一个 CDC。
+        # 参数顺序与 LibXR 的 STM32USBDeviceOtgHS 和 CDCUart 构造函数一致。
         # The argument order follows the STM32USBDeviceOtgHS and CDCUart constructors of
-        # LibXR; only one CDC is generated.
+        # LibXR.
         project = self.usb_otg_hs(
             ep0_packet_size=64,
             tx_buffer_size=64,
             rx_buffer_size=256,
             tx_fifo_size=192,
             rx_fifo_size=512,
-            cdc_tx_fifo_size=96,
-            cdc_rx_fifo_size=80,
-            cdc_queue_size=4,
+            cdc=[{"tx_fifo_size": 96, "rx_fifo_size": 80, "queue_size": 4}],
             vid=0x1234,
             pid=0x5678,
             bcd=0x0200,
@@ -296,10 +294,223 @@ class PeripheralObjects(GeneratorTestCase):
         project = self.usb_otg_hs(cdc_count=2)
         with self.assertRaisesMessage(
             ValueError,
-            "libxr_config.yaml: USB.usb_otg_hs.cdc_count is not a generator option; define "
-            "composite USB in BSP user code",
+            "libxr_config.yaml: USB.usb_otg_hs.cdc_count is not a generator option; list the "
+            "CDCs under USB.usb_otg_hs.cdc",
         ):
             self.generate(project)
+
+    def test_several_cdcs_take_endpoints_in_order(self):
+        # 端点分配与 DevC 手写的两路 CDC 相同：IN 端点 EP1 到 EP4，OUT 端点 EP1 和 EP2。
+        # The endpoints are allocated as in the two CDCs DevC wrote by hand: IN endpoints EP1 to
+        # EP4, OUT endpoints EP1 and EP2.
+        project = self.usb_otg_hs(cdc=[{}, {}])
+        code = self.generate(project)
+        self.assertIn("// USB OTG HS: 2 CDC\n", code)
+        self.assertIn(
+            "  static USB::CDCUart usb_otg_hs_cdc(USB::Endpoint::EPNumber::EP1,\n"
+            "                                     USB::Endpoint::EPNumber::EP1,\n"
+            "                                     USB::Endpoint::EPNumber::EP2, 128, 128, 3);\n"
+            "  static USB::CDCUart usb_otg_hs_cdc2(USB::Endpoint::EPNumber::EP3,\n"
+            "                                      USB::Endpoint::EPNumber::EP2,\n"
+            "                                      USB::Endpoint::EPNumber::EP4, 128, 128, 3);\n"
+            "  static STM32USBDeviceOtgHS usb_otg_hs(\n"
+            "      &hpcd_USB_OTG_HS, 256,\n"
+            "      {usb_otg_hs_ep0_out_buf, usb_otg_hs_ep1_out_buf, usb_otg_hs_ep2_out_buf},\n"
+            "      {{usb_otg_hs_ep0_in_buf, 8},\n"
+            "       {usb_otg_hs_ep1_in_buf, 128},\n"
+            "       {usb_otg_hs_ep2_in_buf, 16},\n"
+            "       {usb_otg_hs_ep3_in_buf, 128},\n"
+            "       {usb_otg_hs_ep4_in_buf, 16}},\n"
+            "      USB::DeviceDescriptor::PacketSize0::SIZE_8, 0x1D50, 0x6199, 0x100,\n"
+            "      {&usb_otg_hs_strings}, {{&usb_otg_hs_cdc, &usb_otg_hs_cdc2}},\n"
+            "      {reinterpret_cast<void*>(UID_BASE), 12});\n",
+            code,
+        )
+        self.assertEqual(
+            [
+                line.removeprefix("alignas(4) static uint8_t ")
+                for line in code.splitlines()
+                if line.startswith("alignas(4) static uint8_t")
+            ],
+            [
+                "usb_otg_hs_ep0_in_buf[8];",
+                "usb_otg_hs_ep0_out_buf[8];",
+                "usb_otg_hs_ep1_in_buf[128];",
+                "usb_otg_hs_ep1_out_buf[128];",
+                "usb_otg_hs_ep2_in_buf[16];",
+                "usb_otg_hs_ep2_out_buf[128];",
+                "usb_otg_hs_ep3_in_buf[128];",
+                "usb_otg_hs_ep4_in_buf[16];",
+            ],
+        )
+        for name in ("usb_otg_hs_cdc", "usb_otg_hs_cdc2"):
+            self.assertIn(f"  XR_REGISTER({name}, LibXR::UART);\n", code)
+
+    def test_each_cdc_takes_its_own_queue_sizes(self):
+        project = self.usb_otg_hs(
+            cdc=[
+                {"tx_fifo_size": 256, "rx_fifo_size": 64, "queue_size": 2},
+                {"queue_size": 7},
+            ]
+        )
+        code = " ".join(self.generate(project).split())
+        self.assertIn(
+            "usb_otg_hs_cdc(USB::Endpoint::EPNumber::EP1, USB::Endpoint::EPNumber::EP1,", code
+        )
+        self.assertIn("USB::Endpoint::EPNumber::EP2, 64, 256, 2);", code)
+        self.assertIn("USB::Endpoint::EPNumber::EP4, 128, 128, 7);", code)
+
+    def test_on_fsdev_each_cdc_has_a_data_endpoint_and_a_notification_endpoint(
+        self,
+    ):
+        # FSDEV 的数据 OUT 端点与数据 IN 端点同号：第 i 路 CDC 的数据端点是 EP(2i+1)，通知端点
+        # 是 EP(2i+2)。
+        # On FSDEV the data OUT endpoint has the number of the data IN endpoint: CDC i has its
+        # data endpoint on EP(2i+1) and its notification endpoint on EP(2i+2).
+        generator.libxr_settings.setdefault("USB", {})["usb_fs"] = {
+            "enable": True,
+            "cdc": [{}, {"queue_size": 5}],
+        }
+        project = self.project(
+            peripherals={"USB": {"USB": {"Role": "Device", "PCDHandle": "hpcd_USB_DRD_FS"}}},
+            mcu="STM32H503RBT6",
+            family="STM32H5",
+        )
+        code = self.generate(project)
+        self.assertIn(
+            "  static USB::CDCUart usb_fs_cdc2(USB::Endpoint::EPNumber::EP3,\n"
+            "                                  USB::Endpoint::EPNumber::EP3,\n"
+            "                                  USB::Endpoint::EPNumber::EP4, 128, 128, 5);\n"
+            "  static STM32USBDeviceDevFs usb_fs(&hpcd_USB_DRD_FS,\n"
+            "                                    {{usb_fs_ep0_in_buf, usb_fs_ep0_out_buf, 8, 8},\n"
+            "                                     {usb_fs_ep1_in_buf, usb_fs_ep1_out_buf, 128, 128},\n"
+            "                                     {usb_fs_ep2_in_buf, 16, true},\n"
+            "                                     {usb_fs_ep3_in_buf, usb_fs_ep3_out_buf, 128, 128},\n"
+            "                                     {usb_fs_ep4_in_buf, 16, true}},\n",
+            code,
+        )
+
+    def test_the_terminal_can_use_any_cdc(self):
+        project = self.usb_otg_hs(cdc=[{}, {}])
+        generator.libxr_settings["terminal_source"] = "usb_otg_hs_cdc2"
+        code = self.generate(project)
+        self.assertIn("// Terminal on usb_otg_hs_cdc2\n", code)
+        self.assertIn("  STDIO::read_ = usb_otg_hs_cdc2.read_port_;\n", code)
+
+    def test_the_cdc_of_a_device_that_is_not_generated_is_named_when_it_is_the_terminal(self):
+        generator.libxr_settings["USB"] = {"usb_otg_hs": {"enable": False}}
+        generator.libxr_settings["terminal_source"] = "usb_otg_hs_cdc2"
+        with self.assertLogs(level="WARNING") as logs:
+            code = self.generate(self.project(peripherals={"USB": {"USB_OTG_HS": {}}}))
+        self.assertNotIn("static Terminal", code)
+        self.assertEqual(
+            logs.output,
+            [
+                "WARNING:root:terminal_source 'usb_otg_hs_cdc2' is the CDC serial port of USB "
+                "instance usb_otg_hs, which is not generated; set USB.usb_otg_hs.enable to true "
+                "in libxr_config.yaml. The terminal is not initialized."
+            ],
+        )
+
+    def test_the_single_cdc_settings_become_a_cdc_item_where_they_were(self):
+        project = self.usb_otg_hs(
+            cdc_tx_fifo_size=96, cdc_rx_fifo_size=80, vid=0x1234, cdc_queue_size=4, pid=0x5678
+        )
+        with self.assertLogs(level="INFO") as logs:
+            code = self.generate(project)
+        self.assertEqual(
+            list(generator.libxr_settings["USB"]["usb_otg_hs"])[:5],
+            ["enable", "cdc", "vid", "pid", "ep0_packet_size"],
+        )
+        self.assertEqual(
+            generator.libxr_settings["USB"]["usb_otg_hs"]["cdc"],
+            [{"tx_fifo_size": 96, "rx_fifo_size": 80, "queue_size": 4}],
+        )
+        self.assertIn("USB::Endpoint::EPNumber::EP2, 80, 96, 4);", " ".join(code.split()))
+        self.assertIn(
+            "INFO:root:libxr_config.yaml: USB.usb_otg_hs.cdc_tx_fifo_size, "
+            "USB.usb_otg_hs.cdc_rx_fifo_size, USB.usb_otg_hs.cdc_queue_size became one item of "
+            "USB.usb_otg_hs.cdc",
+            logs.output,
+        )
+
+    def test_a_missing_single_cdc_setting_takes_its_default(self):
+        project = self.usb_otg_hs(cdc_queue_size=9)
+        self.generate(project)
+        self.assertEqual(
+            generator.libxr_settings["USB"]["usb_otg_hs"]["cdc"],
+            [{"tx_fifo_size": 128, "rx_fifo_size": 128, "queue_size": 9}],
+        )
+
+    def test_the_single_cdc_settings_next_to_a_cdc_list_are_dropped(self):
+        project = self.usb_otg_hs(cdc=[{"queue_size": 6}], cdc_queue_size=9)
+        with self.assertLogs(level="WARNING") as logs:
+            self.generate(project)
+        self.assertNotIn("cdc_queue_size", generator.libxr_settings["USB"]["usb_otg_hs"])
+        self.assertEqual(
+            generator.libxr_settings["USB"]["usb_otg_hs"]["cdc"],
+            [{"tx_fifo_size": 128, "rx_fifo_size": 128, "queue_size": 6}],
+        )
+        self.assertEqual(
+            logs.output,
+            [
+                "WARNING:root:libxr_config.yaml: USB.usb_otg_hs.cdc_queue_size ignored and "
+                "removed: USB.usb_otg_hs.cdc lists the CDCs"
+            ],
+        )
+
+    def test_a_default_device_has_one_cdc(self):
+        self.generate(self.usb_otg_hs())
+        self.assertEqual(
+            generator.libxr_settings["USB"]["usb_otg_hs"]["cdc"],
+            [{"tx_fifo_size": 128, "rx_fifo_size": 128, "queue_size": 3}],
+        )
+
+    def test_invalid_cdc_settings_are_rejected(self):
+        for cdc, rx_fifo_size, problem in (
+            (5, 256, "USB.usb_otg_hs.cdc 5 is not a list with one mapping per CDC"),
+            ([], 256, "USB.usb_otg_hs.cdc [] is not a list with one mapping per CDC"),
+            ([{}, 3], 256, "USB.usb_otg_hs.cdc[1] 3 is not a mapping"),
+            (
+                [{"queue_size": "many"}],
+                256,
+                "USB.usb_otg_hs.cdc[0].queue_size 'many' is not a positive integer",
+            ),
+            (
+                [{"tx_fifo_size": 0}],
+                256,
+                "USB.usb_otg_hs.cdc[0].tx_fifo_size 0 is not a positive integer",
+            ),
+        ):
+            with self.subTest(cdc=cdc):
+                self.setUp()
+                project = self.usb_otg_hs(cdc=cdc, rx_fifo_size=rx_fifo_size)
+                with self.assertRaisesMessage(LibXRConfigError, f"libxr_config.yaml: {problem}"):
+                    self.generate(project)
+
+    def test_the_cdc_count_is_limited_by_the_endpoint_numbers_and_the_receive_fifo(self):
+        for cdc, rx_fifo_size, problem in (
+            (
+                [{}] * 8,
+                1024,
+                "USB.usb_otg_hs.cdc lists 8 CDCs, but the endpoint numbers hold 7",
+            ),
+            (
+                [{}] * 4,
+                256,
+                "USB.usb_otg_hs.rx_fifo_size 256 is too small for 4 CDCs; the receive FIFO needs "
+                "64 bytes for EP0 and for the OUT endpoint of each CDC, 320 in all",
+            ),
+        ):
+            with self.subTest(cdc=len(cdc)):
+                self.setUp()
+                project = self.usb_otg_hs(cdc=cdc, rx_fifo_size=rx_fifo_size)
+                with self.assertRaisesMessage(LibXRConfigError, f"libxr_config.yaml: {problem}"):
+                    self.generate(project)
+        self.setUp()
+        self.assertIn(
+            "usb_otg_hs_cdc4", self.generate(self.usb_otg_hs(cdc=[{}] * 4, rx_fifo_size=320))
+        )
 
     def usb_fs(self, role):
         """启用 usb_fs 的 STM32H503 工程数据；USB 实例的角色和 PCD 句柄是 parse 读出的值。

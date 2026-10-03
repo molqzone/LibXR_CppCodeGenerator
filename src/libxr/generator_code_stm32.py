@@ -1058,25 +1058,34 @@ def _usb_settings(instance: str) -> tuple[str, dict] | None:
     any other instance name, such as the USB_DEVICE middleware.
 
     enable 的默认值由 _default_usb_enables() 先行写入，仍然缺少时为 false；未启用的实例不再补其他
-    设置。已启用的实例按固定顺序补上缺少的设置：包大小、缓冲区和 FIFO 大小、dma_section、CDC 的
-    FIFO 和队列长度，以及描述符（默认 1d50:6199 / 0x0100 / "XRUSB-DEMO-"，1d50:6199 的分配记录见
+    设置。已启用的实例按固定顺序补上缺少的设置：包大小、缓冲区和 FIFO 大小、dma_section、cdc 列表
+    （每路 CDC 一项，含 tx_fifo_size、rx_fifo_size 和 queue_size，默认一路），以及描述符（默认
+    1d50:6199 / 0x0100 / "XRUSB-DEMO-"，1d50:6199 的分配记录见
     https://github.com/openmoko/openmoko-usb-oui/commit/27f3846d77e0d0d10271b809b831f70040c6197a）。
-    ep0_packet_size 不是 8、16、32、64 时给出警告并改为 8；其余大小必须是正整数，vid、pid、bcd
-    必须在 0 到 0xFFFF 之间。
+    旧版的 cdc_tx_fifo_size、cdc_rx_fifo_size 和 cdc_queue_size 转换为 cdc 的一项，并在原来的位置
+    写回。ep0_packet_size 不是 8、16、32、64 时给出警告并改为 8；其余大小必须是正整数，vid、pid、
+    bcd 必须在 0 到 0xFFFF 之间。
     _default_usb_enables() writes the default enable first; when it is still missing it is
     false, and a disabled instance gets no other setting. An enabled instance gets its missing
-    settings in a fixed order: packet size, buffer and FIFO sizes, dma_section, CDC FIFO and
-    queue lengths, and the descriptor (default 1d50:6199 / 0x0100 / "XRUSB-DEMO-"; see the link
-    above for the allocation of 1d50:6199). An ep0_packet_size other than 8, 16, 32 or 64 is
-    warned about and becomes 8; the other sizes must be positive integers, vid, pid and bcd
-    must lie between 0 and 0xFFFF, and dma_section and the descriptor strings must be strings.
+    settings in a fixed order: packet size, buffer and FIFO sizes, dma_section, the cdc list (one
+    item per CDC with tx_fifo_size, rx_fifo_size and queue_size, one CDC by default), and the
+    descriptor (default 1d50:6199 / 0x0100 / "XRUSB-DEMO-"; see the link above for the
+    allocation of 1d50:6199). The earlier cdc_tx_fifo_size, cdc_rx_fifo_size and
+    cdc_queue_size become one item of cdc, written back where they were. An ep0_packet_size
+    other than 8, 16, 32 or 64 is warned about and becomes 8; the other sizes must be positive
+    integers, vid, pid and bcd must lie between 0 and 0xFFFF, and dma_section and the
+    descriptor strings must be strings.
 
     Raises:
         LibXRConfigError: 实例的设置不是映射或 enable 不是布尔值；已启用的实例设置了 cdc_count
-            （复合 USB 设备应在 BSP 用户代码中定义），或某个大小、描述符数值或字符串无效。
+            （CDC 的路数由 cdc 列表给出），cdc 不是映射的非空列表，CDC 的路数超过端点号 EP1 到 EP15
+            能容纳的 7 路，OTG 的 rx_fifo_size 容不下每路 CDC 的 OUT 端点，或某个大小、描述符数值或
+            字符串无效。
             The settings of the instance are not a mapping or enable is not a boolean; an
-            enabled instance sets cdc_count (a composite USB device belongs in BSP user code),
-            or a size, descriptor number or string is invalid.
+            enabled instance sets cdc_count (the cdc list gives the number of CDCs), cdc is
+            not a non-empty list of mappings, the number of CDCs exceeds the 7 that the endpoint
+            numbers EP1 to EP15 hold, the rx_fifo_size of an OTG device cannot hold the OUT
+            endpoint of each CDC, or a size, descriptor number or string is invalid.
     """
     name = _USB_INSTANCES.get((instance or "").upper())
     if name is None:
@@ -1088,12 +1097,13 @@ def _usb_settings(instance: str) -> tuple[str, dict] | None:
     if "cdc_count" in cfg:
         raise LibXRConfigError(
             tr(
-                f"{libxr_config_origin}: {prefix}.cdc_count is not a generator option; define "
-                "composite USB in BSP user code",
-                f"{libxr_config_origin}：{prefix}.cdc_count 不是生成器选项；复合 USB 设备请在 BSP "
-                "用户代码中定义",
+                f"{libxr_config_origin}: {prefix}.cdc_count is not a generator option; list the "
+                f"CDCs under {prefix}.cdc",
+                f"{libxr_config_origin}：{prefix}.cdc_count 不是生成器选项；请在 {prefix}.cdc 中"
+                "列出各路 CDC",
             )
         )
+    _convert_legacy_cdc(prefix, cfg)
     try:
         ep0 = _integer("ep0_packet_size", cfg.get("ep0_packet_size", 8))
     except ValueError:
@@ -1117,9 +1127,7 @@ def _usb_settings(instance: str) -> tuple[str, dict] | None:
         "rx_fifo_size": 256 if is_otg else 128,
         "tx_fifo_size": 128,
         "dma_section": "",
-        "cdc_tx_fifo_size": 128,
-        "cdc_rx_fifo_size": 128,
-        "cdc_queue_size": 3,
+        "cdc": [dict(_CDC_DEFAULTS)],
         "vid": 0x1D50,
         "pid": 0x6199,
         "bcd": 0x0100,
@@ -1134,16 +1142,121 @@ def _usb_settings(instance: str) -> tuple[str, dict] | None:
         "rx_buffer_size",
         "rx_fifo_size",
         "tx_fifo_size",
-        "cdc_tx_fifo_size",
-        "cdc_rx_fifo_size",
-        "cdc_queue_size",
     ):
         _integer(f"{prefix}.{key}", cfg[key])
+    _check_cdc(prefix, cfg, is_otg)
     for key in ("vid", "pid", "bcd"):
         _integer(f"{prefix}.{key}", cfg[key], 0, 0xFFFF)
     for key in ("dma_section", "manufacturer", "product", "serial"):
         cfg[key] = _text(f"{prefix}.{key}", cfg[key])
     return name, cfg
+
+
+# 一路 CDC 的设置及默认值：发送和接收队列的容量，以及发送请求队列的容量。
+# The settings of one CDC and their defaults: the capacity of the transmit and receive queues
+# and of the transmit request queue.
+_CDC_DEFAULTS = {"tx_fifo_size": 128, "rx_fifo_size": 128, "queue_size": 3}
+# 旧版单路 CDC 的设置对应 cdc 列表项中的键。
+# The earlier settings of the single CDC and the keys of a cdc item they correspond to.
+_LEGACY_CDC_KEYS = {
+    "cdc_tx_fifo_size": "tx_fifo_size",
+    "cdc_rx_fifo_size": "rx_fifo_size",
+    "cdc_queue_size": "queue_size",
+}
+# 端点号 EP1 到 EP15 最多容纳的 CDC 路数：每路占两个 IN 端点号。
+# The most CDCs the endpoint numbers EP1 to EP15 hold: each takes two IN endpoint numbers.
+_MAX_CDC = 7
+
+
+def _convert_legacy_cdc(prefix: str, cfg: dict) -> None:
+    """把旧版的 cdc_tx_fifo_size、cdc_rx_fifo_size 和 cdc_queue_size 转换为 cdc 列表的一项。
+    Convert the earlier cdc_tx_fifo_size, cdc_rx_fifo_size and cdc_queue_size into one item of
+    the cdc list.
+
+    新的 cdc 写在第一个旧键的位置，缺少的值取默认值并记录一条说明；已有 cdc 时旧键被忽略，记录
+    一条警告。两种情况下旧键都被删除，写回的 libxr_config.yaml 只有新写法。
+    The new cdc takes the place of the first old key, missing values take their defaults, and a
+    notice is logged; with a cdc already present the old keys are ignored, with a warning. In
+    both cases the old keys are removed, so the written libxr_config.yaml has only the new form.
+    """
+    legacy = [key for key in _LEGACY_CDC_KEYS if key in cfg]
+    if not legacy:
+        return
+    names = ", ".join(f"{prefix}.{key}" for key in legacy)
+    if "cdc" in cfg:
+        logging.warning(
+            tr(
+                f"{libxr_config_origin}: {names} ignored and removed: {prefix}.cdc lists the CDCs",
+                f"{libxr_config_origin}：已忽略并删除 {names}：各路 CDC 由 {prefix}.cdc 给出",
+            )
+        )
+        for key in legacy:
+            del cfg[key]
+        return
+    item = {new: cfg.get(old, _CDC_DEFAULTS[new]) for old, new in _LEGACY_CDC_KEYS.items()}
+    entries = list(cfg.items())
+    first = next(index for index, (key, _) in enumerate(entries) if key in _LEGACY_CDC_KEYS)
+    cfg.clear()
+    for index, (key, value) in enumerate(entries):
+        if index == first:
+            cfg["cdc"] = [item]
+        if key not in _LEGACY_CDC_KEYS:
+            cfg[key] = value
+    logging.info(
+        tr(
+            f"{libxr_config_origin}: {names} became one item of {prefix}.cdc",
+            f"{libxr_config_origin}：{names} 已改为 {prefix}.cdc 的一项",
+        )
+    )
+
+
+def _check_cdc(prefix: str, cfg: dict, is_otg: bool) -> None:
+    """检查 cdc 列表并给每项补上默认值：非空列表，每项是映射，各值是正整数。
+    Check the cdc list and give each item its defaults: a non-empty list whose items are
+    mappings with positive integer values.
+
+    CDC 的路数不得超过端点号 EP1 到 EP15 能容纳的路数；OTG 设备的接收 FIFO 为 EP0 和每路 CDC 的
+    OUT 端点各留 64 字节。
+    The number of CDCs may not exceed what the endpoint numbers EP1 to EP15 hold; the receive
+    FIFO of an OTG device keeps 64 bytes for EP0 and for the OUT endpoint of each CDC.
+
+    Raises:
+        LibXRConfigError: cdc 不是非空列表、某项不是映射或某个值无效，路数过多，或 OTG 设备的
+            rx_fifo_size 太小。
+            cdc is not a non-empty list, an item is not a mapping or a value is invalid, there
+            are too many CDCs, or the rx_fifo_size of an OTG device is too small.
+    """
+    cdc = cfg["cdc"]
+    key = f"{prefix}.cdc"
+    if not isinstance(cdc, list) or not cdc:
+        raise _invalid_setting(
+            key, cdc, "a list with one mapping per CDC", "每路 CDC 一个映射的列表"
+        )
+    for index, item in enumerate(cdc):
+        if not isinstance(item, dict):
+            raise _invalid_setting(f"{key}[{index}]", item, "a mapping", "映射")
+        for name, default in _CDC_DEFAULTS.items():
+            _integer(f"{key}[{index}].{name}", item.setdefault(name, default))
+    if len(cdc) > _MAX_CDC:
+        raise LibXRConfigError(
+            tr(
+                f"{libxr_config_origin}: {key} lists {len(cdc)} CDCs, but the endpoint numbers "
+                f"hold {_MAX_CDC}",
+                f"{libxr_config_origin}：{key} 列出了 {len(cdc)} 路 CDC，端点号最多容纳 {_MAX_CDC} 路",
+            )
+        )
+    needed = 64 * (len(cdc) + 1)
+    if is_otg and _integer(f"{prefix}.rx_fifo_size", cfg["rx_fifo_size"]) < needed:
+        raise LibXRConfigError(
+            tr(
+                f"{libxr_config_origin}: {prefix}.rx_fifo_size {cfg['rx_fifo_size']!r} is too "
+                f"small for {len(cdc)} CDCs; the receive FIFO needs 64 bytes for EP0 and for the "
+                f"OUT endpoint of each CDC, {needed} in all",
+                f"{libxr_config_origin}：{prefix}.rx_fifo_size {cfg['rx_fifo_size']!r} 容不下 "
+                f"{len(cdc)} 路 CDC；接收 FIFO 为 EP0 和每路 CDC 的 OUT 端点各需要 64 字节，"
+                f"共 {needed}",
+            )
+        )
 
 
 # 有 L1 数据 cache 的 STM32 系列：Cortex-M7（F7、H7、H7RS）和 Cortex-M55（N6）。这些系列的 CMSIS
@@ -1298,11 +1411,7 @@ def _cdc_items(cfg: dict) -> list[dict]:
     tx_fifo_size, rx_fifo_size and queue_size, all integers.
     """
     return [
-        {
-            "tx_fifo_size": _integer("cdc_tx_fifo_size", cfg["cdc_tx_fifo_size"], 0),
-            "rx_fifo_size": _integer("cdc_rx_fifo_size", cfg["cdc_rx_fifo_size"], 0),
-            "queue_size": _integer("cdc_queue_size", cfg["cdc_queue_size"], 0),
-        }
+        {name: _integer(f"cdc.{name}", item[name]) for name in _CDC_DEFAULTS} for item in cfg["cdc"]
     ]
 
 
