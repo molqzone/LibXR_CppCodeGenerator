@@ -269,10 +269,13 @@ alignas(32) static uint8_t usart1_rx_buf[128] __attribute__((section(".axi_ram")
 ```
 
 `/* User Code Begin N */` 与 `/* User Code End N */` 之间的代码在重新生成时保留，生成结果没有变化的文件
-保持原样：
+保持原样。区域中的手写代码用到驱动类（如 `STM32Flash`）、`FLASH_REGIONS` 或工程的 HAL 句柄（如
+`htim5`）时，生成的文件保留对应的 include 和 `extern` 声明：
 
 The code between `/* User Code Begin N */` and `/* User Code End N */` is kept on regeneration,
-and files whose content does not change are left as they are:
+and files whose content does not change are left as they are. When hand-written code in a region
+uses a driver class such as `STM32Flash`, `FLASH_REGIONS` or a HAL handle of the project such as
+`htim5`, the generated file keeps the include and the `extern` declaration for it:
 
 ```bash
 $ libxr gen -i .config.yaml -o User/app_main.cpp
