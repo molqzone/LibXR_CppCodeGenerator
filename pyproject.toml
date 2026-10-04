@@ -1,12 +1,12 @@
 [build-system]
-requires = ["setuptools", "wheel"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "libxr"
-version = "5.2.4"
+version = "6.0.0"
 description = "C++ code generator for LibXR-based embedded systems, supporting STM32 and modular robotics applications."
-requires-python = ">=3.8"
+requires-python = ">=3.10"
 authors = [
     {name = "Xiao", email = "2592509183@qq.com"}
 ]
@@ -14,33 +14,47 @@ maintainers = [
     {name = "Xiao", email = "2592509183@qq.com"}
 ]
 readme = "README.md"
-license = {text = "Apache-2.0"}
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 keywords = ["code generation", "embedded systems", "automation"]
 dependencies = [
     "pyyaml",
-    "requests",
-    "packaging"
+    "packaging",
+    "ruamel.yaml>=0.17.21",
+    "xr-syntax==0.2.0",
+    "python-xlib; sys_platform == 'linux'"
 ]
 
 [project.urls]
-Homepage = "https://github.com/Jiu-xiao/libxr"
-Documentation = "https://xrobot-org.github.io/"
-Repository = "https://github.com/Jiu-xiao/LibXR_CppCodeGenerator"
-"Bug Tracker" = "https://github.com/Jiu-xiao/LibXR_CppCodeGenerator/issues"
+Homepage = "https://github.com/xrobot-org/libxr"
+Documentation = "https://xrobot.work/"
+Repository = "https://github.com/xrobot-org/LibXR_CppCodeGenerator"
+"Bug Tracker" = "https://github.com/xrobot-org/LibXR_CppCodeGenerator/issues"
 
 [project.scripts]
-xr_parse_ioc = "libxr.PeripheralAnalyzerSTM32:main"
-xr_parse = "libxr.PeripheralAnalyzer:main"
-xr_gen_code_stm32 = "libxr.GeneratorCodeSTM32:main"
-xr_gen_code = "libxr.GeneratorCode:main"
-xr_stm32_cmake = "libxr.GeneratorSTM32CMake:main"
-xr_stm32_flash = "libxr.STM32FlashGenerator:main"
-xr_stm32_toolchain_switch = "libxr.STM32ToolchainSwitch:main"
-xr_cubemx_cfg = "libxr.ConfigCubemxProject:main"
-xr_cubemx_generate = "libxr.CubeMXGenerator:main"
+libxr = "libxr.cli:main"
+# 旧命令，运行时提示对应的 libxr 子命令；7.0.0 删除。
+# Old commands; they name the libxr subcommand when run and are removed in 7.0.0.
+xr_parse = "libxr.legacy:xr_parse"
+xr_parse_ioc = "libxr.legacy:xr_parse_ioc"
+xr_gen_code = "libxr.legacy:xr_gen_code"
+xr_gen_code_stm32 = "libxr.legacy:xr_gen_code_stm32"
+xr_cubemx_cfg = "libxr.legacy:xr_cubemx_cfg"
+xr_cubemx_generate = "libxr.legacy:xr_cubemx_generate"
+xr_stm32_cmake = "libxr.legacy:xr_stm32_cmake"
+xr_stm32_flash = "libxr.legacy:xr_stm32_flash"
+xr_stm32_toolchain_switch = "libxr.legacy:xr_stm32_toolchain_switch"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
 "libxr" = ["libxr_version.py", "STM32FlashLayoutRules.xml"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = ["E501"]

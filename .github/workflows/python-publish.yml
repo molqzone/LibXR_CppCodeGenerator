@@ -22,6 +22,75 @@ permissions:
   contents: read
 
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # A new ruff release may format differently; move the pin on purpose.
+      - run: python -m pip install ruff==0.16.9
+      - run: ruff format --check src tests scripts
+      - run: ruff check src tests scripts
+
+  libxr-version:
+    name: Pin the LibXR commit
+    runs-on: ubuntu-latest
+    outputs:
+      commit: ${{ steps.pin.outputs.commit }}
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # The package and the STM32 target test share this one file, so the
+      # published default LibXR commit is the one that was tested.
+      - name: Write libxr_version.py
+        id: pin
+        run: |
+          commit=$(python ./scripts/gen_libxr_version.py)
+          echo "commit=${commit}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: libxr-version
+          path: src/libxr/libxr_version.py
+          if-no-files-found: error
+
+  release-version:
+    name: Check release tag matches package version
+    runs-on: ubuntu-latest
+    if: github.event_name == 'release'
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Compare tag and pyproject version
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os
+          import sys
+          import tomllib
+
+          with open("pyproject.toml", "rb") as stream:
+              version = tomllib.load(stream)["project"]["version"]
+          tag = os.environ["GITHUB_REF_NAME"]
+          tag_version = tag[1:] if tag[:1] in ("v", "V") else tag
+          if tag_version != version:
+              sys.exit(f"Release tag {tag} does not match package version {version}")
+          print(f"Release tag {tag} matches package version {version}")
+          PY
+
   discover-stm32-targets:
     runs-on: ubuntu-latest
 
@@ -47,6 +116,7 @@ jobs:
               path.name
               for path in root.iterdir()
               if path.is_dir() and not path.name.startswith(".")
+              and (path / "CMakeLists.txt").is_file()
           )
           if not targets:
               raise SystemExit("No STM32 target directories found")
@@ -57,7 +127,9 @@ jobs:
   stm32-target-test:
     name: STM32 Target (${{ matrix.target }})
     runs-on: ubuntu-latest
-    needs: discover-stm32-targets
+    needs:
+      - discover-stm32-targets
+      - libxr-version
     container:
       image: ghcr.io/xrobot-org/docker-image-stm32:main
       options: --user 0
@@ -69,10 +141,13 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
+    - uses: actions/download-artifact@v4
+      with:
+        name: libxr-version
+        path: src/libxr
+
     - name: Install Python Package
-      run: |
-        python ./scripts/gen_libxr_version.py
-        pip install .
+      run: pip install .
 
     - name: Compiler Version Check
       run: |
@@ -85,22 +160,35 @@ jobs:
         repository: Jiu-xiao/libxr_stm32_test
         path: test-project
 
+    - name: Resolve matching LibXR ref
+      id: libxr-ref
+      shell: bash
+      run: |
+        if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+          # A release tests the LibXR commit that the package pins.
+          ref="${{ needs.libxr-version.outputs.commit }}"
+        else
+          ref="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
+          if ! git ls-remote --exit-code --heads https://github.com/xrobot-org/libxr.git "refs/heads/${ref}" >/dev/null; then
+            ref="dev"
+          fi
+        fi
+        echo "Using LibXR ref: ${ref}"
+        echo "ref=${ref}" >> "$GITHUB_OUTPUT"
+
     - name: Run STM32 target test
       run: |
-        cd test-project && ./test.sh master "${{ matrix.target }}"
+        cd test-project && ./test.sh "${{ steps.libxr-ref.outputs.ref }}" "${{ matrix.target }}"
 
   build:
-    name: Build & Test (${{ matrix.os }} - ${{ matrix.arch }})
+    name: Build & Test (${{ matrix.os }} - Python ${{ matrix.python-version }})
     runs-on: ${{ matrix.os }}
+    needs: libxr-version
 
     strategy:
       matrix:
         os: [ubuntu-latest, windows-latest]
-        arch: [x86_64, arm64]
-        python-version: ["3.8", "3.9", "3.10", "3.11", "3.12", "3.13"]
-        exclude:
-          - os: windows-latest
-            arch: arm64
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
 
     steps:
       - name: Checkout Repository
@@ -112,61 +200,33 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: "pip"
 
-      - name: Install dependencies (Linux/macOS)
-        if: runner.os != 'Windows'
+      - name: Install build tools
         run: |
           python -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          pip install pytest flake8 black build twine
+          python -m pip install build twine
 
-      - name: Install dependencies (Windows)
-        if: runner.os == 'Windows'
-        run: |
-          python -m pip install --upgrade pip
-          if (Test-Path "requirements.txt") { pip install -r requirements.txt }
-          pip install pytest flake8 black build twine
+      - uses: actions/download-artifact@v4
+        with:
+          name: libxr-version
+          path: src/libxr
 
       - name: Build Package
-        run: |
-          python ./scripts/gen_libxr_version.py
-          python -m build
+        run: python -m build
 
       - name: Check Package Metadata
-        run: |
-          twine check dist/*
+        run: twine check dist/*
 
-      - name: Rename built package files (Linux/macOS)
-        if: runner.os != 'Windows'
-        run: |
-          for file in dist/*.whl dist/*.tar.gz; do
-            if [[ -f "$file" ]]; then
-              new_name=$(echo "$file" | sed -E "s/^dist\/libxr-([0-9]+\.[0-9]+\.[0-9]+)-py([0-9]+)-none-any\.(whl|tar.gz)$/dist\/libxr-\1-py\2-none-any.\3/")
-              if [[ "$file" != "$new_name" ]]; then
-                mv "$file" "$new_name"
-              fi
-            fi
-          done
-          ls -lh dist/
-
-      - name: Rename built package files (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          Get-ChildItem -Path dist/* -Include *.whl, *.tar.gz | ForEach-Object {
-            $newName = $_.Name -replace '^libxr-([0-9]+\.[0-9]+\.[0-9]+)-py([0-9]+)-none-any\.(whl|tar.gz)', 'libxr-$1-py$2-none-any.$3'
-            if ($_.Name -ne $newName) {
-              Rename-Item -Path $_.FullName -NewName $newName
-            }
-          }
-          Get-ChildItem -Path dist/
-
+      # Every matrix entry builds the same pure-Python distribution; publish
+      # exactly one of them so artifacts cannot replace each other.
       - name: Upload Built Package
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
         uses: actions/upload-artifact@v4
         with:
-          name: python-package-${{ matrix.os }}-${{ matrix.arch }}-py${{ matrix.python-version }}
+          name: python-package
           path: dist/*
+          if-no-files-found: error
 
-      - name: Install built package (Linux/macOS)
+      - name: Install built package (Linux)
         if: runner.os != 'Windows'
         run: |
           pip install dist/*.whl || pip install dist/*.tar.gz
@@ -180,41 +240,41 @@ jobs:
             pip install $pkg.FullName
           }
 
-      - name: Import smoke check (all top-level modules)
-        run: |
-          python ./scripts/ci_import_smoke.py
+      # The formatting tests check the generated C++ against this clang-format and are
+      # skipped without it; another version may format differently, so move the pin on purpose.
+      - name: Install the pinned clang-format
+        run: python -m pip install clang-format==21.1.8
 
-      - name: CubeMX runner smoke check
-        run: |
-          python ./scripts/cubemx_runner_smoke.py
-
-      - name: LibXR submodule policy smoke check
-        run: |
-          python ./scripts/libxr_submodule_smoke.py
+      # The tests import every module of the installed package (src layout), so a module
+      # missing from the wheel fails them.
+      - name: Candidate source regression tests
+        run: python -m unittest discover -s tests -p "test_*.py" -v
 
       - name: Checkout BSP Compatibility Test Repo
         uses: actions/checkout@v4
         with:
-          repository: xrobot-org/bsp_stm32f103c8
+          repository: xrobot-org/bsp_stm32f103
           path: bsp_test
 
-      - name: Python Compatibility Check (Linux/macOS)
+      - name: Python Compatibility Check (Linux)
         if: runner.os != 'Windows'
         run: |
           cd bsp_test
-          xr_cubemx_cfg -d .
+          libxr stm32 setup -d .
 
       - name: Python Compatibility Check (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           Set-Location bsp_test
-          xr_cubemx_cfg -d .
+          libxr stm32 setup -d .
 
   publish:
     name: Publish to PyPI
     runs-on: ubuntu-latest
     needs:
+      - lint
+      - release-version
       - build
       - stm32-target-test
     if: github.event_name == 'release'
@@ -230,17 +290,14 @@ jobs:
       - name: Download built packages
         uses: actions/download-artifact@v4
         with:
+          name: python-package
           path: dist/
 
-      - name: Move built packages to root dist/
-        run: |
-          find dist/ -mindepth 2 -type f -exec mv {} dist/ \;
-          rm -rf dist/python-package-*  # 清理空文件夹
-          ls -lh dist/
+      - name: List built packages
+        run: ls -lh dist/
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: dist/
-          username: XRobot
           password: ${{ secrets.TOKEN }}
