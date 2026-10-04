@@ -18,6 +18,7 @@ import contextlib
 import ctypes
 import logging
 import os
+import shlex
 import shutil
 import signal
 import subprocess
@@ -944,16 +945,10 @@ def build_cubemx_script(ioc_path: str, generate_code_dir: str = "") -> str:
 
 
 def _shell_join(args: Sequence[str]) -> str:
-    """把参数拼成一行按 shell 规则引用的命令，用于日志；引用出错时直接以空格连接。
-    Join arguments into one shell-quoted command line for logs; plain space-joined when quoting
-    fails.
+    """把参数拼成一行按 shell 规则引用的命令，用于日志。
+    Join arguments into one shell-quoted command line for logs.
     """
-    try:
-        import shlex
-
-        return " ".join(shlex.quote(arg) for arg in args)
-    except Exception:
-        return " ".join(args)
+    return shlex.join(args)
 
 
 def _java_user_state_options() -> list[str]:

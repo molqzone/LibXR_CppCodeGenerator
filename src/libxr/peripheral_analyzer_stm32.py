@@ -1161,9 +1161,11 @@ class USBParser(PeripheralParser):
     a -<profile> suffix are grouped by profile.
     """
 
-    # 这些系列的 USB IP 是 USB_DRD_FS，CubeMX 把 PCD 句柄命名为 hpcd_USB_DRD_FS。
+    # 这些系列的 USB IP 是 USB_DRD_FS，CubeMX 把 PCD 句柄命名为 hpcd_USB_DRD_FS。.ioc 中的 IP 名
+    # 是 USB，或者就是 USB_DRD_FS（如 STM32G0B1），后者同样记下 hpcd_USB_DRD_FS。
     # The USB IP of these families is USB_DRD_FS, whose PCD handle CubeMX names
-    # hpcd_USB_DRD_FS.
+    # hpcd_USB_DRD_FS. The IP name in the .ioc file is USB or USB_DRD_FS itself (as on the
+    # STM32G0B1), and the latter records hpcd_USB_DRD_FS as well.
     _DRD_FAMILIES = {"STM32C0", "STM32G0", "STM32H5", "STM32U0", "STM32U3", "STM32U5"}
 
     def parse(self, p_type: str) -> None:
@@ -1177,13 +1179,13 @@ class USBParser(PeripheralParser):
 
         "<param>-<profile>" 形式的参数存入 profiles[profile][param]，其余存在实例下；
         IPParameters 拆成列表。VirtualMode（含各 profile 中的）含 Device 时 Role 为 Device，
-        含 Host 时为 Host，主机模式下 CubeMX 生成的是 HCD 句柄。_DRD_FAMILIES 系列的 USB 实例记下
-        PCDHandle hpcd_USB_DRD_FS。
+        含 Host 时为 Host，主机模式下 CubeMX 生成的是 HCD 句柄。_DRD_FAMILIES 系列的 USB 实例和
+        IP 名为 USB_DRD_FS 的实例记下 PCDHandle hpcd_USB_DRD_FS。
         A "<param>-<profile>" parameter is stored in profiles[profile][param] and any other
         under the instance; IPParameters is split into a list. Role is Device when a
         VirtualMode, profiles included, contains Device and Host when one contains Host; in
-        host mode CubeMX generates an HCD handle. The USB instance of the _DRD_FAMILIES gets
-        PCDHandle hpcd_USB_DRD_FS.
+        host mode CubeMX generates an HCD handle. The USB instance of the _DRD_FAMILIES and an
+        instance with the IP name USB_DRD_FS get PCDHandle hpcd_USB_DRD_FS.
         """
         # 1. 按 .ioc 中的顺序找出 raw_map 里的全部 USB 外设名。
         # 1. Find all USB peripheral names in the raw_map, in .ioc order
@@ -1248,7 +1250,7 @@ class USBParser(PeripheralParser):
                 cfg["Role"] = "Device"
             elif any("Host" in mode for mode in modes):
                 cfg["Role"] = "Host"
-            if usb_name == "USB" and family in self._DRD_FAMILIES:
+            if usb_name == "USB_DRD_FS" or (usb_name == "USB" and family in self._DRD_FAMILIES):
                 cfg["PCDHandle"] = "hpcd_USB_DRD_FS"
 
     def _ensure_usb_instance(self, usb_name: str) -> None:

@@ -614,8 +614,10 @@ def check_project(project_dir: str) -> str:
         _stop(f"Directory {name} does not exist", f"目录 {name} 不存在")
     if not os.path.isdir(os.path.join(project_dir, "Core")):
         _stop(
-            f"{name} is not a valid STM32CubeMX project: missing Core/ directory",
-            f"{name}：不是有效的 STM32CubeMX 工程，缺少 Core/ 目录",
+            f"{name} is not a valid STM32CubeMX project: missing Core/ directory; generate the "
+            "code with STM32CubeMX, or run `libxr stm32 cubemx-gen`",
+            f"{name}：不是有效的 STM32CubeMX 工程，缺少 Core/ 目录；请先用 STM32CubeMX 生成代码，"
+            "或运行 `libxr stm32 cubemx-gen`",
         )
     ioc_files = sorted(entry for entry in os.listdir(project_dir) if entry.endswith(".ioc"))
     if not ioc_files:

@@ -6,9 +6,11 @@ toolchain file.
 """
 
 import logging
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from fixtures import CUBEMX_STARM, GeneratorTestCase, TestCase
 
@@ -221,7 +223,7 @@ class Integration(GeneratorTestCase):
         )
         self.assertEqual(
             list(stm32_cmake.split_blocks(text)),
-            ["Project settings", "LibXR", "Application", "Library optimization"],
+            ["Project settings", "LibXR", "Application", "Library optimization", "Firmware images"],
         )
         self.assertEqual(
             self.settings(text).splitlines(),
@@ -248,6 +250,46 @@ class Integration(GeneratorTestCase):
             text,
         )
         self.assertIn("BUILDSYSTEM_TARGETS", text)
+
+    def test_the_hex_and_bin_images_are_made_next_to_the_elf(self):
+        # 共享的 BSP CI 打包 <工程名>.elf、.hex 和 .bin；以前 CubeMX 工程只有 ELF，官方 BSP 在
+        # CMakeLists.txt 中手写 objcopy。
+        # The shared BSP CI packages <project>.elf, .hex and .bin; CubeMX projects used to have
+        # only the ELF, and the official BSPs added objcopy to CMakeLists.txt by hand.
+        text = self.run_cmake_generator()
+        self.assertEqual(
+            stm32_cmake.split_blocks(text)[stm32_cmake.FIRMWARE_TITLE],
+            "# Each link of the application also writes <project>.hex and <project>.bin next "
+            "to the ELF.\n"
+            "add_custom_command(TARGET ${CMAKE_PROJECT_NAME} POST_BUILD\n"
+            "    WORKING_DIRECTORY $<TARGET_FILE_DIR:${CMAKE_PROJECT_NAME}>\n"
+            "    COMMAND ${CMAKE_OBJCOPY} --output-target ihex\n"
+            "        $<TARGET_FILE_NAME:${CMAKE_PROJECT_NAME}> ${CMAKE_PROJECT_NAME}.hex\n"
+            "    COMMAND ${CMAKE_OBJCOPY} --output-target binary --strip-all\n"
+            "        $<TARGET_FILE_NAME:${CMAKE_PROJECT_NAME}> ${CMAKE_PROJECT_NAME}.bin\n"
+            "    VERBATIM)",
+        )
+
+    def test_an_existing_file_gains_the_firmware_images(self):
+        # 由没有固件镜像块的版本写出的文件：设置块和 Kept 块保留，固件镜像块排在 Kept 块之前。
+        # A file written by a version without the firmware image block: the settings block and
+        # the Kept block stay, and the firmware image block comes before the Kept block.
+        text = self.run_cmake_generator()
+        blocks = stm32_cmake.split_blocks(text)
+        settings = blocks[stm32_cmake.SETTINGS_TITLE].replace('"-Og"', '"-O1"')
+        kept = "target_compile_options(xr PRIVATE -Wno-deprecated-volatile)"
+        earlier = text[: text.index(stm32_cmake._rule(stm32_cmake.FIRMWARE_TITLE))].rstrip("\n")
+        earlier = earlier.replace(blocks[stm32_cmake.SETTINGS_TITLE], settings)
+        earlier += "\n\n" + stm32_cmake._rule(stm32_cmake.KEPT_TITLE) + "\n" + kept + "\n"
+        self.libxr_cmake.write_text(earlier, encoding="utf-8")
+        with self.assertLogs(level="INFO") as logs:
+            rewritten = self.run_cmake_generator()
+        self.assertEqual(rewritten, stm32_cmake.render_libxr_cmake(settings, kept))
+        self.assertEqual(
+            list(stm32_cmake.split_blocks(rewritten))[-2:],
+            [stm32_cmake.FIRMWARE_TITLE, stm32_cmake.KEPT_TITLE],
+        )
+        self.assertIn("INFO:root:Updated existing LibXR.CMake for system: bare metal", logs.output)
 
     def test_the_modules_directory_follows_app_main(self):
         # 还没有生成 app_main 的工程按纯 LibXR 工程处理。
@@ -372,6 +414,21 @@ class Integration(GeneratorTestCase):
                     [entry for entry in logs.output if "XROBOT_MODULES_DIR" in entry], messages
                 )
 
+    def test_the_update_notice_names_bare_metal_in_words(self):
+        # 以前中文输出为“已按系统 None 更新现有的 LibXR.CMake”。
+        # The Chinese output used to read "已按系统 None 更新现有的 LibXR.CMake".
+        text = self.run_cmake_generator()
+        for language, message in (
+            ("en", "INFO:root:Updated existing LibXR.CMake for system: bare metal"),
+            ("zh", "INFO:root:已更新现有的 LibXR.CMake，系统：裸机"),
+        ):
+            with self.subTest(language=language), mock.patch.dict(os.environ, XR_LANG=language):
+                edited = text.replace("target_compile_features(xr PUBLIC cxx_std_20)", "# edited")
+                self.libxr_cmake.write_text(edited, encoding="utf-8")
+                with self.assertLogs(level="INFO") as logs:
+                    self.run_cmake_generator()
+                self.assertIn(message, logs.output)
+
     def test_build_directories_are_kept(self):
         (self.root / "build" / "debug").mkdir(parents=True)
         self.run_cmake_generator()
@@ -477,7 +534,7 @@ class Migration(GeneratorTestCase):
         )
         # 其余块与新文件相同。
         # The other blocks equal those of a new file.
-        for title in ("LibXR", "Application", "Library optimization"):
+        for title in ("LibXR", "Application", "Library optimization", "Firmware images"):
             self.assertEqual(
                 blocks[title], stm32_cmake.split_blocks(stm32_cmake.render_libxr_cmake(""))[title]
             )
@@ -580,6 +637,67 @@ class Migration(GeneratorTestCase):
             "    # Add user defined libraries\n    xr\n    my_lib\n)",
             blocks["Kept from the earlier LibXR.CMake"],
         )
+
+    def test_a_recursive_or_multi_pattern_glob_is_kept_with_its_target_sources(self):
+        # 以前 GLOB_RECURSE 的 file() 留在 Kept 块中而 target_sources 被删掉，多个模式只取最后
+        # 一个，User 源文件不再编译，工程链接失败（undefined reference to app_main）。
+        # A GLOB_RECURSE file() used to stay in the Kept block while its target_sources was
+        # dropped, and of several patterns only the last was taken, so the User sources were no
+        # longer compiled and the project failed to link (undefined reference to app_main).
+        glob = (
+            "file(\n    GLOB LIBXR_USER_SOURCES CONFIGURE_DEPENDS "
+            '"${CMAKE_CURRENT_SOURCE_DIR}/User/*.cpp")'
+        )
+        target = "target_sources(${CMAKE_PROJECT_NAME}\n    PRIVATE ${LIBXR_USER_SOURCES}\n)"
+        for kept in (
+            glob.replace("GLOB ", "GLOB_RECURSE "),
+            glob.replace('*.cpp")', '*.cpp" "${CMAKE_CURRENT_SOURCE_DIR}/User/*.c")'),
+        ):
+            with self.subTest(kept=kept):
+                text = self.migrate(DEVC_LIBXR_CMAKE.replace(glob, kept), GCC_TOOLCHAIN)
+                blocks = stm32_cmake.split_blocks(text)
+                self.assertIn('set(LIBXR_USER_SOURCES_GLOB "")', blocks["Project settings"])
+                self.assertTrue(
+                    blocks["Kept from the earlier LibXR.CMake"].endswith(f"{kept}\n\n{target}")
+                )
+                self.assertIn(
+                    "LibXR.CMake: the earlier file(... LIBXR_USER_SOURCES ...) is not a GLOB with "
+                    "a single pattern; it stays in the Kept block with its target_sources, and "
+                    'LIBXR_USER_SOURCES_GLOB is ""',
+                    self.log,
+                )
+        # 单一模式仍由 LIBXR_USER_SOURCES_GLOB 接管。
+        # A single pattern is still taken over by LIBXR_USER_SOURCES_GLOB.
+        text = self.migrate(DEVC_LIBXR_CMAKE, GCC_TOOLCHAIN)
+        kept = stm32_cmake.split_blocks(text)["Kept from the earlier LibXR.CMake"]
+        self.assertNotIn("LIBXR_USER_SOURCES", kept)
+        self.assertFalse([entry for entry in self.log if "single pattern" in entry])
+
+    def test_debug_options_the_user_changed_are_logged_when_dropped(self):
+        # 以前 Debug 块整块丢弃，用户改过的 xr 级别静默变回 -O2。
+        # The Debug block used to be dropped as a whole, and a level the user changed for xr
+        # silently went back to -O2.
+        old = DEVC_LIBXR_CMAKE.replace(
+            "target_compile_options(xr PRIVATE -O2)", "target_compile_options(xr PRIVATE -O1)"
+        ).replace(
+            "    if(TARGET USB_Device_Library)",
+            "    if(TARGET ThreadX)\n        target_compile_options(ThreadX PRIVATE -O0)\n"
+            "    endif()\n\n    if(TARGET USB_Device_Library)",
+        )
+        self.migrate(old, GCC_TOOLCHAIN)
+        self.assertEqual(
+            [entry for entry in self.log if "dropped" in entry],
+            [
+                f"LibXR.CMake: dropped target_compile_options({target} PRIVATE {level}) of the "
+                "Debug block in the earlier file; Debug builds now compile xr and the CubeMX "
+                "libraries at -O2"
+                for target, level in (("xr", "-O1"), ("ThreadX", "-O0"))
+            ],
+        )
+        # 旧模板的默认选项由新结构重新生成，不提示。
+        # The default options of the earlier template are generated again and not logged.
+        self.migrate(DEVC_LIBXR_CMAKE, GCC_TOOLCHAIN)
+        self.assertFalse([entry for entry in self.log if "dropped" in entry])
 
     def test_the_migrated_file_is_stable(self):
         text = self.migrate(DEVC_LIBXR_CMAKE, GCC_TOOLCHAIN, CLANG_TOOLCHAIN)

@@ -534,6 +534,17 @@ class UsbRoles(TestCase):
                     },
                 )
 
+    def test_the_usb_drd_fs_ip_records_its_handle(self):
+        # STM32G0B1 的 .ioc 中 USB 的 IP 名就是 USB_DRD_FS，参数全为默认值时只有 Mcu.IPn 一行；
+        # 以前没有记下句柄，生成器也不生成 usb_fs。
+        # The USB IP name in the .ioc file of the STM32G0B1 is USB_DRD_FS itself, and with every
+        # parameter at its default only the Mcu.IPn line is there; the handle used not to be
+        # recorded, and the generator generated no usb_fs either.
+        ioc = "Mcu.Family=STM32G0\nMcu.CPN=STM32G0B1CBU6\nMcu.IP0=USB_DRD_FS\n"
+        with self.assertLogs(level="WARNING"):
+            usb = self.parse("", ioc)["Peripherals"]["USB"]
+        self.assertEqual(usb, {"USB_DRD_FS": {"PCDHandle": "hpcd_USB_DRD_FS"}})
+
     def test_the_mode_of_a_profile_gives_the_role(self):
         # fixtures.IOC 中 USB_OTG_HS 只在 Device_Only_FS profile 下写了 VirtualMode。
         # USB_OTG_HS of fixtures.IOC writes VirtualMode only under the Device_Only_FS profile.

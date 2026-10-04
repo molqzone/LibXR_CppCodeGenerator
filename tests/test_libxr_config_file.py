@@ -110,6 +110,36 @@ class LibXRConfigFile(GeneratorTestCase):
         self.assertNotIn("device_aliases", text)
         self.assertIn("# pinned generator\ngenerator: 6.0.0\n", text)
 
+    def test_aliases_equal_to_their_device_are_not_listed(self):
+        # libxr 5.x 带 --xrobot 时每项默认只有设备名本身；以前 DevC 升级时这样的条目列出 41 行，
+        # 真正要改的别名淹没在其中。
+        # With --xrobot libxr 5.x wrote only the device name itself for each entry by default;
+        # upgrading DevC used to list 41 such lines, burying the aliases that need a change.
+        self.regenerate()
+        base = self.path.read_text(encoding="utf-8")
+        table = (
+            "device_aliases:\n"
+            "  usart1:\n    type: UART\n    aliases:\n    - usart1\n"
+            "  PC13:\n    type: GPIO\n    aliases: [PC13, LED_R]\n"
+        )
+        self.path.write_text(base.replace("SYSTEM: None\n", table + "SYSTEM: None\n"), "utf-8")
+        with self.assertLogs(level="WARNING") as logs:
+            self.regenerate()
+        self.assertEqual(logs.output[1:], ["WARNING:root:  LED_R -> PC13"])
+        identical = table.replace("[PC13, LED_R]", "[PC13]")
+        self.path.write_text(base.replace("SYSTEM: None\n", identical + "SYSTEM: None\n"), "utf-8")
+        with self.assertLogs(level="INFO") as logs:
+            text = self.regenerate()
+        self.assertEqual(
+            [entry for entry in logs.output if "device_aliases" in entry],
+            [
+                "INFO:root:libxr_config.yaml: removed device_aliases, which is no longer used; "
+                "each alias in it equals the name of its object, so nothing needs to change"
+            ],
+        )
+        self.assertNotIn("WARNING", " ".join(logs.output))
+        self.assertNotIn("device_aliases", text)
+
     def test_written_values_read_back_the_same(self):
         document, settings = config_file.parse("count: 010\nenable: yes\n", "test")
         config_file.update(document, dict(settings, mode="on", time="12:30", flag="no"))

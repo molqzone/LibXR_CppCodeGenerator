@@ -8,14 +8,16 @@ It generates cmake/LibXR.CMake as a whole, restores the ST Arm Clang toolchain f
 CubeMX wrote, and includes LibXR.CMake from CMakeLists.txt. CMake reconfigures existing build
 directories on their next build after these files change.
 
-LibXR.CMake 的结构固定：“Project settings”块在最前，其后依次是 LibXR、Application 和库的优化
-设置。重写时保留 “Project settings” 块中用户改过的值；已有的旧格式文件迁移到这个结构，设置的值
-和用到的优化级别都保留，不认识的语句放在末尾的 “Kept” 块中保留。
+LibXR.CMake 的结构固定：“Project settings”块在最前，其后依次是 LibXR、Application、库的优化
+设置和固件镜像（链接后由 ELF 生成 .hex 和 .bin）。重写时保留 “Project settings” 块中用户改过的
+值；已有的旧格式文件迁移到这个结构，设置的值和用到的优化级别都保留，不认识的语句放在末尾的
+“Kept” 块中保留。
 The structure of LibXR.CMake is fixed: the "Project settings" block comes first, followed by
-LibXR, Application and the optimization of the libraries. Rewriting keeps the values the user
-changed in the "Project settings" block; a file in an earlier format migrates to this
-structure, keeping the values of the settings and the optimization levels it uses, and the
-statements it does not recognize are kept in a "Kept" block at the end.
+LibXR, Application, the optimization of the libraries and the firmware images (the .hex and
+.bin made from the ELF after linking). Rewriting keeps the values the user changed in the
+"Project settings" block; a file in an earlier format migrates to this structure, keeping the
+values of the settings and the optimization levels it uses, and the statements it does not
+recognize are kept in a "Kept" block at the end.
 """
 
 import logging
@@ -42,6 +44,7 @@ SETTINGS_TITLE = "Project settings"
 LIBXR_TITLE = "LibXR"
 APPLICATION_TITLE = "Application"
 OPTIMIZATION_TITLE = "Library optimization"
+FIRMWARE_TITLE = "Firmware images"
 KEPT_TITLE = "Kept from the earlier LibXR.CMake"
 # 新工程的默认优化级别：应用代码在 Debug 构建中的级别和 Release 构建的级别；空字符串表示沿用
 # 工具链文件中的级别（CubeMX 写出的 gcc 为 -Os，ST Arm Clang 为 -Oz）。
@@ -97,6 +100,20 @@ foreach(library IN LISTS LIBXR_LIBRARIES)
     target_compile_options(${library} PRIVATE
         $<$<CONFIG:Debug>:-O2> $<$<CONFIG:Release>:${LIBXR_OPT_RELEASE}>)
 endforeach()"""
+
+# 链接后由 ELF 生成 <工程名>.hex（Intel HEX）和 <工程名>.bin（二进制镜像），与 ELF 在同一目录；
+# CMAKE_OBJCOPY 来自 CubeMX 的工具链文件。
+# After linking, <project>.hex (Intel HEX) and <project>.bin (binary image) are made from the ELF
+# in its directory; CMAKE_OBJCOPY comes from the CubeMX toolchain file.
+FIRMWARE_BLOCK = """\
+# Each link of the application also writes <project>.hex and <project>.bin next to the ELF.
+add_custom_command(TARGET ${CMAKE_PROJECT_NAME} POST_BUILD
+    WORKING_DIRECTORY $<TARGET_FILE_DIR:${CMAKE_PROJECT_NAME}>
+    COMMAND ${CMAKE_OBJCOPY} --output-target ihex
+        $<TARGET_FILE_NAME:${CMAKE_PROJECT_NAME}> ${CMAKE_PROJECT_NAME}.hex
+    COMMAND ${CMAKE_OBJCOPY} --output-target binary --strip-all
+        $<TARGET_FILE_NAME:${CMAKE_PROJECT_NAME}> ${CMAKE_PROJECT_NAME}.bin
+    VERBATIM)"""
 
 include_cmake_cmd = "include(${CMAKE_CURRENT_LIST_DIR}/cmake/LibXR.CMake)\n"
 
@@ -198,6 +215,9 @@ def render_libxr_cmake(settings: str, kept: str = "") -> str:
         "",
         _rule(OPTIMIZATION_TITLE),
         OPTIMIZATION_BLOCK,
+        "",
+        _rule(FIRMWARE_TITLE),
+        FIRMWARE_BLOCK,
     ]
     if kept.strip():
         parts += ["", _rule(KEPT_TITLE), kept.strip("\n")]
@@ -371,6 +391,35 @@ _TEMPLATE_VARIABLES = frozenset(
     }
 )
 _OPTIMIZATION = re.compile(r"-O(?:[0-3gsz]|fast)\b")
+# 旧模板 Debug 块中库的默认选项（目标 PRIVATE -O2）；新结构的 “Library optimization” 块同样以
+# -O2 编译它们，迁移时丢弃不必提示。
+# The default library options of the Debug block of the earlier templates (target PRIVATE -O2);
+# the "Library optimization" block of the new structure compiles them at -O2 too, so dropping
+# them needs no notice.
+_TEMPLATE_DEBUG_LIBRARIES = frozenset({"xr", "FreeRTOS", "STM32_Drivers", "USB_Device_Library"})
+_USER_SOURCES_TARGET = "target_sources(${CMAKE_PROJECT_NAME} PRIVATE ${LIBXR_USER_SOURCES})"
+
+
+def _user_sources_glob(arguments: list[str]) -> str | None:
+    """file() 的参数 arguments 是否给 LIBXR_USER_SOURCES 收集文件：是 GLOB 且只有一个模式（可带
+    CONFIGURE_DEPENDS）时返回这个模式，是 GLOB_RECURSE、多个模式或带其他选项时返回空字符串，
+    不是收集 LIBXR_USER_SOURCES 的 file() 时返回 None。
+    Whether the arguments of a file() call collect LIBXR_USER_SOURCES: the pattern for a GLOB with
+    a single pattern (CONFIGURE_DEPENDS allowed), an empty string for GLOB_RECURSE, several
+    patterns or other options, and None for a file() that does not collect LIBXR_USER_SOURCES.
+
+    只有单一模式能写进 LIBXR_USER_SOURCES_GLOB；其余写法整条保留，见 migrate_libxr_cmake()。
+    Only a single pattern fits LIBXR_USER_SOURCES_GLOB; any other spelling is kept as a whole, see
+    migrate_libxr_cmake().
+    """
+    if len(arguments) < 2 or arguments[0] not in ("GLOB", "GLOB_RECURSE"):
+        return None
+    if arguments[1] != "LIBXR_USER_SOURCES":
+        return None
+    patterns = [argument for argument in arguments[2:] if argument != "CONFIGURE_DEPENDS"]
+    if arguments[0] != "GLOB" or len(patterns) != 1:
+        return ""
+    return patterns[0].strip('"')
 
 
 def _canonical(text: str) -> str:
@@ -411,6 +460,39 @@ def _is_debug_block(text: str) -> bool:
         if not (option or target_test or end):
             return False
     return True
+
+
+def _migrate_debug_block(text: str) -> str | None:
+    """取出旧模板 Debug 块中应用目标的 -O 级别（没有时为 None），并逐条记录被丢弃的其他选项。
+    Take the -O level of the application target from a Debug block of the earlier templates
+    (None without one) and log every other option that is dropped.
+
+    旧模板默认的库选项（_TEMPLATE_DEBUG_LIBRARIES 中的目标 -O2）由新结构重新生成，不记录；用户
+    改过的级别和加入的目标被丢弃，每条记一条说明。
+    The default library options of the earlier templates (-O2 for the targets in
+    _TEMPLATE_DEBUG_LIBRARIES) are generated again and not logged; levels the user changed and
+    targets the user added are dropped, with one notice each.
+    """
+    app_debug = None
+    for name, args, _, _ in cmake_text.commands(text):
+        if name != "target_compile_options":
+            continue
+        target, _, level = args.split()
+        if target == "${CMAKE_PROJECT_NAME}":
+            app_debug = level
+            continue
+        if target in _TEMPLATE_DEBUG_LIBRARIES and level == "-O2":
+            continue
+        option = f"target_compile_options({target} PRIVATE {level})"
+        logging.info(
+            tr(
+                f"LibXR.CMake: dropped {option} of the Debug block in the earlier file; Debug "
+                "builds now compile xr and the CubeMX libraries at -O2",
+                f"LibXR.CMake：已丢弃旧文件 Debug 块中的 {option}；Debug 构建现在以 -O2 编译 xr "
+                "和 CubeMX 生成的库",
+            )
+        )
+    return app_debug
 
 
 def _toolchain_level(text: str, configuration: str) -> str | None:
@@ -466,15 +548,23 @@ def migrate_libxr_cmake(content: str, cmake_dir: str) -> tuple[str, str]:
 
     保留旧文件的 LIBXR_DRIVER 和 XROBOT_MODULES_DIR；Debug 优化级别取旧文件中应用目标的 -O 选项，
     没有时取工具链文件的 Debug 级别，Release 级别取工具链文件的（见 toolchain_level()），再没有
-    就留空，由各工具链文件决定，与迁移前相同。旧模板中会重新生成的语句被丢弃。其余语句不丢：
-    add_subdirectory(LibXR) 之前的放在设置块中，之后的放在 “Kept” 块中，并各记录一条说明。
+    就留空，由各工具链文件决定，与迁移前相同。旧模板中会重新生成的语句被丢弃；Debug 块中用户改过
+    的选项也被丢弃，每条记录一条说明（见 _migrate_debug_block()）。User 源文件的
+    file(GLOB LIBXR_USER_SOURCES <模式>) 只有一个模式时写进 LIBXR_USER_SOURCES_GLOB；GLOB_RECURSE
+    或多个模式时整条保留，与它的 target_sources 一起放进 “Kept” 块，LIBXR_USER_SOURCES_GLOB 为空。
+    其余语句不丢：add_subdirectory(LibXR) 之前的放在设置块中，之后的放在 “Kept” 块中，并各记录
+    一条说明。
     The old LIBXR_DRIVER and XROBOT_MODULES_DIR are kept; the Debug level is the -O option of the
     application target in the old file, or the Debug level of the toolchain files without one,
     and the Release level is that of the toolchain files (see toolchain_level()); without a level
     the setting stays empty and the toolchain files decide, as before the migration. The
-    statements of the earlier templates that are generated again are dropped. No other statement
-    is lost: those before add_subdirectory(LibXR) go into the settings block and those after it
-    into the "Kept" block, with a notice each.
+    statements of the earlier templates that are generated again are dropped; options the user
+    changed in the Debug block are dropped too, with a notice each (see _migrate_debug_block()).
+    A file(GLOB LIBXR_USER_SOURCES <pattern>) of the User sources with a single pattern goes into
+    LIBXR_USER_SOURCES_GLOB; a GLOB_RECURSE or several patterns are kept as a whole, together
+    with their target_sources, in the "Kept" block, and LIBXR_USER_SOURCES_GLOB is empty. No other
+    statement is lost: those before add_subdirectory(LibXR) go into the settings block and those
+    after it into the "Kept" block, with a notice each.
     """
     driver = "st"
     modules_dir = None
@@ -486,6 +576,28 @@ def migrate_libxr_cmake(content: str, cmake_dir: str) -> tuple[str, str]:
     before: list[str] = []
     after: list[str] = []
     parsed = cmake_text.statements(content)
+    globs = [
+        _user_sources_glob(statement.args.split())
+        for statement in parsed
+        if statement.name == "file"
+    ]
+    globs = [glob for glob in globs if glob is not None]
+    # 只有一条单一模式的 file(GLOB ...) 时由 LIBXR_USER_SOURCES_GLOB 接管，它的 target_sources 随之
+    # 丢弃；否则 file() 和 target_sources 都保留，User 源文件照旧加入工程。
+    # Only a single file(GLOB ...) with one pattern is taken over by LIBXR_USER_SOURCES_GLOB,
+    # and its target_sources is dropped with it; otherwise both file() and target_sources are
+    # kept, and the User sources join the project as before.
+    taken_over = len(globs) == 1 and bool(globs[0])
+    if globs and not taken_over:
+        logging.info(
+            tr(
+                "LibXR.CMake: the earlier file(... LIBXR_USER_SOURCES ...) is not a GLOB with a "
+                "single pattern; it stays in the Kept block with its target_sources, and "
+                'LIBXR_USER_SOURCES_GLOB is ""',
+                "LibXR.CMake：旧文件中的 file(... LIBXR_USER_SOURCES ...) 不是单一模式的 GLOB，"
+                '与它的 target_sources 一起保留在 Kept 块中，LIBXR_USER_SOURCES_GLOB 为 ""',
+            )
+        )
     library_at = next(
         (
             index
@@ -506,16 +618,19 @@ def migrate_libxr_cmake(content: str, cmake_dir: str) -> tuple[str, str]:
             continue
         if index == library_at:
             continue
-        if statement.name == "file" and arguments[:2] == ["GLOB", "LIBXR_USER_SOURCES"]:
-            user_sources = arguments[-1].strip('"')
+        is_glob = statement.name == "file" and _user_sources_glob(arguments) is not None
+        if is_glob and taken_over:
+            user_sources = globs[0]
             continue
-        if _canonical(text) in _TEMPLATE_STATEMENTS:
+        canonical = _canonical(text)
+        if (
+            canonical in _TEMPLATE_STATEMENTS
+            and not is_glob
+            and (taken_over or not globs or canonical != _USER_SOURCES_TARGET)
+        ):
             continue
         if statement.name == "if" and _is_debug_block(text):
-            for name, args, _, _ in cmake_text.commands(text):
-                parts = args.split()
-                if name == "target_compile_options" and parts[0] == "${CMAKE_PROJECT_NAME}":
-                    app_debug = parts[2]
+            app_debug = _migrate_debug_block(text)
             continue
         kept = content[statement.leading : statement.end].strip("\n")
         settings_side = library_at is None or index < library_at
@@ -583,10 +698,13 @@ def update_or_create_libxr_cmake(file_path: str, system: str, use_xrobot: bool) 
     new_content = render_libxr_cmake(settings, kept)
     if new_content != content.replace("\r\n", "\n"):
         cmake_path.write_text(new_content, encoding="utf-8", newline="\n")
+        # LIBXR_SYSTEM None 表示裸机，与生成代码时的“系统：裸机”一致。
+        # LIBXR_SYSTEM None means bare metal, as in "System: bare metal" of the code generation.
+        bare = system == "None"
         logging.info(
             tr(
-                f"Updated existing LibXR.CMake for system: {system}",
-                f"已按系统 {system} 更新现有的 LibXR.CMake",
+                f"Updated existing LibXR.CMake for system: {'bare metal' if bare else system}",
+                f"已更新现有的 LibXR.CMake，系统：{'裸机' if bare else system}",
             )
         )
     else:

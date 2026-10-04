@@ -93,6 +93,122 @@ class EntrySource(GeneratorTestCase):
         )
         self.assertIn("// XROBOT_MAIN(); now follows this region", self.generate(existing=old))
 
+    def test_xrobot_empties_the_default_loop_of_a_libxr_only_entry(self):
+        # 以前从只用 LibXR 的工程切到 --xrobot 时，User Code 3 保留默认的无限循环，其后的
+        # XROBOT_MAIN() 永远执行不到，生成和构建都没有提示。5.x 版本把循环写成
+        # while(true) { ... }。
+        # Switching a LibXR-only project to --xrobot used to keep the endless default loop in
+        # User Code 3, so the XROBOT_MAIN() after it never ran, and neither generation nor the
+        # build said so. Versions 5.x wrote the loop as while(true) { ... }.
+        libxr_only = self.generate(use_xrobot=False)
+        layout_5 = libxr_only.replace(
+            user_region(libxr_only, 3), "while(true) {\n    Thread::Sleep(UINT32_MAX);\n  }"
+        )
+        self.assertNotEqual(layout_5, libxr_only)
+        for name, existing in (("6.x", libxr_only), ("5.x", layout_5)):
+            with self.subTest(layout=name):
+                code = self.generate(existing=existing)
+                self.assertEqual(user_region(code, 3), "")
+                self.assertTrue(
+                    code.endswith(
+                        "  /* User Code Begin 3 */\n  /* User Code End 3 */\n  XROBOT_MAIN();\n}\n"
+                    )
+                )
+                self.assertEqual(code, self.generate(existing=code))
+        self.assertEqual(self.generate(use_xrobot=False, existing=libxr_only), libxr_only)
+
+    def test_xrobot_keeps_any_other_user_code_3(self):
+        libxr_only = self.generate(use_xrobot=False)
+        for old, new in (
+            ("Thread::Sleep(UINT32_MAX);", "Thread::Sleep(1000);"),
+            ("  /* User Code End 3 */", "  // keep the loop\n  /* User Code End 3 */"),
+        ):
+            existing = libxr_only.replace(old, new)
+            with self.subTest(new=new):
+                self.assertEqual(
+                    user_region(self.generate(existing=existing), 3), user_region(existing, 3)
+                )
+
+    def test_xrobot_empties_the_xrobot_main_call_of_libxr_5(self):
+        # libxr 5.2.4 带 --xrobot 生成的 User Code 3 是 XRobotMain(peripherals);。以前它原样留在
+        # 区域中，其后再追加 XROBOT_MAIN()，生成成功而编译报 peripherals 未声明。
+        # With --xrobot libxr 5.2.4 generated XRobotMain(peripherals); as User Code 3. It used
+        # to stay in the region with XROBOT_MAIN() added after it, so generation succeeded and
+        # the build failed on the undeclared peripherals.
+        code = self.generate()
+        for body in ("XRobotMain(peripherals);", "XRobotMain( peripherals )\n  ;"):
+            existing = code.replace(
+                "/* User Code Begin 3 */", f"/* User Code Begin 3 */\n  {body}", 1
+            )
+            with self.subTest(body=body), self.assertLogs(level="INFO") as logs:
+                self.assertEqual(self.generate(existing=existing), code)
+            self.assertIn(
+                "INFO:root:User Code 3: removed XRobotMain(peripherals);, the default of libxr "
+                "5.x; XROBOT_MAIN() after the User Code regions replaces it",
+                logs.output,
+            )
+
+    def test_other_uses_of_the_hardware_container_stop_generation(self):
+        # LibXR 已删除 HardwareContainer；以前这样的 User Code 原样保留，到编译时才失败。
+        # LibXR no longer has HardwareContainer; such User Code used to be kept as it was and
+        # failed only in the build.
+        existing = (
+            self.generate()
+            .replace(
+                "/* User Code Begin 1 */",
+                "/* User Code Begin 1 */\n"
+                "static LibXR::HardwareContainer* hardware;  // HardwareContainer, in a comment",
+                1,
+            )
+            .replace(
+                "/* User Code Begin 2 */",
+                '/* User Code Begin 2 */\n  Log("peripherals.Find");\n'
+                "  auto* uart = peripherals.template Find<LibXR::UART>({});",
+                1,
+            )
+            .replace(
+                "/* User Code Begin 3 */",
+                "/* User Code Begin 3 */\n  Prepare();\n  XRobotMain(peripherals);",
+                1,
+            )
+        )
+        lines = existing.splitlines()
+
+        def line(text):
+            """existing 中含 text 的第一行的行号。
+            The number of the first line of existing that holds text.
+            """
+            return next(number for number, value in enumerate(lines, 1) if text in value)
+
+        message = (
+            "User Code still uses the HardwareContainer of libxr 5.x, which LibXR no longer has; "
+            "nothing was written. With --xrobot the generator registers the objects with "
+            "XR_REGISTER and calls XROBOT_MAIN() after the User Code regions, which replaces "
+            "XRobotMain(peripherals). Remove these uses and regenerate:\n"
+            f"  line {line('hardware;')}: User Code 1 uses HardwareContainer\n"
+            f"  line {line('auto* uart')}: User Code 2 uses peripherals.\n"
+            f"  line {line('XRobotMain')}: User Code 3 uses XRobotMain(...)"
+        )
+        for use_xrobot in (True, False):
+            with (
+                self.subTest(use_xrobot=use_xrobot),
+                self.assertRaisesMessage(ValueError, message),
+            ):
+                self.generate(use_xrobot=use_xrobot, existing=existing)
+        # 不带 --xrobot 时，5.x 的默认内容也被拒绝：没有其后的 XROBOT_MAIN() 来取代它。
+        # Without --xrobot the default of 5.x is rejected as well: no XROBOT_MAIN() after it
+        # replaces it.
+        libxr_only = self.generate(use_xrobot=False)
+        existing = libxr_only.replace(user_region(libxr_only, 3), "XRobotMain(peripherals);")
+        with self.assertRaises(ValueError) as context:
+            self.generate(use_xrobot=False, existing=existing)
+        self.assertTrue(
+            str(context.exception).endswith(
+                f"\n  line {existing.splitlines().index('  XRobotMain(peripherals);') + 1}: "
+                "User Code 3 uses XRobotMain(...)"
+            )
+        )
+
     def test_user_blocks_are_kept_across_regenerations(self):
         old = textwrap.dedent("""\
             /* User Code Begin 1 */
@@ -533,6 +649,22 @@ class PeripheralObjects(GeneratorTestCase):
         self.assertIn("extern PCD_HandleTypeDef hpcd_USB_DRD_FS;", code)
         self.assertIn("static STM32USBDeviceDevFs usb_fs(&hpcd_USB_DRD_FS,", code)
 
+    def test_the_usb_drd_fs_instance_is_the_usb_fs_device(self):
+        # STM32G0B1 的 .ioc 中 USB 的 IP 名是 USB_DRD_FS，参数全为默认值时没有 VirtualMode；以前
+        # 生成器不认这个实例名，不生成 USB 设备。
+        # The USB IP name in the .ioc file of the STM32G0B1 is USB_DRD_FS, with no VirtualMode
+        # while every parameter is at its default; the generator used not to know this instance
+        # name and generated no USB device.
+        project = self.project(
+            peripherals={"USB": {"USB_DRD_FS": {"PCDHandle": "hpcd_USB_DRD_FS"}}},
+            mcu="STM32G0B1CBU6",
+            family="STM32G0",
+        )
+        code = self.generate(project, use_xrobot=False)
+        self.assertIn("extern PCD_HandleTypeDef hpcd_USB_DRD_FS;", code)
+        self.assertIn("static STM32USBDeviceDevFs usb_fs(&hpcd_USB_DRD_FS,", code)
+        self.assertTrue(generator.libxr_settings["USB"]["usb_fs"]["enable"])
+
     def test_a_usb_in_host_mode_generates_no_device(self):
         with self.assertLogs(level="WARNING") as logs:
             code = self.generate(self.usb_fs("Host"), use_xrobot=False)
@@ -576,6 +708,22 @@ class PeripheralObjects(GeneratorTestCase):
                 self.assertEqual("static STM32USBDeviceOtgFS usb_otg_fs(" in code, enabled)
                 if notice:
                     self.assertEqual(logs.output, notice)
+
+    def test_an_unknown_usb_instance_is_warned_about(self):
+        # 以前认不出的 USB 实例（例如曾经的 USB_DRD_FS）不生成设备，也没有任何提示。
+        # An unrecognized USB instance (such as USB_DRD_FS once was) used to get no device, and
+        # nothing said so.
+        usb = {"USB_XYZ": {"Role": "Device"}, "USB_DEVICE": {}, "USBPD": {}}
+        with self.assertLogs(level="WARNING") as logs:
+            code = self.generate(self.project(peripherals={"USB": usb}), use_xrobot=False)
+        self.assertNotIn("STM32USBDevice", code)
+        self.assertEqual(
+            logs.output,
+            [
+                "WARNING:root:USB instance 'USB_XYZ' is not one the generator knows (USB, USB_FS, "
+                "USB_DRD_FS, USB_HS, USB_OTG_FS, USB_OTG_HS); no USB device is generated for it"
+            ],
+        )
 
     def test_a_terminal_on_a_port_that_is_not_generated_is_not_initialized(self):
         # 终端串口是未生成的 USB 实例的 CDC 串口时，警告写出要修改的键。
@@ -687,6 +835,68 @@ class PeripheralObjects(GeneratorTestCase):
             code,
         )
         self.assertNotIn("static_cast<Thread::Priority>", code)
+
+    def test_a_priority_number_whose_rtos_priority_changed_is_noted(self):
+        # libxr 5.x 把 software_timer.priority 等整数原样交给 RTOS；现在它是等级，
+        # configMAX_PRIORITIES 为 56 时 2 成了 22，ThreadX 上 2 成了 12，以前生成时没有提示。
+        # libxr 5.x passed integers such as software_timer.priority to the RTOS as they were;
+        # now they are levels, so 2 became 22 with configMAX_PRIORITIES 56 and 12 on ThreadX,
+        # and generation used to say nothing.
+        def note(system, priority, count):
+            """software_timer.priority 2 的说明。
+            The notice for software_timer.priority 2.
+            """
+            return (
+                f"INFO:root:software_timer.priority 2 is the priority level MEDIUM, which is "
+                f"{system} priority {priority} with {count}; libxr 5.x passed 2 to {system} as "
+                "it was"
+            )
+
+        for system, count, priority, notes in (
+            ("FreeRTOS", 56, 2, [note("FreeRTOS", 22, "configMAX_PRIORITIES 56")]),
+            ("FreeRTOS", 7, 2, []),
+            ("FreeRTOS", None, 2, []),
+            ("ThreadX", 32, 2, [note("ThreadX", 12, "TX_MAX_PRIORITIES 32")]),
+            # 等级名的含义没有变化，不提示。
+            # A level name kept its meaning and gets no notice.
+            ("FreeRTOS", 56, "MEDIUM", []),
+        ):
+            with self.subTest(system=system, count=count, priority=priority):
+                self.setUp()
+                generator.libxr_settings["SYSTEM"] = system
+                generator.libxr_settings["software_timer"]["priority"] = priority
+                generator.rtos_priorities = count
+                with self.assertLogs(level="INFO") as logs:
+                    logging_marker()
+                    code = self.generate()
+                self.assertIn("Thread::Priority::MEDIUM", code)
+                self.assertEqual([entry for entry in logs.output if "level" in entry], notes)
+
+    def test_the_rtos_priority_count_comes_from_the_project_header(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        (root / "Core" / "Inc").mkdir(parents=True)
+        for system, header, text, count in (
+            (
+                "FreeRTOS",
+                "FreeRTOSConfig.h",
+                "/* #define configMAX_PRIORITIES 9 */\n"
+                "#define configMAX_PRIORITIES                     ( 56 )\n",
+                56,
+            ),
+            ("ThreadX", "tx_user.h", "/*#define TX_MAX_PRIORITIES                32*/\n", 32),
+            ("ThreadX", "tx_user.h", "#define TX_MAX_PRIORITIES 64\n", 64),
+            ("None", "FreeRTOSConfig.h", "#define configMAX_PRIORITIES 7\n", None),
+        ):
+            with self.subTest(system=system, text=text):
+                (root / "Core" / "Inc" / header).write_text(text, encoding="utf-8")
+                generator.libxr_settings["SYSTEM"] = system
+                self.assertEqual(
+                    generator.read_rtos_priorities([str(root / "missing"), str(root)]), count
+                )
+        generator.libxr_settings["SYSTEM"] = "FreeRTOS"
+        self.assertIsNone(generator.read_rtos_priorities([str(root / "missing")]))
 
     def test_bare_metal_platform_init_takes_no_priority(self):
         generator.libxr_settings["software_timer"]["priority"] = 9
@@ -859,15 +1069,49 @@ class Database(GeneratorTestCase):
         self.assertIn('#include "stm32_flash.hpp"\n', code)
 
     def test_the_block_size_is_the_template_argument(self):
-        generator.libxr_settings["database"] = {"enable": True, "block_size": 32}
-        self.assertIn("  static DatabaseRaw<32> database(flash);\n", self.generate())
+        # 已有配置中的数值照旧生成，例如 DevC 的 1 和 MC02 的 32。
+        # Numbers in existing configurations generate as before, such as 1 of DevC and 32 of
+        # MC02.
+        for block_size, argument in ((1, "1"), (32, "32"), ("0x20", "32")):
+            with self.subTest(block_size=block_size):
+                self.setUp()
+                generator.libxr_settings["database"] = {"enable": True, "block_size": block_size}
+                self.assertIn(
+                    f"  static DatabaseRaw<{argument}> database(flash);\n", self.generate()
+                )
+                self.assertEqual(generator.libxr_settings["database"]["block_size"], block_size)
+
+    def test_the_default_block_size_is_the_minimum_write_unit_of_the_flash(self):
+        # 以前默认为 1，而 DatabaseRaw 要求模板参数不小于 Flash 的最小写入单元，F1 为 2、H7 为 32，
+        # 在这些芯片上打开数据库即断言失败。
+        # The default used to be 1, while DatabaseRaw needs a template argument no smaller than
+        # the minimum write unit of the Flash, 2 on F1 and 32 on H7; enabling the database
+        # failed an assertion on those chips.
+        generator.libxr_settings["database"] = {"enable": True}
+        self.assertIn(
+            "  static STM32Flash flash(FLASH_REGIONS, FLASH_REGION_NUMBER);\n"
+            "  static DatabaseRaw<STM32Flash::MIN_WRITE_SIZE> database(flash);\n",
+            self.generate(),
+        )
+        self.assertEqual(
+            generator.libxr_settings["database"], {"enable": True, "block_size": "auto"}
+        )
+
+    def test_auto_is_not_case_sensitive(self):
+        for block_size in ("auto", "AUTO", " Auto "):
+            with self.subTest(block_size=block_size):
+                self.setUp()
+                generator.libxr_settings["database"] = {"enable": True, "block_size": block_size}
+                self.assertIn("DatabaseRaw<STM32Flash::MIN_WRITE_SIZE>", self.generate())
 
     def test_a_disabled_database_adds_nothing_and_is_listed_in_the_settings(self):
         code = self.generate()
         for text in ("STM32Flash", "DatabaseRaw", "flash_map.hpp", "stm32_flash.hpp"):
             with self.subTest(text=text):
                 self.assertNotIn(text, code)
-        self.assertEqual(generator.libxr_settings["database"], {"enable": False, "block_size": 1})
+        self.assertEqual(
+            generator.libxr_settings["database"], {"enable": False, "block_size": "auto"}
+        )
 
     def test_the_database_comes_after_the_terminal_and_before_the_registrations(self):
         generator.libxr_settings["database"] = {"enable": True}
@@ -889,14 +1133,33 @@ class Database(GeneratorTestCase):
     def test_invalid_settings_are_rejected(self):
         for settings, problem in (
             ({"enable": "yes"}, "database.enable 'yes' is not true or false"),
-            ({"enable": True, "block_size": 0}, "database.block_size 0 is not a positive integer"),
-            ({"block_size": "wide"}, "database.block_size 'wide' is not a positive integer"),
+            (
+                {"enable": True, "block_size": 0},
+                "database.block_size 0 is not auto or a positive integer",
+            ),
+            (
+                {"block_size": "wide"},
+                "database.block_size 'wide' is not auto or a positive integer",
+            ),
+            ({"block_size": True}, "database.block_size True is not auto or a positive integer"),
+            ({"block_size": None}, "database.block_size None is not auto or a positive integer"),
         ):
             with self.subTest(settings=settings):
                 self.setUp()
                 generator.libxr_settings["database"] = settings
                 with self.assertRaisesMessage(LibXRConfigError, f"libxr_config.yaml: {problem}"):
                     self.generate()
+
+    def test_the_block_size_message_names_both_forms_in_chinese(self):
+        generator.libxr_settings["database"] = {"block_size": "wide"}
+        with (
+            mock.patch.dict(os.environ, XR_LANG="zh"),
+            self.assertRaisesMessage(
+                LibXRConfigError,
+                "libxr_config.yaml：database.block_size 'wide' 不是正整数或 auto",
+            ),
+        ):
+            self.generate()
 
     def test_a_gpio_label_cannot_take_the_name_of_the_database(self):
         generator.libxr_settings["database"] = {"enable": True}
@@ -974,6 +1237,52 @@ class UserCodeNames(GeneratorTestCase):
         # htim7 is not used, and the project has no ADC9.
         self.assertNotIn("extern TIM_HandleTypeDef htim7;", code)
         self.assertNotIn("extern ADC_HandleTypeDef", code)
+
+    def test_renamed_flash_names_are_warned_about(self):
+        # 5.2.4 时期的官网让 User Code 写 STM32Flash flash(FLASH_SECTORS, FLASH_SECTOR_NUMBER);；
+        # 这些名字改名后，生成成功而编译失败，以前没有提示。
+        # The website of the 5.2.4 era had User Code write STM32Flash flash(FLASH_SECTORS,
+        # FLASH_SECTOR_NUMBER);. After these names were renamed, generation succeeded and the
+        # build failed, and nothing used to say so.
+        existing = self.existing(
+            "  static STM32Flash flash(FLASH_SECTORS, FLASH_SECTOR_NUMBER);\n"
+            "  // FlashSector in a comment does not count\n"
+        )
+        with self.assertLogs(level="WARNING") as logs:
+            code = self.generate(existing=existing)
+        self.assertEqual(user_region(code, 3), user_region(existing, 3))
+        self.assertEqual(
+            logs.output,
+            [
+                "WARNING:root:User Code uses names of libxr 5.x that LibXR renamed: "
+                "FLASH_SECTORS -> FLASH_REGIONS, FLASH_SECTOR_NUMBER -> FLASH_REGION_NUMBER; the "
+                "third argument of STM32Flash is now the start address of the storage area "
+                "instead of a sector index"
+            ],
+        )
+
+    def test_the_old_name_of_a_usb_otg_device_is_warned_about(self):
+        # libxr 5.x 按速度把 OTG FS 设备对象命名为 usb_fs，现在按实例命名为 usb_otg_fs。
+        # libxr 5.x named the OTG FS device object usb_fs after its speed; it is now usb_otg_fs
+        # after its instance.
+        existing = self.existing("  usb_fs.Stop(false);\n")
+        otg = self.project(peripherals={"USB": {"USB_OTG_FS": {"Role": "Device"}}})
+        with self.assertLogs(level="WARNING") as logs:
+            self.generate(otg, existing=existing)
+        self.assertEqual(
+            logs.output,
+            [
+                "WARNING:root:User Code uses usb_fs: the USB OTG device object is now named "
+                "usb_otg_fs after its instance (libxr 5.x named it usb_fs after its speed)"
+            ],
+        )
+        # USB（FSDEV）的设备对象仍叫 usb_fs。
+        # The device object of USB (FSDEV) is still usb_fs.
+        fsdev = self.project(
+            peripherals={"USB": {"USB": {"Role": "Device"}}}, mcu="STM32F103C8T6", family="STM32F1"
+        )
+        with self.assertNoLogs(level="WARNING"):
+            self.generate(fsdev, existing=existing)
 
     def test_existing_code_with_a_faulty_marker_is_still_reported(self):
         existing = self.generate().replace("/* User Code End 3 */", "/* User Code End 4 */")
@@ -1287,11 +1596,12 @@ class GenerationRuns(GeneratorTestCase):
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
 
-    def run_generator(self, name, project, config=None):
-        """在 root/<name> 中由 project 生成（config 为 libxr_config.yaml 的初始内容），返回
-        User 目录和日志。
+    def run_generator(self, name, project, config=None, use_xrobot=False):
+        """在 root/<name> 中由 project 生成（config 为 libxr_config.yaml 的初始内容，use_xrobot
+        对应 --xrobot），返回 User 目录和日志。
         Generate from project in root/<name>, config being the initial content of
-        libxr_config.yaml; return the User directory and the log.
+        libxr_config.yaml and use_xrobot standing for --xrobot; return the User directory and
+        the log.
         """
         directory = self.root / name
         user = directory / "User"
@@ -1300,7 +1610,9 @@ class GenerationRuns(GeneratorTestCase):
         if config is not None:
             (user / "libxr_config.yaml").write_text(config, encoding="utf-8")
         with self.assertLogs(level="INFO") as logs:
-            generator.generate(str(directory / "cubemx.yaml"), str(user / "app_main.cpp"))
+            generator.generate(
+                str(directory / "cubemx.yaml"), str(user / "app_main.cpp"), use_xrobot
+            )
         return user, logs.output
 
     def config(self, user):
@@ -1323,6 +1635,57 @@ class GenerationRuns(GeneratorTestCase):
             logs[-1],
             f"INFO:root:Generated {os.path.normpath(user)}: unchanged app_main.cpp, app_main.h, "
             "flash_map.hpp, libxr_config.yaml",
+        )
+
+    def test_switching_to_xrobot_lets_xrobot_main_run(self):
+        # 文档中的流程：先不带 --xrobot 生成，再带 --xrobot 生成。以前 User Code 3 中的默认
+        # 循环留在 XROBOT_MAIN() 之前，模块从不运行。
+        # The documented sequence: generate without --xrobot, then with --xrobot. The default
+        # loop of User Code 3 used to stay in front of XROBOT_MAIN(), and no Module ever ran.
+        user, _ = self.run_generator("demo", self.project())
+        source = user / "app_main.cpp"
+        self.assertIn("Thread::Sleep(UINT32_MAX);", source.read_text(encoding="utf-8"))
+        self.run_generator("demo", self.project(), use_xrobot=True)
+        code = source.read_text(encoding="utf-8")
+        self.assertEqual(user_region(code, 3), "")
+        self.assertIn("  /* User Code End 3 */\n  XROBOT_MAIN();\n}\n", code)
+        self.assertNotIn("Thread::Sleep", code)
+        _, logs = self.run_generator("demo", self.project(), use_xrobot=True)
+        self.assertEqual(
+            logs[-1],
+            f"INFO:root:Generated {os.path.normpath(user)}: unchanged app_main.cpp, app_main.h, "
+            "flash_map.hpp, libxr_config.yaml",
+        )
+
+    def test_a_hardware_container_left_in_user_code_writes_nothing(self):
+        user = self.root / "demo" / "User"
+        user.mkdir(parents=True)
+        project = self.root / "demo" / "cubemx.yaml"
+        project.write_text(yaml.safe_dump(self.project()), encoding="utf-8")
+        existing = generator.generate_full_code(self.project(), True, "").replace(
+            "/* User Code Begin 2 */", "/* User Code Begin 2 */\n  peripherals.Init();", 1
+        )
+        (user / "app_main.cpp").write_text(existing, encoding="utf-8")
+        with self.assertLogs(level="ERROR") as logs, self.assertRaises(SystemExit):
+            generator.generate(str(project), str(user / "app_main.cpp"), True)
+        line = existing.splitlines().index("  peripherals.Init();") + 1
+        self.assertTrue(logs.output[0].endswith(f"line {line}: User Code 2 uses peripherals."))
+        self.assertEqual(sorted(path.name for path in user.iterdir()), ["app_main.cpp"])
+        self.assertEqual((user / "app_main.cpp").read_text(encoding="utf-8"), existing)
+
+    def test_the_priority_notice_reads_the_rtos_header_of_the_project(self):
+        project = self.project()
+        project["FreeRTOS"] = {"Enabled": True}
+        inc = self.root / "demo" / "Core" / "Inc"
+        inc.mkdir(parents=True)
+        (inc / "FreeRTOSConfig.h").write_text(
+            "#define configMAX_PRIORITIES                     ( 56 )\n", encoding="utf-8"
+        )
+        _, logs = self.run_generator("demo", project, "software_timer:\n  priority: 3\n")
+        self.assertIn(
+            "INFO:root:software_timer.priority 3 is the priority level HIGH, which is FreeRTOS "
+            "priority 33 with configMAX_PRIORITIES 56; libxr 5.x passed 3 to FreeRTOS as it was",
+            logs,
         )
 
     def test_the_flash_layout_is_not_copied_to_libxr_config(self):
@@ -1357,6 +1720,21 @@ class GenerationRuns(GeneratorTestCase):
             ],
         )
         self.assertEqual(sorted(path.name for path in user.iterdir()), ["libxr_config.yaml"])
+
+    def test_a_new_config_gets_block_size_auto_and_a_number_stays(self):
+        user, _ = self.run_generator("new", self.project(), "database:\n  enable: true\n")
+        self.assertIn(
+            "database:\n  enable: true\n  block_size: auto\n",
+            (user / "libxr_config.yaml").read_text(encoding="utf-8"),
+        )
+        self.assertIn(
+            "DatabaseRaw<STM32Flash::MIN_WRITE_SIZE>",
+            (user / "app_main.cpp").read_text(encoding="utf-8"),
+        )
+        old = "database:\n  enable: true\n  block_size: 32\n"
+        user, _ = self.run_generator("old", self.project(), old)
+        self.assertEqual(self.config(user)["database"], {"enable": True, "block_size": 32})
+        self.assertIn("DatabaseRaw<32>", (user / "app_main.cpp").read_text(encoding="utf-8"))
 
     def test_without_a_flash_layout_the_old_map_is_removed(self):
         self.run_generator("demo", self.project())

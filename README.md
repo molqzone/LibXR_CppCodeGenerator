@@ -3,10 +3,10 @@
 LibXR 代码生成工具 / Code generator for LibXR
 
 <h1 align="center">
-<img src="https://github.com/xrobot-org/LibXR_CppCodeGenerator/raw/main/imgs/XRobot.jpeg" width="300">
+<img src="https://github.com/xrobot-org/LibXR_CppCodeGenerator/raw/master/imgs/XRobot.jpeg" width="300">
 </h1><br>
 
-[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](https://github.com/xrobot-org/LibXR_CppCodeGenerator/blob/master/LICENSE)
 [![GitHub Repo](https://img.shields.io/github/stars/xrobot-org/libxr?style=social)](https://github.com/xrobot-org/libxr)
 [![Documentation](https://img.shields.io/badge/docs-online-brightgreen)](https://xrobot.work/docs/code_gen)
 [![GitHub Issues](https://img.shields.io/github/issues/xrobot-org/LibXR_CppCodeGenerator)](https://github.com/xrobot-org/LibXR_CppCodeGenerator/issues)
@@ -26,6 +26,10 @@ adds LibXR to the project's CMake build.
 ---
 
 ## 🔧 安装 / Installation
+
+需要 Python 3.10 或更高版本。
+
+Requires Python 3.10 or later.
 
 ### 使用 pipx 安装 (Install via `pipx`)
 
@@ -69,14 +73,15 @@ pip install .
 `libxr stm32 setup` checks out when it adds LibXR.
 
 以上三种方式只选其一，不要混用。系统中有多份安装时，命令行实际调用的版本可能与预期不同，而不同版本
-生成的代码并不一致。当前使用的版本可通过 `libxr --version` 查看。BSP 使用的版本记录在
-`User/libxr_config.yaml` 的 `generator:` 字段中，安装时应与之一致，例如 `pipx install libxr==6.0.0`。
+生成的代码并不一致。当前使用的版本可通过 `libxr --version` 查看。BSP 在 `User/libxr_config.yaml`
+顶层写 `generator: 6.0.0` 固定所用的版本，生成器重新生成时保留这个键；安装的版本应与之一致，例如
+`pipx install libxr==6.0.0`。
 
 Use only one of these methods. With several installations present, the command line may run a
 different version than expected, and different versions generate different code.
-`libxr --version` shows the version in use. The version a BSP uses is recorded in the
-`generator:` field of `User/libxr_config.yaml`; install the same version, e.g.
-`pipx install libxr==6.0.0`.
+`libxr --version` shows the version in use. A BSP pins the version it uses by writing
+`generator: 6.0.0` at the top level of `User/libxr_config.yaml`, and regeneration keeps this
+key; install the same version, e.g. `pipx install libxr==6.0.0`.
 
 ---
 
@@ -225,19 +230,20 @@ extern "C" void app_main(void)
   static STM32PowerManager power_manager;
 
   // GPIO
+  static STM32GPIO PA8(GPIOA, GPIO_PIN_8);
   static STM32GPIO LED(LED_GPIO_Port, LED_Pin);
 
   // ADC
-  static STM32ADC adc1(&hadc1, adc1_buf, {ADC_CHANNEL_1}, 3.3);
+  static STM32ADC adc1(&hadc1, adc1_buf, {ADC_CHANNEL_0}, 3.3);
   // ...
 
   // PWM
   static STM32PWM pwm_tim2_ch3(&htim2, TIM_CHANNEL_3, false);
 
   // SPI, UART, I2C
-  static STM32I2C i2c1(&hi2c1, i2c1_buf, 3);
   static STM32SPI spi1(&hspi1, {nullptr, 0}, {nullptr, 0}, 3);
   static STM32UART usart1(&huart1, usart1_rx_buf, usart1_tx_buf, 5);
+  static STM32I2C i2c1(&hi2c1, i2c1_buf, 3);
 
   // USB FS: 1 CDC
   // ...
@@ -323,15 +329,34 @@ USB:
 # ...
 database:
   enable: false
-  block_size: 1
+  block_size: auto
 ```
 
+`software_timer.priority` 以及终端和看门狗的 `thread_priority` 取 0 到 4 或等级名，0 到 4 依次为
+`IDLE`、`LOW`、`MEDIUM`、`HIGH`、`REALTIME`。LibXR 按 RTOS 的优先级数把等级换算为 RTOS 优先级，步长
+`LIBXR_PRIORITY_STEP` 为（优先级数 - 1）/ 5：FreeRTOS 的第 n 级为 n 倍步长，`configMAX_PRIORITIES` 为
+56 时 `MEDIUM` 是 22；ThreadX 数值越小优先级越高，`TX_MAX_PRIORITIES` 为 32 时 `MEDIUM` 是 12。
+libxr 5.x 把这个数原样作为 RTOS 优先级，步长为 1 的 FreeRTOS 工程两者相同。
+
+`software_timer.priority` and the `thread_priority` of the terminal and the watchdog take 0 to 4
+or a level name; 0 to 4 are `IDLE`, `LOW`, `MEDIUM`, `HIGH` and `REALTIME` in that order. LibXR
+converts the levels to RTOS priorities by the RTOS priority count, with the step
+`LIBXR_PRIORITY_STEP` being (priority count - 1) / 5: level n on FreeRTOS is n steps, so `MEDIUM`
+is 22 with `configMAX_PRIORITIES` 56; on ThreadX lower numbers are higher priorities, and
+`MEDIUM` is 12 with `TX_MAX_PRIORITIES` 32. libxr 5.x passed the number to the RTOS as it was,
+which gives the same priority on a FreeRTOS project with a step of 1.
+
 CubeMX 中处于设备模式的 USB 生成 USB 设备和 CDC 串口 `usb_fs_cdc`。`USB.usb_fs.enable` 为 false 时
-不生成；工程启用了 CubeMX 的 USB 中间件（如 `USB_DEVICE`）时，`enable` 的默认值为 false。
+不生成；工程启用了 CubeMX 的 USB 中间件（如 `USB_DEVICE`）时，`enable` 的默认值为 false。设备对象
+以 USB 实例命名，例如 USB（FSDEV）为 `usb_fs`，OTG 为 `usb_otg_fs` 和 `usb_otg_hs`。libxr 5.x 按速度
+把 OTG 的设备对象命名为 `usb_fs` 和 `usb_hs`，CDC 串口的名字没有变化。
 
 A USB in device mode in CubeMX produces a USB device and the CDC serial port `usb_fs_cdc`. With
 `USB.usb_fs.enable` set to false it is not generated; when the project enables a CubeMX USB
-middleware such as `USB_DEVICE`, `enable` defaults to false.
+middleware such as `USB_DEVICE`, `enable` defaults to false. The device object is named after
+the USB instance, such as `usb_fs` for USB (FSDEV) and `usb_otg_fs` and `usb_otg_hs` for OTG.
+libxr 5.x named the OTG device objects `usb_fs` and `usb_hs` after their speed; the names of the
+CDC serial ports are unchanged.
 
 `cdc` 每路 CDC 写一项，一个 USB 设备可以有几路 CDC。第 N 路（N 从 1 起）生成 `usb_otg_hs_cdc`、
 `usb_otg_hs_cdc2` 这样的 `USB::CDCUart` 对象，按顺序分配端点：数据 IN 端点为 EP(2N-1)，通知端点为
@@ -356,18 +381,23 @@ USB:
 ```
 
 `database.enable` 为 true 时，`app_main()` 生成 `STM32Flash flash(FLASH_REGIONS, FLASH_REGION_NUMBER)`
-和 `DatabaseRaw<block_size> database(flash)`，数据库以 `database` 注册；`FLASH_REGIONS` 来自
-`User/flash_map.hpp`，数据库使用 Flash 末尾的两个扇区。`block_size` 是 Flash 的最小写入单元，单位为字节：
+和 `DatabaseRaw<N> database(flash)`，数据库以 `database` 注册；`FLASH_REGIONS` 来自
+`User/flash_map.hpp`，数据库使用 Flash 末尾的两个扇区。模板参数 `N` 是 Flash 的最小写入单元，单位为
+字节，由 `block_size` 决定：写成正整数时使用这个数，例如 `block_size: 32` 生成 `DatabaseRaw<32>`；
+默认值 `auto` 生成 `STM32Flash::MIN_WRITE_SIZE`，即 LibXR 按芯片的 HAL 得出的值：
 
 With `database.enable` set to true, `app_main()` generates `STM32Flash flash(FLASH_REGIONS,
-FLASH_REGION_NUMBER)` and `DatabaseRaw<block_size> database(flash)`, and the database is
-registered as `database`; `FLASH_REGIONS` comes from `User/flash_map.hpp`, and the database uses
-the last two sectors of the Flash. `block_size` is the minimum write unit of the Flash in bytes:
+FLASH_REGION_NUMBER)` and `DatabaseRaw<N> database(flash)`, and the database is registered as
+`database`; `FLASH_REGIONS` comes from `User/flash_map.hpp`, and the database uses the last two
+sectors of the Flash. The template argument `N` is the minimum write unit of the Flash in bytes
+and follows `block_size`: a positive integer is used as it is, e.g. `block_size: 32` generates
+`DatabaseRaw<32>`, and the default `auto` generates `STM32Flash::MIN_WRITE_SIZE`, the value LibXR
+derives from the HAL of the chip:
 
 ```cpp
   // Flash and database
   static STM32Flash flash(FLASH_REGIONS, FLASH_REGION_NUMBER);
-  static DatabaseRaw<1> database(flash);
+  static DatabaseRaw<STM32Flash::MIN_WRITE_SIZE> database(flash);
 ```
 
 数值在生成时检查，不合要求时生成停止，报错写出文件、键和值：
@@ -411,7 +441,10 @@ objects need no `UNUSED(...)`:
   // Hardware registration
   XR_REGISTER(power_manager, LibXR::PowerManager);
 
+  XR_REGISTER(PA8, LibXR::GPIO);
   XR_REGISTER(LED, LibXR::GPIO);
+
+  XR_REGISTER(adc1_adc_channel_0, LibXR::ADC);
 
   XR_REGISTER(pwm_tim2_ch3, LibXR::PWM);
 
@@ -428,6 +461,13 @@ objects need no `UNUSED(...)`:
   XROBOT_MAIN();
 }
 ```
+
+已有入口源文件的 User Code 3 仍是不带 `--xrobot` 时生成的默认循环时，加上 `--xrobot` 重新生成会清空
+这个循环，使其后的 `XROBOT_MAIN()` 能够执行；User Code 3 的其他内容保持不变。
+
+When User Code 3 of an existing entry source still holds the default loop generated without
+`--xrobot`, regenerating with `--xrobot` empties the loop, so that the `XROBOT_MAIN()` after it
+runs; any other content of User Code 3 is kept.
 
 `libxr stm32 cmake` 和 `libxr stm32 setup` 按入口源文件的选择在 `cmake/LibXR.CMake` 的设置块中加入或
 删除 `XROBOT_MODULES_DIR`，XRobot 的模块随之参与构建：
@@ -452,12 +492,12 @@ See [XRobot integration](https://xrobot.work/en/docs/code_gen/code-gen-xrobot-in
 ## 🔨 CMake 与工具链 / CMake and Toolchains
 
 `libxr stm32 cmake` 整体生成 `cmake/LibXR.CMake`，并在 `CMakeLists.txt` 中 include 它；`libxr stm32 setup`
-已包含这一步。文件的结构固定，设置块在最前，其后依次是 LibXR、Application 和库的优化设置：
+已包含这一步。文件的结构固定，设置块在最前，其后依次是 LibXR、Application、库的优化设置和固件镜像：
 
 `libxr stm32 cmake` generates `cmake/LibXR.CMake` as a whole and includes it from
 `CMakeLists.txt`; `libxr stm32 setup` already does this. The structure of the file is fixed: the
-settings block comes first, followed by LibXR, Application and the optimization of the
-libraries:
+settings block comes first, followed by LibXR, Application, the optimization of the libraries
+and the firmware images:
 
 ```cmake
 # Generated by `libxr stm32 setup`; edit the values in the "Project settings" block only.
@@ -484,9 +524,11 @@ set(LIBXR_OPT_RELEASE "")
 `CMAKE_CXX_FLAGS_RELEASE`，两个工具链文件不同时留空），重新生成的语句之外的内容保留在
 `Kept from the earlier LibXR.CMake` 块中。
 `LIBXR_OPT_DEBUG` 是应用的 Debug 优化级别，`LIBXR_OPT_RELEASE` 是应用、`xr` 和 CubeMX 生成的库在
-Release 构建中的优化级别；Debug 构建中 `xr` 和这些库保持 `-O2`。目标的编译选项排在工具链的
-`CMAKE_<LANG>_FLAGS_<CONFIG>` 之后，所以最后一个 `-O` 就是这里设置的级别。值为 `""` 时沿用工具链文件中的
-级别，CubeMX 写出的 GCC 为 `-Os`、ST Arm Clang 为 `-Oz`；新工程的 `LIBXR_OPT_RELEASE` 为 `""`。
+Release 构建中的优化级别；Debug 构建中 `xr` 和 CubeMX 生成的全部库目标使用 `-O2`（libxr 5.x 只包括
+`FreeRTOS`、`STM32_Drivers` 和 `USB_Device_Library`，`ThreadX` 等其他库目标使用工具链的 Debug 级别）。
+目标的编译选项排在工具链的 `CMAKE_<LANG>_FLAGS_<CONFIG>` 之后，所以最后一个 `-O` 就是这里设置的级别。
+值为 `""` 时沿用工具链文件中的级别，CubeMX 写出的 GCC 为 `-Os`、ST Arm Clang 为 `-Oz`；新工程的
+`LIBXR_OPT_RELEASE` 为 `""`。
 
 On a rewrite the values the user changed in the settings block, and what the user added there,
 stay; `LIBXR_SYSTEM` takes the system that `FreeRTOSConfig.h` or `app_threadx.h` in `Core/Inc`
@@ -498,10 +540,19 @@ toolchain files differ), and what is not among the regenerated statements stays 
 `Kept from the earlier LibXR.CMake` block.
 `LIBXR_OPT_DEBUG` is the Debug optimization level of the application, and `LIBXR_OPT_RELEASE`
 the Release level of the application, `xr` and the libraries CubeMX generates; in Debug builds
-`xr` and these libraries stay at `-O2`. Target compile options come after the toolchain's
+`xr` and every library target CubeMX generates use `-O2` (libxr 5.x covered only `FreeRTOS`,
+`STM32_Drivers` and `USB_Device_Library`, and other library targets such as `ThreadX` used the
+Debug level of the toolchain). Target compile options come after the toolchain's
 `CMAKE_<LANG>_FLAGS_<CONFIG>`, so the last `-O` is the level set here. With `""` the level of the
 toolchain file applies, `-Os` for GCC and `-Oz` for ST Arm Clang as CubeMX writes them; a new
 project has `LIBXR_OPT_RELEASE` set to `""`.
+
+应用每次链接之后，固件镜像块用工具链文件中的 `CMAKE_OBJCOPY` 由 ELF 生成 `<工程名>.hex`（Intel HEX）
+和 `<工程名>.bin`（二进制镜像），三个文件位于同一目录，用 CubeMX 的 preset 构建时为 `build/<preset>/`。
+
+After each link of the application, the firmware image block makes `<project>.hex` (Intel HEX)
+and `<project>.bin` (binary image) from the ELF with the `CMAKE_OBJCOPY` of the toolchain file;
+the three files are in the same directory, `build/<preset>/` when built with a CubeMX preset.
 
 `cmake/starm-clang.cmake` 和 `cmake/gcc-arm-none-eabi.cmake` 保持 CubeMX 写出的内容。`libxr stm32 toolchain`
 切换 `CMakePresets.json` 中默认的工具链，在 GCC 与 ST Arm Clang 之间切换时删除以前的构建目录，下次
@@ -521,7 +572,7 @@ $ libxr stm32 toolchain gcc
 [INFO] Done.
 
 $ libxr stm32 toolchain clang --newlib
-[INFO] Toolchain in default preset already set to cmake/starm-clang.cmake
+[INFO] Switched the default preset to cmake/starm-clang.cmake
 [INFO] Set STARM_TOOLCHAIN_CONFIG to "STARM_NEWLIB" in cmake\starm-clang.cmake
 [INFO] Done.
 ```
@@ -577,10 +628,22 @@ belong to one platform sit under its name.
 
 ### 旧命令 / Old commands
 
-6.0.0 之前的 `xr_*` 命令仍可使用，参数及其含义与原来相同，运行时提示对应的新命令，将在 7.0.0 删除。
+6.0.0 之前的 `xr_*` 命令仍可使用，参数与原来相同，运行时提示对应的新命令，将在 7.0.0 删除。以下几处
+行为与 libxr 5.2.4 不同：`xr_gen_code` 和 `xr_gen_code_stm32` 收到 `--hw-cntr` 时报错退出，它生成的
+`HardwareContainer` 已从 LibXR 删除，XRobot 工程改用 `--xrobot`；`xr_parse` 和 `xr_parse_ioc` 在含有
+多个 `.ioc` 文件的目录中报错退出，不再逐个解析；`xr_stm32_toolchain_switch clang` 不带 `-g`、`-n` 或
+`-p` 时保持当前的标准库，不再报错；`xr_stm32_toolchain_switch` 在 GCC 与 ST Arm Clang 之间切换时删除
+`build/` 和 `cmake-build*`，`xr_stm32_cmake` 则不再删除它们，CMake 在下次构建时重新配置。
 
-The `xr_*` commands of versions before 6.0.0 still work with the same arguments and meaning;
-they name their new command when run and are removed in 7.0.0.
+The `xr_*` commands of versions before 6.0.0 still work with the same arguments; they name their
+new command when run and are removed in 7.0.0. A few behaviors differ from libxr 5.2.4:
+`xr_gen_code` and `xr_gen_code_stm32` stop with an error on `--hw-cntr`, as LibXR no longer has
+the `HardwareContainer` it generated, and XRobot projects use `--xrobot` instead; `xr_parse` and
+`xr_parse_ioc` stop with an error in a directory with several `.ioc` files instead of parsing
+each; `xr_stm32_toolchain_switch clang` without `-g`, `-n` or `-p` keeps the current standard
+library instead of failing; `xr_stm32_toolchain_switch` removes `build/` and `cmake-build*` when
+it switches between GCC and ST Arm Clang, while `xr_stm32_cmake` no longer removes them, and
+CMake configures again on the next build.
 
 | 旧命令 Old | 新命令 New |
 | --- | --- |
