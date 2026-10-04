@@ -875,7 +875,10 @@ def _report_next_steps(project_dir: str, xrobot: bool = False) -> None:
                 where_en = f"in the default task StartDefaultTask (Core/Src/{task})"
                 where_zh = f"在默认任务 StartDefaultTask（Core/Src/{task}）中"
             else:
-                where_en, where_zh = "in main() of Core/Src/main.c", "在 Core/Src/main.c 的 main() 中"
+                where_en, where_zh = (
+                    "in main() of Core/Src/main.c",
+                    "在 Core/Src/main.c 的 main() 中",
+                )
             english = f'Next: #include "app_main.h" and call app_main() {where_en}, {keep_en}'
             chinese = f'下一步：{where_zh} #include "app_main.h" 并调用 app_main()，{keep_zh}'
         logging.info(tr(english, chinese))
