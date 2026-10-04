@@ -1367,6 +1367,36 @@ def _dcache_line_size(project_data: dict) -> int:
     return DCACHE_LINE_SIZE
 
 
+# STM32CubeMX 为这些系列生成的链接脚本把 .data 和 .bss 放在 DTCMRAM，DMA 不能访问这块 RAM。
+# The linker scripts STM32CubeMX generates for these families place .data and .bss in DTCMRAM,
+# which DMA cannot access.
+_DTCM_BSS_FAMILIES = frozenset({"STM32H7"})
+
+
+def _warn_dtcm_buffers(project_data: dict, keys: list[str]) -> None:
+    """工程的系列在 _DTCM_BSS_FAMILIES 中且 keys 非空时记录一条警告：这些实例设置没有 dma_section，
+    缓冲区随 .bss 落在 DTCMRAM。生成的代码不变。
+    Warn when the family of the project is in _DTCM_BSS_FAMILIES and keys is not empty: these
+    instance settings have no dma_section, so their buffers land in DTCMRAM with .bss. The
+    generated code stays the same.
+    """
+    family = (project_data.get("Mcu", {}).get("Family") or "").upper()
+    if family not in _DTCM_BSS_FAMILIES or not keys:
+        return
+    logging.warning(
+        tr(
+            f"{libxr_config_origin}: {', '.join(keys)} set no dma_section, so their DMA buffers "
+            f"go to .bss, which the linker script STM32CubeMX generates for {family} places in "
+            "DTCMRAM, out of reach of DMA; add a section in RAM that DMA can access (such as "
+            "AXI SRAM) to the linker script and set it as dma_section of these instances",
+            f"{libxr_config_origin}：{'、'.join(keys)} 没有设置 dma_section，它们的 DMA 缓冲区位于 "
+            f".bss，而 STM32CubeMX 为 {family} 生成的链接脚本把 .bss 放在 DTCMRAM，DMA 不能访问；"
+            "请在链接脚本中加入位于 DMA 可访问的 RAM（例如 AXI SRAM）中的段，并把它设为这些实例的 "
+            "dma_section",
+        )
+    )
+
+
 def _mcu_label(project_data: dict) -> str:
     """说明注释中的 MCU 名：型号去掉末尾的封装和温度等级，例如 STM32F407IGH6 写作 STM32F407IG。
     The MCU name for the comment: the part number without the trailing package and temperature
@@ -1479,16 +1509,27 @@ def generate_dma_resources(project_data: dict) -> list[str]:
     shares a cache line with either end of a buffer; the size a driver is told stays, see
     DmaBuffer.argument().
 
+    _DTCM_BSS_FAMILIES 中的系列上有缓冲区而 dma_section 为空的实例记录一条警告，见
+    _warn_dtcm_buffers()。
+    On a family of _DTCM_BSS_FAMILIES, the instances with buffers and an empty dma_section are
+    warned about, see _warn_dtcm_buffers().
+
     Raises:
         LibXRConfigError: 某个设置段不是映射，或某个大小或 dma_section 无效。
             A settings section is not a mapping, or a size or dma_section is invalid.
     """
+    # 有缓冲区而 dma_section 为空的实例设置的键，例如 SPI.spi1。
+    # The keys of the instance settings with buffers and an empty dma_section, such as SPI.spi1.
+    unplaced: list[str] = []
 
-    def add(element: str, name: str, count: int, section: str) -> None:
-        """登记一个缓冲区：count 个 element 类型的元素，位于 section 段。
-        Register one buffer of count elements of the type element in the section section.
+    def add(key: str, element: str, name: str, count: int, section: str) -> None:
+        """登记实例设置 key 的一个缓冲区：count 个 element 类型的元素，位于 section 段。
+        Register one buffer of the instance settings key: count elements of the type element in
+        the section section.
         """
         dma_buffers[name] = DmaBuffer(name, element, count, section, count)
+        if not section and key not in unplaced:
+            unplaced.append(key)
 
     def section_of(key: str, instance_config: dict) -> str:
         """实例设置中 dma_section 的值；没有设置时为空字符串，并把 dma_section 记为空字符串，使
@@ -1539,9 +1580,9 @@ def generate_dma_resources(project_data: dict) -> list[str]:
                 section = section_of(key, instance_config)
 
                 if tx_dma:
-                    add("uint8_t", f"{instance_lower}_tx_buf", tx_size, section)
+                    add(key, "uint8_t", f"{instance_lower}_tx_buf", tx_size, section)
                 if rx_dma:
-                    add("uint8_t", f"{instance_lower}_rx_buf", rx_size, section)
+                    add(key, "uint8_t", f"{instance_lower}_rx_buf", rx_size, section)
 
         # I2C/ADC 外设
         # I2C/ADC
@@ -1576,9 +1617,15 @@ def generate_dma_resources(project_data: dict) -> list[str]:
                     elems_per_channel = max(1, int(buf_size // 2))
                     # 总元素数 = 通道数 × 每通道元素数
                     # Total elements = channel count × elements per channel
-                    add("uint16_t", f"{instance_lower}_buf", ch_cnt * elems_per_channel, section)
+                    add(
+                        key,
+                        "uint16_t",
+                        f"{instance_lower}_buf",
+                        ch_cnt * elems_per_channel,
+                        section,
+                    )
                 else:
-                    add("uint8_t", f"{instance_lower}_buf", buf_size, section)
+                    add(key, "uint8_t", f"{instance_lower}_buf", buf_size, section)
 
         elif p_type_base == "USB":
             # 为每个已启用的 USB 实例生成端点缓冲区（所在段由 dma_section 决定）。
@@ -1597,10 +1644,12 @@ def generate_dma_resources(project_data: dict) -> list[str]:
                     name.startswith("USB_OTG_"), len(_cdc_items(usb_cfg)), ep0, tx_sz, rx_sz
                 )
                 for suffix, size in plan:
-                    add("uint8_t", f"{name.lower()}_{suffix}", size, usb_cfg["dma_section"])
+                    section = usb_cfg["dma_section"]
+                    add(f"USB.{name.lower()}", "uint8_t", f"{name.lower()}_{suffix}", size, section)
 
     if not dma_buffers:
         return []
+    _warn_dtcm_buffers(project_data, unplaced)
     line = _dcache_line_size(project_data)
     if line:
         for name, buffer in list(dma_buffers.items()):
@@ -2594,18 +2643,35 @@ def _generate_core_system(project_data: dict) -> list[str]:
     Under FreeRTOS and ThreadX PlatformInit() takes the priority level (see _priority_level())
     and stack depth of the software timer; an unsupported SYSTEM logs an error and exits with
     status 1.
+
+    Raises:
+        ValueError: 时基来源是 LPTIM 或 HRTIM；STM32TimerTimebase 只接受 TIM 的句柄
+            （TIM_HandleTypeDef）。
+            The timebase source is an LPTIM or HRTIM; STM32TimerTimebase takes only the handle
+            of a TIM (TIM_HandleTypeDef).
     """
     timebase_cfg = project_data.get("Timebase", {"Source": "SysTick"})
     source = timebase_cfg.get("Source", "SysTick")
+
+    if source.startswith(("LPTIM", "HRTIM")):
+        raise ValueError(
+            tr(
+                f"the HAL timebase is {source}, but the LibXR timebase supports only TIM timers "
+                "(STM32TimerTimebase takes a TIM_HandleTypeDef); nothing was written. In "
+                "STM32CubeMX, set SYS > Timebase Source to a TIM timer (such as TIM6) and "
+                "regenerate",
+                f"HAL 时基是 {source}，而 LibXR 的时基只支持 TIM 定时器（STM32TimerTimebase 接受 "
+                "TIM_HandleTypeDef），未写入任何文件。请在 STM32CubeMX 的 SYS 中把 Timebase Source "
+                "改为 TIM 定时器（例如 TIM6）后重新生成",
+            )
+        )
 
     _use_header("stm32_timebase.hpp")
     _use_header("stm32_power.hpp")
     if source != "SysTick":
         handler = f"h{source.lower()}"
-        for prefix in ("TIM", "LPTIM", "HRTIM"):
-            if source.startswith(prefix):
-                _use_handle(f"{prefix}_HandleTypeDef", handler)
-                break
+        if source.startswith("TIM"):
+            _use_handle("TIM_HandleTypeDef", handler)
         timebase = layout("static STM32TimerTimebase timebase", [f"&{handler}"])
     else:
         # 默认使用 SysTick / Default to SysTick

@@ -811,6 +811,28 @@ class PeripheralObjects(GeneratorTestCase):
         self.setUp()
         self.assertEqual(code, self.generate(self.project()))
 
+    def test_the_timebase_is_a_tim_timer(self):
+        # 以前 LPTIM 或 HRTIM 作时基时生成 STM32TimerTimebase(&hlptim1)，编译失败：构造函数只接受
+        # TIM_HandleTypeDef*。
+        # An LPTIM or HRTIM timebase used to give STM32TimerTimebase(&hlptim1), which failed to
+        # compile: the constructor takes only a TIM_HandleTypeDef*.
+        project = self.project()
+        project["Timebase"] = {"Source": "TIM6"}
+        code = self.generate(project)
+        self.assertIn("extern TIM_HandleTypeDef htim6;\n", code)
+        self.assertIn("  static STM32TimerTimebase timebase(&htim6);\n", code)
+        for source in ("LPTIM1", "HRTIM1"):
+            with self.subTest(source=source):
+                project["Timebase"] = {"Source": source}
+                with self.assertRaisesMessage(
+                    ValueError,
+                    f"the HAL timebase is {source}, but the LibXR timebase supports only TIM "
+                    "timers (STM32TimerTimebase takes a TIM_HandleTypeDef); nothing was written. "
+                    "In STM32CubeMX, set SYS > Timebase Source to a TIM timer (such as TIM6) and "
+                    "regenerate",
+                ):
+                    self.generate(project)
+
     def test_thread_priorities_are_libxr_levels(self):
         # LibXR 按 RTOS 的优先级数换算等级，原样写数值在 configMAX_PRIORITIES 较大的 FreeRTOS
         # 上偏低，在 ThreadX 上又偏高。
@@ -976,6 +998,48 @@ class PeripheralObjects(GeneratorTestCase):
                 "the DMA buffers are aligned to 32 bytes"
             ],
         )
+
+    def test_h7_buffers_without_a_section_are_warned_about(self):
+        # CubeMX 给 H7 的链接脚本把 .bss 放在 DTCMRAM，以前不设 dma_section 时没有任何提示，
+        # DMA 缓冲区全部落在 DTCM（MC02 实测 RAM_D1: 0 B）。
+        # The linker script CubeMX writes for H7 places .bss in DTCMRAM, and without dma_section
+        # nothing used to say so while every DMA buffer landed in DTCM (MC02 measured RAM_D1: 0 B).
+        peripherals = {
+            "USART": {"USART1": {"DMA_RX": "ENABLE"}, "USART2": {}},
+            "I2C": {"I2C1": {}},
+            "SPI": {"SPI1": {"DMA_TX": "ENABLE"}},
+        }
+        generator.libxr_settings["SPI"] = {"spi1": {"dma_section": ".axi_ram"}}
+        h7 = self.project(peripherals=peripherals, mcu="STM32H723VGT6", family="STM32H7")
+        with self.assertLogs(level="WARNING") as logs:
+            code = self.generate(h7)
+        self.assertEqual(
+            logs.output,
+            [
+                "WARNING:root:libxr_config.yaml: USART.usart1, I2C.i2c1 set no dma_section, so "
+                "their DMA buffers go to .bss, which the linker script STM32CubeMX generates for "
+                "STM32H7 places in DTCMRAM, out of reach of DMA; add a section in RAM that DMA "
+                "can access (such as AXI SRAM) to the linker script and set it as dma_section of "
+                "these instances"
+            ],
+        )
+        # 生成的代码不变。
+        # The generated code stays the same.
+        self.assertIn("alignas(32) static uint8_t usart1_rx_buf[128];\n", code)
+        # 其他系列和设置了 dma_section 的 H7 不警告。
+        # Other families, and H7 with dma_section set, are not warned about.
+        for family, mcu, sections in (
+            ("STM32F4", "STM32F407IGH6", {}),
+            ("STM32F7", "STM32F746VGT6", {}),
+            ("STM32H7", "STM32H723VGT6", {"USART": "usart1", "I2C": "i2c1"}),
+        ):
+            with self.subTest(family=family, sections=sections):
+                self.setUp()
+                for group, instance in sections.items():
+                    generator.libxr_settings[group] = {instance: {"dma_section": ".axi_ram"}}
+                generator.libxr_settings["SPI"] = {"spi1": {"dma_section": ".axi_ram"}}
+                with self.assertNoLogs(level="WARNING"):
+                    self.generate(self.project(peripherals=peripherals, mcu=mcu, family=family))
 
     def test_a_long_section_attribute_goes_on_its_own_line(self):
         generator.libxr_settings["SPI"] = {"spi1": {"dma_section": ".axi_ram_with_a_long_name"}}

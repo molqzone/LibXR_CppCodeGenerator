@@ -514,8 +514,13 @@ def _x11_dialog_titles(display, root, process_ids: set[int]) -> list[str]:
     """X11 上 CubeMX 进程树中已映射的对话框窗口（带 WM_TRANSIENT_FOR）的标题。
     On X11, the titles of the mapped dialog windows (those with WM_TRANSIENT_FOR) of the CubeMX
     process tree.
+
+    遍历期间关闭的窗口使 X 服务器返回错误（例如 BadWindow），这样的窗口跳过。
+    A window closed during the walk makes the X server return an error, such as BadWindow; such a
+    window is skipped.
     """
     from Xlib import X  # type: ignore
+    from Xlib.error import XError  # type: ignore
 
     pid_atom = display.intern_atom("_NET_WM_PID")
     name_atom = display.intern_atom("_NET_WM_NAME")
@@ -536,7 +541,7 @@ def _x11_dialog_titles(display, root, process_ids: set[int]) -> list[str]:
             name = window.get_full_property(name_atom, utf8_atom)
             title = name.value.decode("utf-8", "replace") if name else window.get_wm_name()
             titles.append(str(title or ""))
-        except Exception:
+        except XError:
             continue
     return titles
 

@@ -11,6 +11,7 @@ import sys
 import tempfile
 import textwrap
 import time
+import types
 import unittest
 import zipfile
 from pathlib import Path
@@ -26,6 +27,7 @@ from libxr.cubemx_generator import (
     Dialog,
     DialogAnswer,
     DialogStopped,
+    _x11_dialog_titles,
     answer_dialog,
     build_cubemx_command,
     generate_cubemx_project,
@@ -398,6 +400,66 @@ class DialogAnswers(TestCase):
             "STM32CubeMX shows a dialog that libxr does not answer:\n"
             '"Warning"\nSomething else\nButtons: OK',
         )
+
+
+class X11Dialogs(TestCase):
+    """Linux 上从 X11 窗口树中找出 CubeMX 的对话框。
+    On Linux, the dialogs of CubeMX are found in the X11 window tree.
+    """
+
+    def test_only_x_errors_skip_a_window(self):
+        # 遍历期间关闭的窗口使 X 服务器返回 BadWindow，这样的窗口跳过；以前任何异常都被吞掉，
+        # 代码错误也看不出来。
+        # A window closed during the walk makes the X server return BadWindow, and such a
+        # window is skipped; any exception used to be swallowed, hiding errors in the code too.
+        class XError(Exception):
+            pass
+
+        class BadWindow(XError):
+            pass
+
+        x = types.SimpleNamespace(IsViewable=2, AnyPropertyType=0)
+        xlib = types.ModuleType("Xlib")
+        xlib.X = x
+        error = types.ModuleType("Xlib.error")
+        error.XError = XError
+        xlib.error = error
+
+        class Window:
+            """X11 窗口的替身：query_tree() 抛出 fail（不为 None 时）。
+            A stand-in for an X11 window: query_tree() raises fail when it is not None.
+            """
+
+            def __init__(self, children=(), pid=None, title="", fail=None):
+                self.children, self.pid, self.title, self.fail = children, pid, title, fail
+
+            def query_tree(self):
+                if self.fail is not None:
+                    raise self.fail
+                return types.SimpleNamespace(children=list(self.children))
+
+            def get_attributes(self):
+                return types.SimpleNamespace(map_state=x.IsViewable)
+
+            def get_full_property(self, atom, _type):
+                if atom == "_NET_WM_PID":
+                    return types.SimpleNamespace(value=[self.pid]) if self.pid else None
+                return types.SimpleNamespace(value=self.title.encode("utf-8"))
+
+            def get_wm_transient_for(self):
+                return object()
+
+            def get_wm_name(self):
+                return self.title
+
+        display = types.SimpleNamespace(intern_atom=lambda name: name)
+        dialog = Window(pid=42, title="Missing pack")
+        with mock.patch.dict(sys.modules, {"Xlib": xlib, "Xlib.error": error}):
+            root = Window(children=[Window(fail=BadWindow()), dialog])
+            self.assertEqual(_x11_dialog_titles(display, root, {42}), ["Missing pack"])
+            root = Window(children=[Window(fail=RuntimeError("bug")), dialog])
+            with self.assertRaises(RuntimeError):
+                _x11_dialog_titles(display, root, {42})
 
 
 if __name__ == "__main__":

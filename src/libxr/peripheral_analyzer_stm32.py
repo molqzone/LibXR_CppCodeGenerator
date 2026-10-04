@@ -1630,12 +1630,14 @@ def parse_ioc_file(ioc_path: str) -> dict[str, Any] | None:
 
     先读取时基（NVIC.TimeBaseIP、NVIC.TimeBase）和 GPIO，再运行各外设解析器；DMA 解析器最后
     运行，把 DMA 配置和开关挂到对应的外设实例下。之后去掉 CubeMX 不会为其生成 HAL 句柄的实例
-    （见 _drop_ungenerated_instances()），并检查外部中断引脚的 NVIC 设置。
+    （见 _drop_ungenerated_instances()），检查外部中断引脚的 NVIC 设置，以及 CMSIS_V2 工程的
+    FreeRTOS 事件标志设置（见 _check_os2_event_flags()）。
     The timebase (NVIC.TimeBaseIP, NVIC.TimeBase) and GPIO are read first, then each
     peripheral parser runs; the DMA parser runs last and attaches the DMA configurations and
     flags to the peripheral instances. Then the instances CubeMX generates no HAL handle for
-    are dropped (see _drop_ungenerated_instances()) and the NVIC setting of external
-    interrupt pins is checked.
+    are dropped (see _drop_ungenerated_instances()), the NVIC setting of external interrupt
+    pins is checked, and so is the FreeRTOS event-flags setting of a CMSIS_V2 project (see
+    _check_os2_event_flags()).
 
     解析出错时记录错误；--verbose（调试日志）下同时记录调用栈。
     A parse error is logged; with --verbose (debug logging) the traceback is logged too.
@@ -1703,6 +1705,7 @@ def parse_ioc_file(ioc_path: str) -> dict[str, Any] | None:
 
         _drop_ungenerated_instances(config, raw_map)
         _check_exti_nvic(raw_map, config.pin_registry, config.mcu_config.get("Family") or "")
+        _check_os2_event_flags(raw_map, os.path.dirname(ioc_path))
         return config.clean_structure()
     except Exception as e:
         logging.error(tr(f"Parsing failed: {str(e)}", f"解析失败：{str(e)}"))
@@ -1865,6 +1868,72 @@ def _check_exti_nvic(raw_map: dict[str, str], pins: dict[str, dict], family: str
                 "Default_Handler",
             )
         )
+
+
+# FreeRTOSConfig.h 中把 configUSE_OS2_EVENTFLAGS_FROM_ISR 定义为 0 的行。
+# A line of FreeRTOSConfig.h that defines configUSE_OS2_EVENTFLAGS_FROM_ISR as 0.
+_OS2_EVENTFLAGS_FROM_ISR_OFF = re.compile(
+    r"^[ \t]*#[ \t]*define[ \t]+configUSE_OS2_EVENTFLAGS_FROM_ISR[ \t]+\(?[ \t]*0\b", re.MULTILINE
+)
+# 在 FreeRTOSConfig.h 的 USER CODE BEGIN Defines 区中关闭软件定时器及依赖它的接口的覆盖块。
+# The override block in the USER CODE BEGIN Defines section of FreeRTOSConfig.h that turns off
+# the software timers and the interfaces that depend on them.
+OS2_TIMER_OVERRIDES = (
+    "/* USER CODE BEGIN Defines */",
+    "#undef configUSE_TIMERS",
+    "#define configUSE_TIMERS 0",
+    "#undef configUSE_OS2_TIMER",
+    "#define configUSE_OS2_TIMER 0",
+    "#undef configUSE_OS2_EVENTFLAGS_FROM_ISR",
+    "#define configUSE_OS2_EVENTFLAGS_FROM_ISR 0",
+    "/* USER CODE END Defines */",
+)
+
+
+def _check_os2_event_flags(raw_map: dict[str, str], directory: str) -> None:
+    """CMSIS_V2 工程关闭了 INCLUDE_xTimerPendFunctionCall，而 Core/Inc/FreeRTOSConfig.h 没有把
+    configUSE_OS2_EVENTFLAGS_FROM_ISR 定义为 0 时，记录警告并附上覆盖块 OS2_TIMER_OVERRIDES。
+    Warn, with the override block OS2_TIMER_OVERRIDES, when a CMSIS_V2 project turns off
+    INCLUDE_xTimerPendFunctionCall and Core/Inc/FreeRTOSConfig.h does not define
+    configUSE_OS2_EVENTFLAGS_FROM_ISR as 0.
+
+    CMSIS-RTOS2 的 freertos_os2.h 在 INCLUDE_xTimerPendFunctionCall 为 0 而
+    configUSE_OS2_EVENTFLAGS_FROM_ISR 为 1（默认值）时以 #error 停止编译。directory 是 .ioc 文件
+    所在的工程目录；FreeRTOSConfig.h 还不存在（CubeMX 尚未生成代码）时同样警告。
+    The freertos_os2.h of CMSIS-RTOS2 stops the build with #error when
+    INCLUDE_xTimerPendFunctionCall is 0 and configUSE_OS2_EVENTFLAGS_FROM_ISR is 1, its default.
+    directory is the project directory holding the .ioc file; a FreeRTOSConfig.h that does not
+    exist yet, before CubeMX generated the code, gets the warning too.
+    """
+    if raw_map.get("VP_FREERTOS_VS_CMSIS_V2.Mode") != "CMSIS_V2":
+        return
+    if raw_map.get("FREERTOS.INCLUDE_xTimerPendFunctionCall") != "0":
+        return
+    config = "Core/Inc/FreeRTOSConfig.h"
+    try:
+        with open(
+            os.path.join(directory, *config.split("/")), encoding="utf-8", errors="replace"
+        ) as f:
+            if _OS2_EVENTFLAGS_FROM_ISR_OFF.search(f.read()):
+                return
+    except OSError:
+        pass
+    logging.warning(
+        tr(
+            "FreeRTOS uses CMSIS_V2 with INCLUDE_xTimerPendFunctionCall = 0, and "
+            f"{config} does not set configUSE_OS2_EVENTFLAGS_FROM_ISR to 0, so freertos_os2.h "
+            '#error "Definition INCLUDE_xTimerPendFunctionCall must equal 1 to implement Event '
+            'Flags API." stops the build. Override these definitions in the USER CODE BEGIN '
+            f"Defines section of {config}, which CubeMX keeps when it regenerates the code:",
+            "FreeRTOS 使用 CMSIS_V2 且 INCLUDE_xTimerPendFunctionCall = 0，而 "
+            f"{config} 没有把 configUSE_OS2_EVENTFLAGS_FROM_ISR 设为 0，编译时 freertos_os2.h 报错 "
+            '#error "Definition INCLUDE_xTimerPendFunctionCall must equal 1 to implement Event '
+            'Flags API."。请在 '
+            f"{config} 的 USER CODE BEGIN Defines 区中覆盖以下定义，CubeMX 重新生成代码时保留该区域：",
+        )
+    )
+    for line in OS2_TIMER_OVERRIDES:
+        logging.warning(f"  {line}")
 
 
 def _extract_key_value_pairs(file_handler: TextIO) -> dict[str, str]:

@@ -38,6 +38,12 @@ STD_MAP = {
 }
 
 STARM_LINE = re.compile(r'(set\s*\(\s*STARM_TOOLCHAIN_CONFIG\s+")([^"]+)(".*\))')
+# STARM_HYBRID 下 CubeMX 的 starm-clang.cmake 通过这两个环境变量找到 GNU 工具链：ST Arm Clang 的
+# 安装目录（含 multilib.gnu_tools_for_stm32.yaml）和 arm-none-eabi-gcc 所在的 bin 目录。
+# Under STARM_HYBRID the starm-clang.cmake of CubeMX finds the GNU toolchain through these two
+# environment variables: the ST Arm Clang installation directory, holding
+# multilib.gnu_tools_for_stm32.yaml, and the bin directory of arm-none-eabi-gcc.
+HYBRID_ENVIRONMENT = ("CLANG_GCC_CMSIS_COMPILER", "GCC_TOOLCHAIN_ROOT")
 
 
 def _fail(message: str) -> None:
@@ -147,13 +153,16 @@ def switch_toolchain(directory: str, compiler: str, std: str | None = None) -> N
     检查 CMakePresets.json（必须是有效的 JSON）、default preset、目标工具链文件以及（需要时）
     其中的 STARM_TOOLCHAIN_CONFIG 行，不满足时记录错误并以状态 1 退出。CMakePresets.json 中只
     替换 default preset 的 toolchainFile 值，其余内容不变。工具链改变时删除 build/ 和
-    cmake-build* 目录。
+    cmake-build* 目录。clang 的标准库为 STARM_HYBRID 而 HYBRID_ENVIRONMENT 中有变量没有设置时
+    记录警告。
     gcc takes no std; clang without std keeps the standard library currently in
     starm-clang.cmake. Before any file changes, CMakePresets.json, which must be valid JSON, its
     default preset, the target toolchain file and, when needed, its STARM_TOOLCHAIN_CONFIG line
     are checked; a failed check logs an error and exits with status 1. Only the toolchainFile
     value of the default preset is replaced in CMakePresets.json, the rest stays as it is. A
-    changed toolchain removes the build/ and cmake-build* directories.
+    changed toolchain removes the build/ and cmake-build* directories. When the clang standard
+    library is STARM_HYBRID and a variable of HYBRID_ENVIRONMENT is not set, a warning is
+    logged.
     """
     if compiler == "gcc" and std:
         _fail(
@@ -226,7 +235,30 @@ def switch_toolchain(directory: str, compiler: str, std: str | None = None) -> N
                     f'已在 {toolchain_path} 中把 STARM_TOOLCHAIN_CONFIG 设为 "{target}"',
                 )
             )
+        if target == STD_MAP["hybrid"]:
+            _warn_missing_hybrid_environment()
     logging.info(tr("Done.", "完成。"))
+
+
+def _warn_missing_hybrid_environment() -> None:
+    """HYBRID_ENVIRONMENT 中有变量没有设置或为空时记录一条警告，列出这些变量；切换本身不受影响。
+    Warn, naming them, when variables of HYBRID_ENVIRONMENT are unset or empty; the switch itself
+    is not affected.
+    """
+    missing = [name for name in HYBRID_ENVIRONMENT if not os.environ.get(name)]
+    if not missing:
+        return
+    logging.warning(
+        tr(
+            f"STARM_HYBRID: {', '.join(missing)} not set; cmake/starm-clang.cmake finds the GNU "
+            "toolchain through CLANG_GCC_CMSIS_COMPILER (the ST Arm Clang installation "
+            "directory) and GCC_TOOLCHAIN_ROOT (the bin directory of arm-none-eabi-gcc), and "
+            "CMake fails to configure the project without them",
+            f"STARM_HYBRID：没有设置 {'、'.join(missing)}；cmake/starm-clang.cmake 通过 "
+            "CLANG_GCC_CMSIS_COMPILER（ST Arm Clang 的安装目录）和 GCC_TOOLCHAIN_ROOT"
+            "（arm-none-eabi-gcc 所在的 bin 目录）找到 GNU 工具链，缺少时 CMake 配置失败",
+        )
+    )
 
 
 if __name__ == "__main__":
