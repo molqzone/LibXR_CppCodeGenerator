@@ -553,6 +553,29 @@ class SetupProject(GeneratorTestCase):
             cubemx_cfg._report_next_steps(str(self.root))
         self.assertEqual(logs.output, [build])
 
+    def test_a_threadx_project_is_told_to_call_app_main_from_a_thread(self):
+        # 以前 ThreadX 工程也被告知在 main() 中调用 app_main()，而 main() 在启动调度器后不再返回。
+        # A ThreadX project used to be told to call app_main() in main(), which does not
+        # return once it starts the scheduler.
+        sources = self.root / "Core" / "Src"
+        sources.mkdir()
+        (sources / "main.c").write_text("int main(void) { return 0; }\n", encoding="utf-8")
+        (sources / "app_threadx.c").write_text(
+            "UINT App_ThreadX_Init(VOID *memory_ptr) { return TX_SUCCESS; }\n", encoding="utf-8"
+        )
+        with self.assertLogs(level="INFO") as logs:
+            cubemx_cfg._report_next_steps(str(self.root))
+        self.assertEqual(
+            logs.output,
+            [
+                "INFO:root:Next: in App_ThreadX_Init() (Core/Src/app_threadx.c), create a thread "
+                'whose entry function includes "app_main.h" and calls app_main(), inside USER '
+                "CODE sections, which CubeMX keeps when it regenerates the code. "
+                "App_ThreadX_Init() runs before the scheduler starts, so it cannot call "
+                "app_main() directly."
+            ],
+        )
+
     def test_an_xrobot_project_without_modules_gets_the_xrobot_steps(self):
         # 以前只给出构建命令，用户要连续失败两次才找到 xrobot init。
         # Only the build command used to follow, and it took two failures to find xrobot init.
