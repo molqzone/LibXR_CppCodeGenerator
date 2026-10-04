@@ -593,6 +593,61 @@ class Rtos(TestCase):
                     {section: {"Enabled": True}} if section else {},
                 )
 
+    def test_cmsis_v2_without_xtimerpendfunctioncall_needs_the_override(self):
+        # MC02 的 .ioc 单独生成后编译报 freertos_os2.h 的 #error，以前 parse 不提示，只能靠用户
+        # 代码中的覆盖块。
+        # The .ioc of MC02 generated on its own used to fail with the #error of freertos_os2.h,
+        # with no hint from parse; only an override block in user code fixed it.
+        ioc = (
+            "Mcu.IP9=FREERTOS\nFREERTOS.INCLUDE_xTimerPendFunctionCall=0\n"
+            "Mcu.Pin52=VP_FREERTOS_VS_CMSIS_V2\nVP_FREERTOS_VS_CMSIS_V2.Mode=CMSIS_V2\n"
+            "VP_FREERTOS_VS_CMSIS_V2.Signal=FREERTOS_VS_CMSIS_V2\n"
+        )
+        warning = [
+            "WARNING:root:FreeRTOS uses CMSIS_V2 with INCLUDE_xTimerPendFunctionCall = 0, and "
+            "Core/Inc/FreeRTOSConfig.h does not set configUSE_OS2_EVENTFLAGS_FROM_ISR to 0, so "
+            'freertos_os2.h #error "Definition INCLUDE_xTimerPendFunctionCall must equal 1 to '
+            'implement Event Flags API." stops the build. Override these definitions in the USER '
+            "CODE BEGIN Defines section of Core/Inc/FreeRTOSConfig.h, which CubeMX keeps when it "
+            "regenerates the code:",
+            "WARNING:root:  /* USER CODE BEGIN Defines */",
+            "WARNING:root:  #undef configUSE_TIMERS",
+            "WARNING:root:  #define configUSE_TIMERS 0",
+            "WARNING:root:  #undef configUSE_OS2_TIMER",
+            "WARNING:root:  #define configUSE_OS2_TIMER 0",
+            "WARNING:root:  #undef configUSE_OS2_EVENTFLAGS_FROM_ISR",
+            "WARNING:root:  #define configUSE_OS2_EVENTFLAGS_FROM_ISR 0",
+            "WARNING:root:  /* USER CODE END Defines */",
+        ]
+        # CubeMX 写出的 FreeRTOSConfig.h 中这个值为 1；覆盖块在 USER CODE BEGIN Defines 区中。
+        # The FreeRTOSConfig.h CubeMX writes sets the value to 1; the override block is in the
+        # USER CODE BEGIN Defines section.
+        cubemx = "#define configUSE_OS2_EVENTFLAGS_FROM_ISR    1\n"
+        override = cubemx + "\n".join(peripheral_analyzer_stm32.OS2_TIMER_OVERRIDES) + "\n"
+        for config, extra, warned in (
+            (None, ioc, True),
+            (cubemx, ioc, True),
+            (override, ioc, False),
+            (None, ioc.replace("Mode=CMSIS_V2", "Mode=CMSIS_V1"), False),
+            (None, ioc.replace("PendFunctionCall=0", "PendFunctionCall=1"), False),
+        ):
+            with self.subTest(config=config, extra=extra), tempfile.TemporaryDirectory() as root:
+                path = Path(root) / "demo.ioc"
+                path.write_text(H5_IOC + extra, encoding="utf-8")
+                if config is not None:
+                    (Path(root) / "Core" / "Inc").mkdir(parents=True)
+                    (Path(root) / "Core" / "Inc" / "FreeRTOSConfig.h").write_text(
+                        config, encoding="utf-8"
+                    )
+                with self.assertLogs(level="WARNING") as logs:
+                    peripheral_analyzer_stm32.parse_ioc_file(str(path))
+                found = [
+                    line
+                    for line in logs.output
+                    if "CMSIS_V2" in line or line.startswith("WARNING:root:  ")
+                ]
+                self.assertEqual(found, warning if warned else [])
+
 
 class Pins(TestCase):
     """引脚名 PxN 的端口字母从 A 到 Z。

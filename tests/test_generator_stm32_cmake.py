@@ -673,7 +673,7 @@ class Migration(GeneratorTestCase):
         self.assertNotIn("LIBXR_USER_SOURCES", kept)
         self.assertFalse([entry for entry in self.log if "single pattern" in entry])
 
-    def test_debug_options_the_user_changed_are_logged_when_dropped(self):
+    def test_debug_options_the_user_changed_are_kept(self):
         # 以前 Debug 块整块丢弃，用户改过的 xr 级别静默变回 -O2。
         # The Debug block used to be dropped as a whole, and a level the user changed for xr
         # silently went back to -O2.
@@ -684,20 +684,47 @@ class Migration(GeneratorTestCase):
             "    if(TARGET ThreadX)\n        target_compile_options(ThreadX PRIVATE -O0)\n"
             "    endif()\n\n    if(TARGET USB_Device_Library)",
         )
-        self.migrate(old, GCC_TOOLCHAIN)
+        text = self.migrate(old, GCC_TOOLCHAIN)
+        blocks = stm32_cmake.split_blocks(text)
+        # 保留的选项排在 “Library optimization” 块的 -O2 之后，所以仍然生效。
+        # The kept options come after the -O2 of the "Library optimization" block, so they still
+        # apply.
+        self.assertTrue(
+            blocks["Kept from the earlier LibXR.CMake"].endswith(
+                "endif()\n\n"
+                'if(CMAKE_BUILD_TYPE STREQUAL "Debug")\n'
+                "    target_compile_options(xr PRIVATE -O1)\n"
+                "    if(TARGET ThreadX)\n"
+                "        target_compile_options(ThreadX PRIVATE -O0)\n"
+                "    endif()\n"
+                "endif()"
+            ),
+            blocks["Kept from the earlier LibXR.CMake"],
+        )
+        self.assertLess(text.index("Library optimization"), text.index("PRIVATE -O1"))
+        self.assertIn('set(LIBXR_OPT_DEBUG "-Og")', blocks["Project settings"])
         self.assertEqual(
-            [entry for entry in self.log if "dropped" in entry],
+            [entry for entry in self.log if "of the Debug block" in entry],
             [
-                f"LibXR.CMake: dropped target_compile_options({target} PRIVATE {level}) of the "
-                "Debug block in the earlier file; Debug builds now compile xr and the CubeMX "
-                "libraries at -O2"
+                f"LibXR.CMake: kept target_compile_options({target} PRIVATE {level}) of the "
+                "Debug block in the earlier file in the Kept block, after the -O2 that Debug "
+                "builds now give xr and the CubeMX libraries"
                 for target, level in (("xr", "-O1"), ("ThreadX", "-O0"))
             ],
         )
-        # 旧模板的默认选项由新结构重新生成，不提示。
-        # The default options of the earlier template are generated again and not logged.
-        self.migrate(DEVC_LIBXR_CMAKE, GCC_TOOLCHAIN)
-        self.assertFalse([entry for entry in self.log if "dropped" in entry])
+        # 旧模板的默认选项由新结构重新生成，不保留也不提示。
+        # The default options of the earlier template are generated again, neither kept nor
+        # logged.
+        text = self.migrate(DEVC_LIBXR_CMAKE, GCC_TOOLCHAIN)
+        self.assertNotIn("CMAKE_BUILD_TYPE", text)
+        self.assertFalse([entry for entry in self.log if "of the Debug block" in entry])
+        # 迁移后的文件再次生成时保持不变。
+        # The migrated file stays the same when generated again.
+        text = self.migrate(old, GCC_TOOLCHAIN)
+        with self.assertLogs(level="INFO") as logs:
+            stm32_cmake.integrate(str(self.root))
+        self.assertEqual(self.libxr_cmake.read_text(encoding="utf-8"), text)
+        self.assertIn("INFO:root:LibXR.CMake already up to date, no changes needed.", logs.output)
 
     def test_the_migrated_file_is_stable(self):
         text = self.migrate(DEVC_LIBXR_CMAKE, GCC_TOOLCHAIN, CLANG_TOOLCHAIN)

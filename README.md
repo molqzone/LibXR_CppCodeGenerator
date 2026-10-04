@@ -7,7 +7,7 @@ LibXR 代码生成工具 / Code generator for LibXR
 </h1><br>
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](https://github.com/xrobot-org/LibXR_CppCodeGenerator/blob/master/LICENSE)
-[![GitHub Repo](https://img.shields.io/github/stars/xrobot-org/libxr?style=social)](https://github.com/xrobot-org/libxr)
+[![GitHub Repo](https://img.shields.io/github/stars/xrobot-org/LibXR_CppCodeGenerator?style=social)](https://github.com/xrobot-org/LibXR_CppCodeGenerator)
 [![Documentation](https://img.shields.io/badge/docs-online-brightgreen)](https://xrobot.work/docs/code_gen)
 [![GitHub Issues](https://img.shields.io/github/issues/xrobot-org/LibXR_CppCodeGenerator)](https://github.com/xrobot-org/LibXR_CppCodeGenerator/issues)
 [![CI/CD - Python Package](https://github.com/xrobot-org/LibXR_CppCodeGenerator/actions/workflows/python-publish.yml/badge.svg)](https://github.com/xrobot-org/LibXR_CppCodeGenerator/actions/workflows/python-publish.yml)
@@ -53,8 +53,29 @@ pipx install libxr
 
 ### 使用 pip 安装 (Install via `pip`)
 
-```bash
+pip 用于 Windows 或虚拟环境。Debian、Ubuntu 等发行版的系统 Python 由包管理器管理，直接运行
+`pip install` 会报 `externally-managed-environment`；在这类系统上使用 pipx，或先建立虚拟环境再用 pip
+安装。
+
+pip is for Windows or a virtual environment. On Debian, Ubuntu and similar distributions the
+package manager owns the system Python, and a plain `pip install` fails with
+`externally-managed-environment`; there, use pipx, or create a virtual environment first and
+install with pip.
+
+Windows
+
+```powershell
 pip install libxr
+```
+
+Linux
+
+```bash
+sudo apt install python3-venv
+python3 -m venv ~/.venvs/libxr
+. ~/.venvs/libxr/bin/activate
+pip install libxr
+# 在激活了虚拟环境的终端中使用 libxr / Use libxr in a terminal with the environment activated
 ```
 
 ### 从源码安装 (Install from source)
@@ -73,15 +94,16 @@ pip install .
 `libxr stm32 setup` checks out when it adds LibXR.
 
 以上三种方式只选其一，不要混用。系统中有多份安装时，命令行实际调用的版本可能与预期不同，而不同版本
-生成的代码并不一致。当前使用的版本可通过 `libxr --version` 查看。BSP 在 `User/libxr_config.yaml`
-顶层写 `generator: 6.0.0` 固定所用的版本，生成器重新生成时保留这个键；安装的版本应与之一致，例如
-`pipx install libxr==6.0.0`。
+生成的代码并不一致。当前使用的版本可通过 `libxr --version` 查看。BSP 所用的版本由
+`User/libxr_config.yaml` 顶层的 `generator: 6.0.0` 固定：生成器新建这个文件时写入当前的版本，重新
+生成时保留这个键；安装的版本应与之一致，例如 `pipx install libxr==6.0.0`。
 
 Use only one of these methods. With several installations present, the command line may run a
 different version than expected, and different versions generate different code.
-`libxr --version` shows the version in use. A BSP pins the version it uses by writing
-`generator: 6.0.0` at the top level of `User/libxr_config.yaml`, and regeneration keeps this
-key; install the same version, e.g. `pipx install libxr==6.0.0`.
+`libxr --version` shows the version in use. The version a BSP uses is pinned by
+`generator: 6.0.0` at the top level of `User/libxr_config.yaml`: the generator writes the
+current version when it creates this file, and regeneration keeps the key; install the same
+version, e.g. `pipx install libxr==6.0.0`.
 
 ---
 
@@ -200,21 +222,26 @@ Active Peripherals:
 
 `libxr gen` 为每个外设生成一个静态对象，CubeMX 中的引脚标签成为对象名。入口源文件按这些部分排列：
 include 和 `extern` 声明只列出用到的驱动头文件和 HAL 句柄，DMA 缓冲区每个一行，`app_main()` 中每组
-外设前有一行说明注释。串口和 SPI 只为开启了 DMA 的方向分配缓冲区，例子中的 USART1 两个方向都开启了
-DMA，SPI1 都没有：
+外设前有一行说明注释。串口为开启了 DMA 的方向分配缓冲区，例子中的 USART1 两个方向都开启了 DMA。
+SPI 总是有发送和接收缓冲区，两个方向都开启 DMA 时才使用 DMA；其他情况下最后一个参数（DMA 切换阈值）
+为 `UINT32_MAX`，传输总是走轮询路径。例子中的 SPI1 没有 DMA：
 
 `libxr gen` generates one static object per peripheral, and the pin labels set in CubeMX become
 object names. The entry source is arranged in these parts: the includes and the `extern`
 declarations list only the driver headers and HAL handles that are used, each DMA buffer takes
-one line, and every group of peripherals in `app_main()` has a comment line. UARTs and SPI get
-buffers only for the directions with DMA; in the example USART1 has DMA in both directions and
-SPI1 in neither:
+one line, and every group of peripherals in `app_main()` has a comment line. UARTs get buffers
+for the directions with DMA; in the example USART1 has DMA in both directions. An SPI always has
+transmit and receive buffers and uses DMA only with DMA in both directions; otherwise the last
+argument (the DMA threshold) is `UINT32_MAX` and transfers always take the polling path. SPI1 in
+the example has no DMA:
 
 ```cpp
 // User/app_main.cpp（节选 / excerpt）
 // DMA buffers (STM32F103RC: no D-cache)
 alignas(4) static uint16_t adc1_buf[16];
 alignas(4) static uint8_t i2c1_buf[32];
+alignas(4) static uint8_t spi1_rx_buf[32];
+alignas(4) static uint8_t spi1_tx_buf[32];
 alignas(4) static uint8_t usart1_rx_buf[128];
 alignas(4) static uint8_t usart1_tx_buf[128];
 // ...
@@ -241,7 +268,7 @@ extern "C" void app_main(void)
   static STM32PWM pwm_tim2_ch3(&htim2, TIM_CHANNEL_3, false);
 
   // SPI, UART, I2C
-  static STM32SPI spi1(&hspi1, {nullptr, 0}, {nullptr, 0}, 3);
+  static STM32SPI spi1(&hspi1, spi1_rx_buf, spi1_tx_buf, UINT32_MAX);
   static STM32UART usart1(&huart1, usart1_rx_buf, usart1_tx_buf, 5);
   static STM32I2C i2c1(&hi2c1, i2c1_buf, 3);
 
@@ -308,6 +335,7 @@ with the new value; the changes and comments in the file are kept on regeneratio
 
 ```yaml
 # User/libxr_config.yaml（节选 / excerpt）
+generator: 6.0.0
 terminal_source: usart1
 software_timer:
   priority: 2
@@ -483,6 +511,13 @@ $ libxr stm32 cmake
 [INFO] LibXR.CMake already included in CMakeLists.txt.
 ```
 
+BSP 根目录还没有 `Modules/modules.yaml` 时，`libxr stm32 setup --xrobot` 在最后依次列出 XRobot 的设置
+命令：`xrobot init`、`xrobot module add`、`xrobot setup` 和 `xrobot instance add`。
+
+While the BSP root has no `Modules/modules.yaml` yet, `libxr stm32 setup --xrobot` ends by listing
+the XRobot setup commands in order: `xrobot init`, `xrobot module add`, `xrobot setup` and
+`xrobot instance add`.
+
 详见 [与 XRobot 集成](https://xrobot.work/docs/code_gen/code-gen-xrobot-inter)。
 
 See [XRobot integration](https://xrobot.work/en/docs/code_gen/code-gen-xrobot-inter).
@@ -522,7 +557,8 @@ set(LIBXR_OPT_RELEASE "")
 各块重新生成。已有的 `LibXR.CMake` 按这个结构重写：设置的值保留，`LIBXR_OPT_DEBUG` 和
 `LIBXR_OPT_RELEASE` 取已用的优化级别（工具链文件中的 `CMAKE_CXX_FLAGS_DEBUG` 和
 `CMAKE_CXX_FLAGS_RELEASE`，两个工具链文件不同时留空），重新生成的语句之外的内容保留在
-`Kept from the earlier LibXR.CMake` 块中。
+`Kept from the earlier LibXR.CMake` 块中；旧文件 Debug 块中用户改过的库优化选项也原样放在这里，
+包在同样的 `if(CMAKE_BUILD_TYPE STREQUAL "Debug")` 中，排在库的 `-O2` 之后，因此仍然生效。
 `LIBXR_OPT_DEBUG` 是应用的 Debug 优化级别，`LIBXR_OPT_RELEASE` 是应用、`xr` 和 CubeMX 生成的库在
 Release 构建中的优化级别；Debug 构建中 `xr` 和 CubeMX 生成的全部库目标使用 `-O2`（libxr 5.x 只包括
 `FreeRTOS`、`STM32_Drivers` 和 `USB_Device_Library`，`ThreadX` 等其他库目标使用工具链的 Debug 级别）。
@@ -537,7 +573,9 @@ generated again. An existing `LibXR.CMake` is rewritten in this structure: the v
 settings stay, `LIBXR_OPT_DEBUG` and `LIBXR_OPT_RELEASE` take the optimization levels in use (the
 `CMAKE_CXX_FLAGS_DEBUG` and `CMAKE_CXX_FLAGS_RELEASE` of the toolchain files, empty when the two
 toolchain files differ), and what is not among the regenerated statements stays in the
-`Kept from the earlier LibXR.CMake` block.
+`Kept from the earlier LibXR.CMake` block; the library optimization options the user changed
+in the Debug block of the old file go there as written too, inside the same
+`if(CMAKE_BUILD_TYPE STREQUAL "Debug")` and after the `-O2` of the libraries, so they still apply.
 `LIBXR_OPT_DEBUG` is the Debug optimization level of the application, and `LIBXR_OPT_RELEASE`
 the Release level of the application, `xr` and the libraries CubeMX generates; in Debug builds
 `xr` and every library target CubeMX generates use `-O2` (libxr 5.x covered only `FreeRTOS`,

@@ -44,9 +44,20 @@ class TerminalOption(TestCase):
         return generator.libxr_settings["terminal_source"]
 
     def test_terminal_is_recorded_for_a_new_project(self):
-        cubemx_cfg.set_terminal_source(str(self.user), "usart1")
-        self.assertEqual(self.path.read_text(encoding="utf-8"), "terminal_source: usart1\n")
+        # 新建的文件和 libxr gen 新建的一样先固定 generator 的版本；以前 setup -t 新建的文件没有
+        # 这一项，BSP CI 因缺少版本固定而失败。
+        # A new file pins the generator first, like one libxr gen creates; a file that setup -t
+        # created used to lack it, and BSP CI failed for want of the pin.
+        with mock.patch("libxr.update_notice.installed_version", return_value="6.0.0"):
+            cubemx_cfg.set_terminal_source(str(self.user), "usart1")
+        self.assertEqual(
+            self.path.read_text(encoding="utf-8"), "generator: 6.0.0\nterminal_source: usart1\n"
+        )
         self.assertEqual(self.effective_terminal(), "usart1")
+        self.path.unlink()
+        with mock.patch("libxr.update_notice.installed_version", return_value=None):
+            cubemx_cfg.set_terminal_source(str(self.user), "usart1")
+        self.assertEqual(self.path.read_text(encoding="utf-8"), "terminal_source: usart1\n")
 
     def test_terminal_replaces_the_configured_one_and_keeps_comments(self):
         self.path.write_text(
@@ -387,6 +398,12 @@ class SetupProject(GeneratorTestCase):
         """
         code = self.generate(use_xrobot=existing)
         (self.root / "User" / "app_main.cpp").write_text(code, encoding="utf-8")
+        # XRobot 工程需要的 LibXR 文件（见 test_xrobot_needs_a_libxr_with_its_cmake_file）。
+        # The LibXR file an XRobot project needs (see
+        # test_xrobot_needs_a_libxr_with_its_cmake_file).
+        cmake = self.root / "Middlewares" / "Third_Party" / "LibXR" / "cmake"
+        cmake.mkdir(parents=True, exist_ok=True)
+        (cmake / "XRobot.cmake").write_text("", encoding="utf-8")
         with (
             mock.patch.object(cubemx_cfg, "add_libxr"),
             mock.patch("libxr.peripheral_analyzer_stm32.parse_project"),
@@ -405,6 +422,46 @@ class SetupProject(GeneratorTestCase):
         ):
             with self.subTest(existing=existing, option=option):
                 self.assertIs(self.xrobot_mode(existing, option), mode)
+
+    def test_xrobot_needs_a_libxr_with_its_cmake_file(self):
+        # 以前缺少 cmake/XRobot.cmake 的 LibXR 检出照常生成，构建时才报找不到模块头文件。
+        # A LibXR checkout without cmake/XRobot.cmake used to generate as usual and fail only at
+        # build time with missing Module headers.
+        checkout = self.root / "Middlewares" / "Third_Party" / "LibXR"
+        checkout.mkdir(parents=True)
+        missing = (
+            "ERROR:root:Middlewares/Third_Party/LibXR has no cmake/XRobot.cmake, which a --xrobot "
+            "project needs to build its XRobot Modules; check out a LibXR commit that has it with "
+            "`libxr stm32 setup --xrobot --commit {}`"
+        )
+        for option, generated in ((True, False), (False, True)):
+            with self.subTest(option=option):
+                with (
+                    mock.patch.object(cubemx_cfg, "add_libxr"),
+                    mock.patch.object(cubemx_cfg, "_report_next_steps"),
+                    mock.patch("libxr.peripheral_analyzer_stm32.parse_project") as parse,
+                    mock.patch("libxr.generator_code_stm32.generate"),
+                    mock.patch("libxr.generator_stm32_cmake.integrate"),
+                    contextlib.ExitStack() as stack,
+                ):
+                    if not generated:
+                        logs = stack.enter_context(self.assertLogs(level="ERROR"))
+                        exit = stack.enter_context(self.assertRaises(SystemExit))
+                    cubemx_cfg.setup_project(str(self.root), xrobot_enable=option, commit="abc")
+                self.assertIs(parse.called, generated)
+                if not generated:
+                    self.assertEqual(exit.exception.code, 1)
+                    self.assertEqual(logs.output, [missing.format("<commit>")])
+                    self.assertFalse((self.root / ".gitignore").exists())
+        # 有默认提交时提示它。
+        # The default commit is named when there is one.
+        default = "0123456789abcdef0123456789abcdef01234567"
+        with self.assertLogs(level="ERROR") as logs, self.assertRaises(SystemExit):
+            cubemx_cfg.check_xrobot_support(str(self.root), default)
+        self.assertEqual(logs.output, [missing.format(default)])
+        (checkout / "cmake").mkdir()
+        (checkout / "cmake" / "XRobot.cmake").write_text("", encoding="utf-8")
+        cubemx_cfg.check_xrobot_support(str(self.root), default)
 
     def test_a_missing_git_is_an_error(self):
         with (
@@ -495,6 +552,32 @@ class SetupProject(GeneratorTestCase):
         with self.assertLogs(level="INFO") as logs:
             cubemx_cfg._report_next_steps(str(self.root))
         self.assertEqual(logs.output, [build])
+
+    def test_an_xrobot_project_without_modules_gets_the_xrobot_steps(self):
+        # 以前只给出构建命令，用户要连续失败两次才找到 xrobot init。
+        # Only the build command used to follow, and it took two failures to find xrobot init.
+        sources = self.root / "Core" / "Src"
+        sources.mkdir()
+        (sources / "main.c").write_text("int main(void) { app_main(); }\n", encoding="utf-8")
+        steps = [
+            "INFO:root:Next: Modules/modules.yaml does not exist yet; set up XRobot in this order:",
+            "INFO:root:  xrobot init                           create Modules/modules.yaml, "
+            "Modules/sources.yaml and User/xrobot.yaml",
+            "INFO:root:  xrobot module add <owner>/<Module>    add a Module",
+            "INFO:root:  xrobot setup                          fetch the Modules and generate "
+            "User/xrobot_main.hpp",
+            "INFO:root:  xrobot instance add <owner>/<Module>  add an instance of the Module",
+        ]
+        with self.assertLogs(level="INFO") as logs:
+            cubemx_cfg._report_next_steps(str(self.root), xrobot=True)
+        self.assertEqual(logs.output, steps)
+        (self.root / "Modules").mkdir()
+        (self.root / "Modules" / "modules.yaml").write_text("modules: []\n", encoding="utf-8")
+        with self.assertNoLogs(level="INFO"):
+            cubemx_cfg._report_next_steps(str(self.root), xrobot=True)
+        (self.root / "Modules" / "modules.yaml").unlink()
+        with self.assertNoLogs(level="INFO"):
+            cubemx_cfg._report_next_steps(str(self.root), xrobot=False)
 
 
 class SetupRun(LibXRRemote, GeneratorTestCase):

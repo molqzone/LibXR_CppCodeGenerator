@@ -11,6 +11,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from fixtures import CUBEMX_STARM, TestCase
 
@@ -157,6 +158,48 @@ class SwitchToolchain(TestCase):
         self.assertEqual(self.switch("clang"), 0)
         self.assertEqual(self.toolchain_file(), "${sourceDir}/cmake/starm-clang.cmake")
         self.assertEqual(self.starm.read_text(encoding="utf-8"), CUBEMX_STARM)
+
+    def test_hybrid_warns_about_missing_environment_variables(self):
+        # 以前两个变量都没设时切换照样成功，到 CMake 配置时才报 starm-clang: error: '/..' does
+        # not contain a GCC installation。
+        # With neither variable set the switch used to succeed, and only CMake configure then
+        # reported starm-clang: error: '/..' does not contain a GCC installation.
+        warning = (
+            "WARNING:root:STARM_HYBRID: {} not set; cmake/starm-clang.cmake finds the GNU "
+            "toolchain through CLANG_GCC_CMSIS_COMPILER (the ST Arm Clang installation directory) "
+            "and GCC_TOOLCHAIN_ROOT (the bin directory of arm-none-eabi-gcc), and CMake fails to "
+            "configure the project without them"
+        )
+        for environment, std, missing in (
+            ({}, "hybrid", "CLANG_GCC_CMSIS_COMPILER, GCC_TOOLCHAIN_ROOT"),
+            ({"CLANG_GCC_CMSIS_COMPILER": "/opt/st-arm-clang"}, "hybrid", "GCC_TOOLCHAIN_ROOT"),
+            # clang 不给标准库时沿用已选的 STARM_HYBRID，同样检查。
+            # clang without a library keeps the STARM_HYBRID already selected and checks too.
+            ({"GCC_TOOLCHAIN_ROOT": ""}, None, "CLANG_GCC_CMSIS_COMPILER, GCC_TOOLCHAIN_ROOT"),
+            (
+                {"CLANG_GCC_CMSIS_COMPILER": "/opt/st-arm-clang", "GCC_TOOLCHAIN_ROOT": "/bin"},
+                "hybrid",
+                None,
+            ),
+            ({}, "newlib", None),
+        ):
+            with self.subTest(environment=environment, std=std):
+                if std is None:
+                    self.starm.write_text(
+                        CUBEMX_STARM.replace('"STARM_PICOLIBC"', '"STARM_HYBRID"'),
+                        encoding="utf-8",
+                    )
+                names = ("CLANG_GCC_CMSIS_COMPILER", "GCC_TOOLCHAIN_ROOT")
+                with (
+                    mock.patch.dict(os.environ, environment),
+                    self.assertLogs(level="INFO") as logs,
+                ):
+                    for name in names:
+                        if name not in environment:
+                            os.environ.pop(name, None)
+                    self.assertEqual(self.switch("clang", std), 0)
+                warnings = [line for line in logs.output if line.startswith("WARNING")]
+                self.assertEqual(warnings, [warning.format(missing)] if missing else [])
 
     def test_a_failed_check_changes_nothing(self):
         def missing_gcc():

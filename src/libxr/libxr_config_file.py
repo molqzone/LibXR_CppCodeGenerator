@@ -64,11 +64,15 @@ def _dumper() -> YAML:
     return dumper
 
 
-def new_document() -> CommentedMap:
-    """新的空往返文档，顶层为映射。
-    A new, empty round-trip document with a mapping at the top level.
+def new_document(generator: str | None = None) -> CommentedMap:
+    """新的往返文档，顶层为映射；给出 generator 时第一个键是固定这个版本的 generator，否则为空。
+    A new round-trip document with a mapping at the top level; with generator given, its first
+    key is generator pinned to that version, otherwise it is empty.
     """
-    return CommentedMap()
+    document = CommentedMap()
+    if generator:
+        document["generator"] = generator
+    return document
 
 
 def parse(text: str, origin: str):

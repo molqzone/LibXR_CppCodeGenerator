@@ -370,15 +370,16 @@ def load_libxr_config(output_dir: str, config_source: str) -> None:
     effective settings.
 
     文件中的 SYSTEM 被忽略，它由工程 YAML 决定；config_version 大于 1 时给出警告。URL 的下载
-    时限为 CONFIG_DOWNLOAD_TIMEOUT 秒。没有配置文件时保留默认设置并使用新的空文档。已存在但
-    无法读取或解析的配置会中止生成，而不是换用默认值。配置的路径或 URL 记为
-    libxr_config_origin，之后设置无效的报错都写出它。
+    时限为 CONFIG_DOWNLOAD_TIMEOUT 秒。没有配置文件时保留默认设置并使用新文档，其中只有固定为
+    已安装 libxr 版本的 generator（包没有安装时为空文档）。已存在但无法读取或解析的配置会中止
+    生成，而不是换用默认值。配置的路径或 URL 记为 libxr_config_origin，之后设置无效的报错都写出它。
     SYSTEM from the file is ignored because the project YAML decides it; a config_version
     above 1 is warned about. A URL download times out after CONFIG_DOWNLOAD_TIMEOUT seconds.
-    Without a configuration file the defaults stay and a new, empty document is used. A
-    configuration that exists but cannot be read or parsed stops generation instead of falling
-    back to the defaults. The path or URL of the configuration becomes libxr_config_origin,
-    which every later error about an invalid setting names.
+    Without a configuration file the defaults stay and a new document is used that holds only
+    generator, pinned to the installed libxr version (an empty document when the package is
+    not installed). A configuration that exists but cannot be read or parsed stops generation
+    instead of falling back to the defaults. The path or URL of the configuration becomes
+    libxr_config_origin, which every later error about an invalid setting names.
 
     Raises:
         LibXRConfigError: 配置无法下载、找到、读取或解析，或某个设置段不是映射。
@@ -435,7 +436,9 @@ def load_libxr_config(output_dir: str, config_source: str) -> None:
                 f"{config_path} 不存在，按默认设置新建",
             )
         )
-        libxr_config_document = libxr_config_file.new_document()
+        libxr_config_document = libxr_config_file.new_document(update_notice.installed_version())
+        if "generator" in libxr_config_document:
+            libxr_settings["generator"] = libxr_config_document["generator"]
         return
 
     version = saved_config.get("config_version", 1)
@@ -1367,6 +1370,36 @@ def _dcache_line_size(project_data: dict) -> int:
     return DCACHE_LINE_SIZE
 
 
+# STM32CubeMX 为这些系列生成的链接脚本把 .data 和 .bss 放在 DTCMRAM，DMA 不能访问这块 RAM。
+# The linker scripts STM32CubeMX generates for these families place .data and .bss in DTCMRAM,
+# which DMA cannot access.
+_DTCM_BSS_FAMILIES = frozenset({"STM32H7"})
+
+
+def _warn_dtcm_buffers(project_data: dict, keys: list[str]) -> None:
+    """工程的系列在 _DTCM_BSS_FAMILIES 中且 keys 非空时记录一条警告：这些实例设置没有 dma_section，
+    缓冲区随 .bss 落在 DTCMRAM。生成的代码不变。
+    Warn when the family of the project is in _DTCM_BSS_FAMILIES and keys is not empty: these
+    instance settings have no dma_section, so their buffers land in DTCMRAM with .bss. The
+    generated code stays the same.
+    """
+    family = (project_data.get("Mcu", {}).get("Family") or "").upper()
+    if family not in _DTCM_BSS_FAMILIES or not keys:
+        return
+    logging.warning(
+        tr(
+            f"{libxr_config_origin}: {', '.join(keys)} set no dma_section, so their DMA buffers "
+            f"go to .bss, which the linker script STM32CubeMX generates for {family} places in "
+            "DTCMRAM, out of reach of DMA; add a section in RAM that DMA can access (such as "
+            "AXI SRAM) to the linker script and set it as dma_section of these instances",
+            f"{libxr_config_origin}：{'、'.join(keys)} 没有设置 dma_section，它们的 DMA 缓冲区位于 "
+            f".bss，而 STM32CubeMX 为 {family} 生成的链接脚本把 .bss 放在 DTCMRAM，DMA 不能访问；"
+            "请在链接脚本中加入位于 DMA 可访问的 RAM（例如 AXI SRAM）中的段，并把它设为这些实例的 "
+            "dma_section",
+        )
+    )
+
+
 def _mcu_label(project_data: dict) -> str:
     """说明注释中的 MCU 名：型号去掉末尾的封装和温度等级，例如 STM32F407IGH6 写作 STM32F407IG。
     The MCU name for the comment: the part number without the trailing package and temperature
@@ -1412,6 +1445,14 @@ def _natural_key(text: str) -> list:
     usart10.
     """
     return [int(part) if part.isdigit() else part for part in re.split(r"(\d+)", text)]
+
+
+def _spi_uses_dma(config: dict) -> bool:
+    """SPI 实例的配置 config 中两个方向都开启了 DMA 时为 True；只有一个方向开启时 SPI 也不用 DMA。
+    True when the configuration config of an SPI instance enables DMA in both directions; with
+    DMA in a single direction the SPI does not use DMA either.
+    """
+    return all(config.get(f"DMA_{direction}") == "ENABLE" for direction in ("RX", "TX"))
 
 
 def dma_argument(name: str) -> "str | Braces":
@@ -1460,16 +1501,19 @@ def generate_dma_resources(project_data: dict) -> list[str]:
     Register the DMA buffers of the peripherals and return their definitions, one line per
     buffer; an empty list without any buffer.
 
-    SPI 和 USART（含 UART、LPUART）为开启 DMA 的方向各生成一个缓冲区；I2C 和 ADC 各生成一个缓冲区，
-    ADC 的元素数为通道数乘以每通道元素数；已启用的 USB 实例生成端点缓冲区。缓冲区大小和 dma_section
-    取自 libxr_settings，缺少时写入默认值，大小必须是正整数；dma_section 非空时声明带
-    __attribute__((section("...")))。缓冲区按名字的自然顺序排列。
-    SPI and USART, UART and LPUART included, get one buffer per direction with DMA enabled; I2C
+    USART（含 UART、LPUART）为开启 DMA 的方向各生成一个缓冲区；SPI 总是生成发送和接收缓冲区，
+    不用 DMA（即两个方向不都有 DMA，见 _spi_uses_dma() 和 _generate_spi()）时缓冲区只由 CPU 访问；
+    I2C 和 ADC 各生成一个缓冲区，ADC 的元素数为通道数乘以每通道元素数；已启用的 USB 实例生成端点
+    缓冲区。缓冲区大小和 dma_section 取自 libxr_settings，缺少时写入默认值，大小必须是正整数；
+    dma_section 非空时声明带 __attribute__((section("...")))。缓冲区按名字的自然顺序排列。
+    A USART, UART and LPUART included, gets one buffer per direction with DMA enabled; an SPI
+    always gets its transmit and receive buffers, accessed by the CPU alone when it does not use
+    DMA, that is without DMA in both directions (see _spi_uses_dma() and _generate_spi()); I2C
     and ADC get one buffer each, the ADC one holding the channel count times the elements per
-    channel; enabled USB instances get endpoint buffers. Buffer sizes and dma_section come from
-    libxr_settings, which receives the defaults for missing values, and sizes must be positive
-    integers; a non-empty dma_section adds __attribute__((section("..."))) to the declarations.
-    The buffers are sorted by name in natural order.
+    channel; enabled USB instances get endpoint buffers. Buffer sizes and dma_section come from libxr_settings,
+    which receives the defaults for missing values, and sizes must be positive integers; a
+    non-empty dma_section adds __attribute__((section("..."))) to the declarations. The buffers
+    are sorted by name in natural order.
 
     没有数据 cache 的 MCU 按 4 字节对齐；有数据 cache 的 MCU 按 cache 行对齐，数组长度向上取整到
     cache 行的整数倍，缓冲区两端不与其他数据共用 cache 行；驱动被告知的大小不变，见
@@ -1479,16 +1523,28 @@ def generate_dma_resources(project_data: dict) -> list[str]:
     shares a cache line with either end of a buffer; the size a driver is told stays, see
     DmaBuffer.argument().
 
+    _DTCM_BSS_FAMILIES 中的系列上有 DMA 访问的缓冲区而 dma_section 为空的实例记录一条警告，见
+    _warn_dtcm_buffers()；不用 DMA 的 SPI 的缓冲区只由 CPU 访问，不计入。
+    On a family of _DTCM_BSS_FAMILIES, the instances with buffers that DMA accesses and an empty
+    dma_section are warned about, see _warn_dtcm_buffers(); the buffers of an SPI that does not
+    use DMA are accessed by the CPU only and do not count.
+
     Raises:
         LibXRConfigError: 某个设置段不是映射，或某个大小或 dma_section 无效。
             A settings section is not a mapping, or a size or dma_section is invalid.
     """
+    # 有缓冲区而 dma_section 为空的实例设置的键，例如 SPI.spi1。
+    # The keys of the instance settings with buffers and an empty dma_section, such as SPI.spi1.
+    unplaced: list[str] = []
 
-    def add(element: str, name: str, count: int, section: str) -> None:
-        """登记一个缓冲区：count 个 element 类型的元素，位于 section 段。
-        Register one buffer of count elements of the type element in the section section.
+    def add(key: str, element: str, name: str, count: int, section: str) -> None:
+        """登记实例设置 key 的一个缓冲区：count 个 element 类型的元素，位于 section 段。
+        Register one buffer of the instance settings key: count elements of the type element in
+        the section section.
         """
         dma_buffers[name] = DmaBuffer(name, element, count, section, count)
+        if not section and key not in unplaced:
+            unplaced.append(key)
 
     def section_of(key: str, instance_config: dict) -> str:
         """实例设置中 dma_section 的值；没有设置时为空字符串，并把 dma_section 记为空字符串，使
@@ -1538,10 +1594,20 @@ def generate_dma_resources(project_data: dict) -> list[str]:
                 )
                 section = section_of(key, instance_config)
 
+                if p_type_base == "SPI" and not _spi_uses_dma(config):
+                    # 不用 DMA 的 SPI 走轮询路径，也经过这两个缓冲区，见 _generate_spi()；CPU
+                    # 访问它们，所在的 RAM 不受 DMA 的限制。
+                    # An SPI without DMA takes the polling path, which goes through these two
+                    # buffers as well, see _generate_spi(); the CPU accesses them, so their RAM
+                    # has no DMA limit.
+                    for direction, size in (("tx", tx_size), ("rx", rx_size)):
+                        name = f"{instance_lower}_{direction}_buf"
+                        dma_buffers[name] = DmaBuffer(name, "uint8_t", size, section, size)
+                    continue
                 if tx_dma:
-                    add("uint8_t", f"{instance_lower}_tx_buf", tx_size, section)
+                    add(key, "uint8_t", f"{instance_lower}_tx_buf", tx_size, section)
                 if rx_dma:
-                    add("uint8_t", f"{instance_lower}_rx_buf", rx_size, section)
+                    add(key, "uint8_t", f"{instance_lower}_rx_buf", rx_size, section)
 
         # I2C/ADC 外设
         # I2C/ADC
@@ -1576,9 +1642,15 @@ def generate_dma_resources(project_data: dict) -> list[str]:
                     elems_per_channel = max(1, int(buf_size // 2))
                     # 总元素数 = 通道数 × 每通道元素数
                     # Total elements = channel count × elements per channel
-                    add("uint16_t", f"{instance_lower}_buf", ch_cnt * elems_per_channel, section)
+                    add(
+                        key,
+                        "uint16_t",
+                        f"{instance_lower}_buf",
+                        ch_cnt * elems_per_channel,
+                        section,
+                    )
                 else:
-                    add("uint8_t", f"{instance_lower}_buf", buf_size, section)
+                    add(key, "uint8_t", f"{instance_lower}_buf", buf_size, section)
 
         elif p_type_base == "USB":
             # 为每个已启用的 USB 实例生成端点缓冲区（所在段由 dma_section 决定）。
@@ -1597,10 +1669,12 @@ def generate_dma_resources(project_data: dict) -> list[str]:
                     name.startswith("USB_OTG_"), len(_cdc_items(usb_cfg)), ep0, tx_sz, rx_sz
                 )
                 for suffix, size in plan:
-                    add("uint8_t", f"{name.lower()}_{suffix}", size, usb_cfg["dma_section"])
+                    section = usb_cfg["dma_section"]
+                    add(f"USB.{name.lower()}", "uint8_t", f"{name.lower()}_{suffix}", size, section)
 
     if not dma_buffers:
         return []
+    _warn_dtcm_buffers(project_data, unplaced)
     line = _dcache_line_size(project_data)
     if line:
         for name, buffer in list(dma_buffers.items()):
@@ -1902,26 +1976,49 @@ class PeripheralFactory:
 
     @staticmethod
     def _generate_spi(instance: str, config: dict) -> tuple:
-        """生成 STM32SPI 对象；未开启 DMA 的方向使用空缓冲区 {nullptr, 0}。
-        Generate the STM32SPI object; a direction without DMA gets the empty buffer
-        {nullptr, 0}.
+        """生成 STM32SPI 对象。
+        Generate the STM32SPI object.
 
-        dma_enable_min_size 取自 libxr_settings 中 SPI 下的设置，默认为 3。
-        dma_enable_min_size comes from the SPI settings in libxr_settings and defaults to 3.
+        两个方向都开启了 DMA 的 SPI（见 _spi_uses_dma()）使用它的两个 DMA 缓冲区，
+        dma_enable_min_size 取自 libxr_settings 中 SPI 下的设置，默认为 3。其他 SPI，包括只有一个
+        方向开启了 DMA 的，使用 generate_dma_resources() 为它生成的发送和接收缓冲区（大小取自
+        tx_buffer_size 和 rx_buffer_size），dma_enable_min_size 写成 UINT32_MAX：传输长度总不超过
+        它，STM32SPI 总是走轮询路径，经这两个缓冲区收发，不使用 DMA 通道；这时不读取也不写入
+        dma_enable_min_size 设置。只有一个方向开启了 DMA 时记录一条警告。
+        An SPI with DMA in both directions (see _spi_uses_dma()) uses its two DMA buffers, and
+        dma_enable_min_size comes from the SPI settings in libxr_settings and defaults to 3. Any
+        other SPI, one with DMA in a single direction included, uses the transmit and receive
+        buffers that generate_dma_resources() generates for it, sized by tx_buffer_size and
+        rx_buffer_size, and dma_enable_min_size is written as UINT32_MAX: no transfer is longer,
+        so STM32SPI always takes the polling path through these two buffers and uses no DMA
+        channel; the dma_enable_min_size setting is then neither read nor written. DMA in a
+        single direction is warned about.
         """
         name = instance.lower()
-        tx_enabled = config.get("DMA_TX", "DISABLE") == "ENABLE"
-        rx_enabled = config.get("DMA_RX", "DISABLE") == "ENABLE"
-
-        spi_config = _settings("SPI", name)
-        dma_min_size = _integer(
-            f"SPI.{name}.dma_enable_min_size",
-            spi_config.setdefault("dma_enable_min_size", 3),
-            0,
-        )
-
-        tx_buf = dma_argument(f"{name}_tx_buf") if tx_enabled else Braces("nullptr", "0")
-        rx_buf = dma_argument(f"{name}_rx_buf") if rx_enabled else Braces("nullptr", "0")
+        if _spi_uses_dma(config):
+            spi_config = _settings("SPI", name)
+            dma_min_size = _integer(
+                f"SPI.{name}.dma_enable_min_size",
+                spi_config.setdefault("dma_enable_min_size", 3),
+                0,
+            )
+        else:
+            dma_min_size = "UINT32_MAX"
+            directions = [d for d in ("RX", "TX") if config.get(f"DMA_{d}") == "ENABLE"]
+            if directions:
+                on, off = directions[0], ({"RX", "TX"} - set(directions)).pop()
+                logging.warning(
+                    tr(
+                        f"{instance} has DMA for {on} only; an SPI uses DMA only with DMA for "
+                        f"both RX and TX, so {name} takes the polling path and its {on} DMA "
+                        f"channel is not used. Enable DMA for {off} in STM32CubeMX to use DMA",
+                        f"{instance} 只有 {on} 方向开启了 DMA；SPI 只在 RX 和 TX 都有 DMA 时使用 "
+                        f"DMA，{name} 走轮询路径，{on} 的 DMA 通道不被使用。需要 DMA 时请在 "
+                        f"STM32CubeMX 中为 {off} 开启 DMA",
+                    )
+                )
+        tx_buf = dma_argument(f"{name}_tx_buf")
+        rx_buf = dma_argument(f"{name}_rx_buf")
 
         _use_header("stm32_spi.hpp")
         _use_handle("SPI_HandleTypeDef", f"h{name}")
@@ -2594,18 +2691,35 @@ def _generate_core_system(project_data: dict) -> list[str]:
     Under FreeRTOS and ThreadX PlatformInit() takes the priority level (see _priority_level())
     and stack depth of the software timer; an unsupported SYSTEM logs an error and exits with
     status 1.
+
+    Raises:
+        ValueError: 时基来源是 LPTIM 或 HRTIM；STM32TimerTimebase 只接受 TIM 的句柄
+            （TIM_HandleTypeDef）。
+            The timebase source is an LPTIM or HRTIM; STM32TimerTimebase takes only the handle
+            of a TIM (TIM_HandleTypeDef).
     """
     timebase_cfg = project_data.get("Timebase", {"Source": "SysTick"})
     source = timebase_cfg.get("Source", "SysTick")
+
+    if source.startswith(("LPTIM", "HRTIM")):
+        raise ValueError(
+            tr(
+                f"the HAL timebase is {source}, but the LibXR timebase supports only TIM timers "
+                "(STM32TimerTimebase takes a TIM_HandleTypeDef); nothing was written. In "
+                "STM32CubeMX, set SYS > Timebase Source to a TIM timer (such as TIM6) and "
+                "regenerate",
+                f"HAL 时基是 {source}，而 LibXR 的时基只支持 TIM 定时器（STM32TimerTimebase 接受 "
+                "TIM_HandleTypeDef），未写入任何文件。请在 STM32CubeMX 的 SYS 中把 Timebase Source "
+                "改为 TIM 定时器（例如 TIM6）后重新生成",
+            )
+        )
 
     _use_header("stm32_timebase.hpp")
     _use_header("stm32_power.hpp")
     if source != "SysTick":
         handler = f"h{source.lower()}"
-        for prefix in ("TIM", "LPTIM", "HRTIM"):
-            if source.startswith(prefix):
-                _use_handle(f"{prefix}_HandleTypeDef", handler)
-                break
+        if source.startswith("TIM"):
+            _use_handle("TIM_HandleTypeDef", handler)
         timebase = layout("static STM32TimerTimebase timebase", [f"&{handler}"])
     else:
         # 默认使用 SysTick / Default to SysTick
@@ -3351,17 +3465,31 @@ def _remove_generated(path: str) -> bool:
 
 
 def check_generator_pin() -> None:
-    """libxr_config.yaml 固定的 generator 版本与已安装的 libxr 不同时给出警告。
-    Warn when the generator version pinned in libxr_config.yaml differs from the installed libxr.
+    """libxr_config.yaml 没有固定 generator 版本，或固定的版本与已安装的 libxr 不同时给出警告。
+    Warn when libxr_config.yaml pins no generator version, or one that differs from the
+    installed libxr.
 
-    BSP 的 CI 安装固定的版本重新生成并与提交的文件比较，用其他版本生成的文件可能与之不同。固定为
-    commit 时不比较。
+    BSP 的 CI 安装固定的版本重新生成并与提交的文件比较，用其他版本生成的文件可能与之不同。新建的
+    libxr_config.yaml 已写入当前版本（见 load_libxr_config()）。固定为 commit 时不比较；包没有
+    安装、无法得知版本时不检查。
     BSP CI installs the pinned version, regenerates and compares with the committed files, so
-    files generated by another version may differ. A pin to a commit is not compared.
+    files generated by another version may differ. A new libxr_config.yaml already holds the
+    current version (see load_libxr_config()). A pin to a commit is not compared; nothing is
+    checked when the package is not installed and its version is unknown.
     """
     pin = libxr_settings.get("generator")
     installed = update_notice.installed_version()
-    if pin is None or installed is None:
+    if installed is None:
+        return
+    if pin is None:
+        logging.warning(
+            tr(
+                f"libxr_config.yaml does not pin the generator; add `generator: {installed}` "
+                "(the BSP CI installs the pinned version)",
+                f"libxr_config.yaml 没有固定 generator 的版本；请添加 `generator: {installed}`"
+                "（BSP 的 CI 安装固定的版本）",
+            )
+        )
         return
     pin = str(pin)
     if pin == installed or re.fullmatch(r"[0-9a-f]{40}", pin):

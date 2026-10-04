@@ -792,7 +792,7 @@ class PeripheralObjects(GeneratorTestCase):
                 "  static STM32PWM pwm_tim1_ch1n(&htim1, TIM_CHANNEL_1, true);",
                 "  static STM32UART usart1(&huart1, {nullptr, 0}, {nullptr, 0}, 5);",
                 "  static STM32I2C i2c1(&hi2c1, i2c1_buf, 3);",
-                "  static STM32SPI spi1(&hspi1, {nullptr, 0}, {nullptr, 0}, 3);",
+                "  static STM32SPI spi1(&hspi1, spi1_rx_buf, spi1_tx_buf, UINT32_MAX);",
                 "  static STM32CAN can1(&hcan1, 5);",
                 "  static STM32CANFD fdcan2(&hfdcan2, 5);",
                 '  static RamFS ramfs("XRobot");',
@@ -810,6 +810,28 @@ class PeripheralObjects(GeneratorTestCase):
         code = self.generate(self.project(peripherals={"IWDG": {"IWDG": {"Enabled": False}}}))
         self.setUp()
         self.assertEqual(code, self.generate(self.project()))
+
+    def test_the_timebase_is_a_tim_timer(self):
+        # 以前 LPTIM 或 HRTIM 作时基时生成 STM32TimerTimebase(&hlptim1)，编译失败：构造函数只接受
+        # TIM_HandleTypeDef*。
+        # An LPTIM or HRTIM timebase used to give STM32TimerTimebase(&hlptim1), which failed to
+        # compile: the constructor takes only a TIM_HandleTypeDef*.
+        project = self.project()
+        project["Timebase"] = {"Source": "TIM6"}
+        code = self.generate(project)
+        self.assertIn("extern TIM_HandleTypeDef htim6;\n", code)
+        self.assertIn("  static STM32TimerTimebase timebase(&htim6);\n", code)
+        for source in ("LPTIM1", "HRTIM1"):
+            with self.subTest(source=source):
+                project["Timebase"] = {"Source": source}
+                with self.assertRaisesMessage(
+                    ValueError,
+                    f"the HAL timebase is {source}, but the LibXR timebase supports only TIM "
+                    "timers (STM32TimerTimebase takes a TIM_HandleTypeDef); nothing was written. "
+                    "In STM32CubeMX, set SYS > Timebase Source to a TIM timer (such as TIM6) and "
+                    "regenerate",
+                ):
+                    self.generate(project)
 
     def test_thread_priorities_are_libxr_levels(self):
         # LibXR 按 RTOS 的优先级数换算等级，原样写数值在 configMAX_PRIORITIES 较大的 FreeRTOS
@@ -932,6 +954,8 @@ class PeripheralObjects(GeneratorTestCase):
                 code = self.generate(self.project(peripherals=peripherals, mcu=mcu, family=family))
                 self.assertIn(
                     f"// DMA buffers ({comment})\n"
+                    f"alignas({alignment}) static uint8_t spi1_rx_buf[32];\n"
+                    f"alignas({alignment}) static uint8_t spi1_tx_buf[32];\n"
                     f"alignas({alignment}) static uint8_t usart1_rx_buf[128];\n",
                     code,
                 )
@@ -977,6 +1001,48 @@ class PeripheralObjects(GeneratorTestCase):
             ],
         )
 
+    def test_h7_buffers_without_a_section_are_warned_about(self):
+        # CubeMX 给 H7 的链接脚本把 .bss 放在 DTCMRAM，以前不设 dma_section 时没有任何提示，
+        # DMA 缓冲区全部落在 DTCM（MC02 实测 RAM_D1: 0 B）。
+        # The linker script CubeMX writes for H7 places .bss in DTCMRAM, and without dma_section
+        # nothing used to say so while every DMA buffer landed in DTCM (MC02 measured RAM_D1: 0 B).
+        peripherals = {
+            "USART": {"USART1": {"DMA_RX": "ENABLE"}, "USART2": {}},
+            "I2C": {"I2C1": {}},
+            "SPI": {"SPI1": {"DMA_TX": "ENABLE", "DMA_RX": "ENABLE"}},
+        }
+        generator.libxr_settings["SPI"] = {"spi1": {"dma_section": ".axi_ram"}}
+        h7 = self.project(peripherals=peripherals, mcu="STM32H723VGT6", family="STM32H7")
+        with self.assertLogs(level="WARNING") as logs:
+            code = self.generate(h7)
+        self.assertEqual(
+            logs.output,
+            [
+                "WARNING:root:libxr_config.yaml: USART.usart1, I2C.i2c1 set no dma_section, so "
+                "their DMA buffers go to .bss, which the linker script STM32CubeMX generates for "
+                "STM32H7 places in DTCMRAM, out of reach of DMA; add a section in RAM that DMA "
+                "can access (such as AXI SRAM) to the linker script and set it as dma_section of "
+                "these instances"
+            ],
+        )
+        # 生成的代码不变。
+        # The generated code stays the same.
+        self.assertIn("alignas(32) static uint8_t usart1_rx_buf[128];\n", code)
+        # 其他系列和设置了 dma_section 的 H7 不警告。
+        # Other families, and H7 with dma_section set, are not warned about.
+        for family, mcu, sections in (
+            ("STM32F4", "STM32F407IGH6", {}),
+            ("STM32F7", "STM32F746VGT6", {}),
+            ("STM32H7", "STM32H723VGT6", {"USART": "usart1", "I2C": "i2c1"}),
+        ):
+            with self.subTest(family=family, sections=sections):
+                self.setUp()
+                for group, instance in sections.items():
+                    generator.libxr_settings[group] = {instance: {"dma_section": ".axi_ram"}}
+                generator.libxr_settings["SPI"] = {"spi1": {"dma_section": ".axi_ram"}}
+                with self.assertNoLogs(level="WARNING"):
+                    self.generate(self.project(peripherals=peripherals, mcu=mcu, family=family))
+
     def test_a_long_section_attribute_goes_on_its_own_line(self):
         generator.libxr_settings["SPI"] = {"spi1": {"dma_section": ".axi_ram_with_a_long_name"}}
         generator.libxr_settings["I2C"] = {"i2c1": {"dma_section": ".axi_ram"}}
@@ -990,7 +1056,7 @@ class PeripheralObjects(GeneratorTestCase):
             code,
         )
 
-    def test_uart_and_spi_buffers_follow_the_dma_directions(self):
+    def test_uart_buffers_follow_the_dma_directions(self):
         code = self.generate(
             self.project(
                 peripherals={
@@ -999,7 +1065,7 @@ class PeripheralObjects(GeneratorTestCase):
                         "USART2": {"DMA_RX": "ENABLE"},
                         "USART3": {},
                     },
-                    "SPI": {"SPI1": {"DMA_TX": "ENABLE"}},
+                    "SPI": {"SPI1": {"DMA_TX": "ENABLE", "DMA_RX": "ENABLE"}},
                 }
             )
         )
@@ -1010,18 +1076,89 @@ class PeripheralObjects(GeneratorTestCase):
         ):
             with self.subTest(uart=uart):
                 self.assertIn(f"static STM32UART {uart}, {buffers}, 5);", code)
-        self.assertIn("static STM32SPI spi1(&hspi1, {nullptr, 0}, spi1_tx_buf, 3);", code)
+        self.assertIn("static STM32SPI spi1(&hspi1, spi1_rx_buf, spi1_tx_buf, 3);", code)
         # 缓冲区按名字排列，每个一行。
         # The buffers are sorted by name, one per line.
         self.assertEqual(
             [line for line in code.splitlines() if line.startswith("alignas(4) static uint8_t")],
             [
+                "alignas(4) static uint8_t spi1_rx_buf[32];",
                 "alignas(4) static uint8_t spi1_tx_buf[32];",
                 "alignas(4) static uint8_t usart1_rx_buf[128];",
                 "alignas(4) static uint8_t usart1_tx_buf[128];",
                 "alignas(4) static uint8_t usart2_rx_buf[128];",
             ],
         )
+
+    def test_an_spi_without_dma_polls_through_its_own_buffers(self):
+        # 以前没有 DMA 的 SPI 得到 {nullptr, 0} 和 dma_enable_min_size 3：STM32SPI 每次传输都先
+        # 复制到发送缓冲区（写空指针），超过 3 字节时还进入 DMA 分支。
+        # An SPI without DMA used to get {nullptr, 0} and dma_enable_min_size 3: STM32SPI copies
+        # into the transmit buffer on every transfer (a null write) and took the DMA branch above
+        # 3 bytes.
+        generator.libxr_settings["SPI"] = {"spi2": {"tx_buffer_size": 16, "rx_buffer_size": 64}}
+        peripherals = {"SPI": {"SPI1": {"DMA_RX": "ENABLE", "DMA_TX": "ENABLE"}, "SPI2": {}}}
+        with self.assertNoLogs(level="WARNING"):
+            code = self.generate(self.project(peripherals=peripherals))
+        self.assertIn("static STM32SPI spi2(&hspi2, spi2_rx_buf, spi2_tx_buf, UINT32_MAX);", code)
+        self.assertIn("alignas(4) static uint8_t spi2_rx_buf[64];\n", code)
+        self.assertIn("alignas(4) static uint8_t spi2_tx_buf[16];\n", code)
+        # 不用的 dma_enable_min_size 不写入；两个方向都有 DMA 的 SPI 不变。
+        # The unused dma_enable_min_size is not written; an SPI with DMA in both directions stays
+        # as it was.
+        self.assertNotIn("dma_enable_min_size", generator.libxr_settings["SPI"]["spi2"])
+        self.assertIn("static STM32SPI spi1(&hspi1, spi1_rx_buf, spi1_tx_buf, 3);", code)
+        # H7 上它们只由 CPU 访问，不提示 dma_section。
+        # On H7 the CPU alone accesses them, so dma_section is not asked for.
+        self.setUp()
+        peripherals = {"SPI": {"SPI2": {}}}
+        with self.assertNoLogs(level="WARNING"):
+            code = self.generate(
+                self.project(peripherals=peripherals, mcu="STM32H723VGT6", family="STM32H7")
+            )
+        self.assertIn("alignas(32) static uint8_t spi2_rx_buf[32];\n", code)
+
+    def test_an_spi_with_dma_in_one_direction_polls_like_one_without_dma(self):
+        # 以前只有一个方向有 DMA 的 SPI 另一方向得到 {nullptr, 0}，STM32SPI 在这个方向上访问
+        # 空指针。现在两个方向都有 DMA 才使用 DMA。
+        # An SPI with DMA in one direction used to get {nullptr, 0} for the other, and STM32SPI
+        # accessed a null pointer in that direction. DMA is now used only with both.
+        generator.libxr_settings["SPI"] = {
+            "spi6": {"tx_buffer_size": 48, "dma_section": ".axi_ram", "dma_enable_min_size": 8}
+        }
+        for config, on, off in (
+            ({"DMA_TX": "ENABLE"}, "TX", "RX"),
+            ({"DMA_RX": "ENABLE"}, "RX", "TX"),
+        ):
+            with self.subTest(on=on):
+                project = self.project(
+                    peripherals={"SPI": {"SPI6": config}},
+                    mcu="STM32H723VGT6",
+                    family="STM32H7",
+                )
+                with self.assertLogs(level="WARNING") as logs:
+                    code = self.generate(project)
+                # 48 字节的发送缓冲区取整到两个 cache 行，驱动仍按 48 字节使用；已有的
+                # dma_enable_min_size 不被使用。
+                # The 48-byte transmit buffer rounds up to two cache lines and the driver still
+                # uses 48 bytes; the existing dma_enable_min_size is not used.
+                self.assertIn(
+                    "static STM32SPI spi6(&hspi6, spi6_rx_buf, {spi6_tx_buf, 48}, UINT32_MAX);",
+                    code,
+                )
+                self.assertIn(
+                    'alignas(32) static uint8_t spi6_rx_buf[32] __attribute__((section(".axi_ram")));\n'
+                    'alignas(32) static uint8_t spi6_tx_buf[64] __attribute__((section(".axi_ram")));\n',
+                    code,
+                )
+                self.assertEqual(
+                    logs.output,
+                    [
+                        f"WARNING:root:SPI6 has DMA for {on} only; an SPI uses DMA only with DMA "
+                        f"for both RX and TX, so spi6 takes the polling path and its {on} DMA "
+                        f"channel is not used. Enable DMA for {off} in STM32CubeMX to use DMA"
+                    ],
+                )
 
     def test_a_channel_in_several_ranks_gets_one_reference_per_rank(self):
         # DevC 的 ADC3 在第 1 和第 12 个 rank 都转换 IN8；以前两个引用同名，生成时报名字冲突。
@@ -1971,24 +2108,28 @@ class HashSeedIndependence(GeneratorTestCase):
 
 
 class GeneratorPin(GeneratorTestCase):
-    """libxr_config.yaml 固定的 generator 版本与已安装的不同时警告。
-    A warning when the generator pinned in libxr_config.yaml differs from the installed one.
+    """新建的 libxr_config.yaml 固定当前的 generator 版本；已有的配置没有固定或固定的版本与已安装
+    的不同时警告。
+    A new libxr_config.yaml pins the current generator version; an existing configuration
+    without a pin, or with a pin that differs from the installed version, is warned about.
     """
 
-    def warnings(self, pin):
-        """在固定 pin、已安装 6.0.0 时检查，返回警告日志。
-        Check with the pin pin and 6.0.0 installed; return the warning logs.
+    def warnings(self, pin, installed="6.0.0"):
+        """在固定 pin、已安装 installed 时检查，返回警告日志。
+        Check with the pin pin and installed installed; return the warning logs.
         """
-        generator.libxr_settings["generator"] = pin
+        generator.libxr_settings.pop("generator", None)
+        if pin is not None:
+            generator.libxr_settings["generator"] = pin
         with (
-            mock.patch("libxr.update_notice.installed_version", return_value="6.0.0"),
+            mock.patch("libxr.update_notice.installed_version", return_value=installed),
             self.assertLogs(level="WARNING") as logs,
         ):
             logging_marker()
             generator.check_generator_pin()
         return [line for line in logs.output if "marker" not in line]
 
-    def test_only_a_different_version_warns(self):
+    def test_a_missing_or_different_version_warns(self):
         for pin, warnings in (
             (
                 "5.2.4",
@@ -1999,10 +2140,37 @@ class GeneratorPin(GeneratorTestCase):
             ),
             ("6.0.0", []),
             ("0123456789abcdef0123456789abcdef01234567", []),
-            (None, []),
+            # 以前没有固定版本时不提示，BSP CI 到运行时才报缺少版本固定。
+            # A missing pin used to pass silently until BSP CI reported it.
+            (
+                None,
+                [
+                    "WARNING:root:libxr_config.yaml does not pin the generator; add "
+                    "`generator: 6.0.0` (the BSP CI installs the pinned version)"
+                ],
+            ),
         ):
             with self.subTest(pin=pin):
                 self.assertEqual(self.warnings(pin), warnings)
+        # 包没有安装、不知道版本时不检查。
+        # Nothing is checked when the package is not installed and the version is unknown.
+        self.assertEqual(self.warnings(None, installed=None), [])
+
+    def test_a_new_configuration_pins_the_installed_version_first(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for installed, first in (("6.0.0", "generator: 6.0.0\n"), (None, "terminal_source:")):
+                with self.subTest(installed=installed):
+                    self.setUp()
+                    with mock.patch(
+                        "libxr.update_notice.installed_version", return_value=installed
+                    ):
+                        generator.load_libxr_config(directory, "")
+                        self.generate(self.project(), use_xrobot=False)
+                        text = generator.libxr_config_text()
+                        self.assertTrue(text.startswith(first), text)
+                        self.assertEqual(text.count("generator:"), 1 if installed else 0)
+                        with self.assertNoLogs(level="WARNING"):
+                            generator.check_generator_pin()
 
 
 if __name__ == "__main__":

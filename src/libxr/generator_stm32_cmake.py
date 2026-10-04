@@ -462,20 +462,46 @@ def _is_debug_block(text: str) -> bool:
     return True
 
 
-def _migrate_debug_block(text: str) -> str | None:
-    """取出旧模板 Debug 块中应用目标的 -O 级别（没有时为 None），并逐条记录被丢弃的其他选项。
-    Take the -O level of the application target from a Debug block of the earlier templates
-    (None without one) and log every other option that is dropped.
+def _migrate_debug_block(text: str) -> tuple[str | None, str]:
+    """拆分旧模板的 Debug 块，返回 (应用目标的 -O 级别, 保留的 Debug 块)：没有应用目标的选项时
+    级别为 None，没有要保留的选项时 Debug 块为空字符串。
+    Split a Debug block of the earlier templates and return (the -O level of the application
+    target, the kept Debug block): the level is None without an option for the application
+    target, and the block is an empty string when no option is kept.
 
-    旧模板默认的库选项（_TEMPLATE_DEBUG_LIBRARIES 中的目标 -O2）由新结构重新生成，不记录；用户
-    改过的级别和加入的目标被丢弃，每条记一条说明。
+    旧模板默认的库选项（_TEMPLATE_DEBUG_LIBRARIES 中的目标 -O2）由新结构重新生成，不保留；用户
+    改过的级别和加入的目标原样保留，连同包住它的 if(TARGET ...) 块，放进同一条件的 Debug 块中，
+    每条记一条说明。保留的块写在 “Kept” 块中，排在 “Library optimization” 块之后，编译行上它的
+    -O 在后，因此仍然生效。
     The default library options of the earlier templates (-O2 for the targets in
-    _TEMPLATE_DEBUG_LIBRARIES) are generated again and not logged; levels the user changed and
-    targets the user added are dropped, with one notice each.
+    _TEMPLATE_DEBUG_LIBRARIES) are generated again and not kept; levels the user changed and
+    targets the user added are kept as written, with the if(TARGET ...) block around them, in a
+    Debug block of the same condition, with one notice each. The kept block goes into the
+    "Kept" block, after the "Library optimization" block, so its -O comes later on the compile
+    line and still applies.
     """
+
+    def line_start(offset: int) -> int:
+        """offset 所在行的行首。
+        The start of the line holding offset.
+        """
+        return text.rfind("\n", 0, offset) + 1
+
+    commands = cmake_text.commands(text)
     app_debug = None
-    for name, args, _, _ in cmake_text.commands(text):
-        if name != "target_compile_options":
+    kept: list[str] = []
+    # 正在读的 if(TARGET ...) 的起点，以及其中是否有要保留的选项。
+    # The start of the if(TARGET ...) being read, and whether it holds an option to keep.
+    guard: int | None = None
+    guard_kept = False
+    for name, args, start, end in commands[1:-1]:
+        if name == "if":
+            guard, guard_kept = start, False
+            continue
+        if name == "endif":
+            if guard is not None and guard_kept:
+                kept.append(text[line_start(guard) : end])
+            guard = None
             continue
         target, _, level = args.split()
         if target == "${CMAKE_PROJECT_NAME}":
@@ -486,13 +512,21 @@ def _migrate_debug_block(text: str) -> str | None:
         option = f"target_compile_options({target} PRIVATE {level})"
         logging.info(
             tr(
-                f"LibXR.CMake: dropped {option} of the Debug block in the earlier file; Debug "
-                "builds now compile xr and the CubeMX libraries at -O2",
-                f"LibXR.CMake：已丢弃旧文件 Debug 块中的 {option}；Debug 构建现在以 -O2 编译 xr "
-                "和 CubeMX 生成的库",
+                f"LibXR.CMake: kept {option} of the Debug block in the earlier file in the Kept "
+                "block, after the -O2 that Debug builds now give xr and the CubeMX libraries",
+                f"LibXR.CMake：已把旧文件 Debug 块中的 {option} 保留在 Kept 块中，位于 Debug 构建"
+                "现在给 xr 和 CubeMX 生成的库的 -O2 之后",
             )
         )
-    return app_debug
+        if guard is None:
+            kept.append(text[line_start(start) : end])
+        else:
+            guard_kept = True
+    if not kept:
+        return app_debug, ""
+    opening = text[commands[0][2] : commands[0][3]]
+    closing = text[commands[-1][2] : commands[-1][3]]
+    return app_debug, "\n".join([opening, *kept, closing])
 
 
 def _toolchain_level(text: str, configuration: str) -> str | None:
@@ -549,7 +583,7 @@ def migrate_libxr_cmake(content: str, cmake_dir: str) -> tuple[str, str]:
     保留旧文件的 LIBXR_DRIVER 和 XROBOT_MODULES_DIR；Debug 优化级别取旧文件中应用目标的 -O 选项，
     没有时取工具链文件的 Debug 级别，Release 级别取工具链文件的（见 toolchain_level()），再没有
     就留空，由各工具链文件决定，与迁移前相同。旧模板中会重新生成的语句被丢弃；Debug 块中用户改过
-    的选项也被丢弃，每条记录一条说明（见 _migrate_debug_block()）。User 源文件的
+    的选项原样放进 “Kept” 块，每条记录一条说明（见 _migrate_debug_block()）。User 源文件的
     file(GLOB LIBXR_USER_SOURCES <模式>) 只有一个模式时写进 LIBXR_USER_SOURCES_GLOB；GLOB_RECURSE
     或多个模式时整条保留，与它的 target_sources 一起放进 “Kept” 块，LIBXR_USER_SOURCES_GLOB 为空。
     其余语句不丢：add_subdirectory(LibXR) 之前的放在设置块中，之后的放在 “Kept” 块中，并各记录
@@ -559,7 +593,8 @@ def migrate_libxr_cmake(content: str, cmake_dir: str) -> tuple[str, str]:
     and the Release level is that of the toolchain files (see toolchain_level()); without a level
     the setting stays empty and the toolchain files decide, as before the migration. The
     statements of the earlier templates that are generated again are dropped; options the user
-    changed in the Debug block are dropped too, with a notice each (see _migrate_debug_block()).
+    changed in the Debug block go into the "Kept" block as written, with a notice each (see
+    _migrate_debug_block()).
     A file(GLOB LIBXR_USER_SOURCES <pattern>) of the User sources with a single pattern goes into
     LIBXR_USER_SOURCES_GLOB; a GLOB_RECURSE or several patterns are kept as a whole, together
     with their target_sources, in the "Kept" block, and LIBXR_USER_SOURCES_GLOB is empty. No other
@@ -630,7 +665,9 @@ def migrate_libxr_cmake(content: str, cmake_dir: str) -> tuple[str, str]:
         ):
             continue
         if statement.name == "if" and _is_debug_block(text):
-            app_debug = _migrate_debug_block(text)
+            app_debug, kept_debug = _migrate_debug_block(text)
+            if kept_debug:
+                after.append(kept_debug)
             continue
         kept = content[statement.leading : statement.end].strip("\n")
         settings_side = library_at is None or index < library_at
