@@ -1069,15 +1069,49 @@ class Database(GeneratorTestCase):
         self.assertIn('#include "stm32_flash.hpp"\n', code)
 
     def test_the_block_size_is_the_template_argument(self):
-        generator.libxr_settings["database"] = {"enable": True, "block_size": 32}
-        self.assertIn("  static DatabaseRaw<32> database(flash);\n", self.generate())
+        # 已有配置中的数值照旧生成，例如 DevC 的 1 和 MC02 的 32。
+        # Numbers in existing configurations generate as before, such as 1 of DevC and 32 of
+        # MC02.
+        for block_size, argument in ((1, "1"), (32, "32"), ("0x20", "32")):
+            with self.subTest(block_size=block_size):
+                self.setUp()
+                generator.libxr_settings["database"] = {"enable": True, "block_size": block_size}
+                self.assertIn(
+                    f"  static DatabaseRaw<{argument}> database(flash);\n", self.generate()
+                )
+                self.assertEqual(generator.libxr_settings["database"]["block_size"], block_size)
+
+    def test_the_default_block_size_is_the_minimum_write_unit_of_the_flash(self):
+        # 以前默认为 1，而 DatabaseRaw 要求模板参数不小于 Flash 的最小写入单元，F1 为 2、H7 为 32，
+        # 在这些芯片上打开数据库即断言失败。
+        # The default used to be 1, while DatabaseRaw needs a template argument no smaller than
+        # the minimum write unit of the Flash, 2 on F1 and 32 on H7; enabling the database
+        # failed an assertion on those chips.
+        generator.libxr_settings["database"] = {"enable": True}
+        self.assertIn(
+            "  static STM32Flash flash(FLASH_REGIONS, FLASH_REGION_NUMBER);\n"
+            "  static DatabaseRaw<STM32Flash::MIN_WRITE_SIZE> database(flash);\n",
+            self.generate(),
+        )
+        self.assertEqual(
+            generator.libxr_settings["database"], {"enable": True, "block_size": "auto"}
+        )
+
+    def test_auto_is_not_case_sensitive(self):
+        for block_size in ("auto", "AUTO", " Auto "):
+            with self.subTest(block_size=block_size):
+                self.setUp()
+                generator.libxr_settings["database"] = {"enable": True, "block_size": block_size}
+                self.assertIn("DatabaseRaw<STM32Flash::MIN_WRITE_SIZE>", self.generate())
 
     def test_a_disabled_database_adds_nothing_and_is_listed_in_the_settings(self):
         code = self.generate()
         for text in ("STM32Flash", "DatabaseRaw", "flash_map.hpp", "stm32_flash.hpp"):
             with self.subTest(text=text):
                 self.assertNotIn(text, code)
-        self.assertEqual(generator.libxr_settings["database"], {"enable": False, "block_size": 1})
+        self.assertEqual(
+            generator.libxr_settings["database"], {"enable": False, "block_size": "auto"}
+        )
 
     def test_the_database_comes_after_the_terminal_and_before_the_registrations(self):
         generator.libxr_settings["database"] = {"enable": True}
@@ -1099,14 +1133,33 @@ class Database(GeneratorTestCase):
     def test_invalid_settings_are_rejected(self):
         for settings, problem in (
             ({"enable": "yes"}, "database.enable 'yes' is not true or false"),
-            ({"enable": True, "block_size": 0}, "database.block_size 0 is not a positive integer"),
-            ({"block_size": "wide"}, "database.block_size 'wide' is not a positive integer"),
+            (
+                {"enable": True, "block_size": 0},
+                "database.block_size 0 is not auto or a positive integer",
+            ),
+            (
+                {"block_size": "wide"},
+                "database.block_size 'wide' is not auto or a positive integer",
+            ),
+            ({"block_size": True}, "database.block_size True is not auto or a positive integer"),
+            ({"block_size": None}, "database.block_size None is not auto or a positive integer"),
         ):
             with self.subTest(settings=settings):
                 self.setUp()
                 generator.libxr_settings["database"] = settings
                 with self.assertRaisesMessage(LibXRConfigError, f"libxr_config.yaml: {problem}"):
                     self.generate()
+
+    def test_the_block_size_message_names_both_forms_in_chinese(self):
+        generator.libxr_settings["database"] = {"block_size": "wide"}
+        with (
+            mock.patch.dict(os.environ, XR_LANG="zh"),
+            self.assertRaisesMessage(
+                LibXRConfigError,
+                "libxr_config.yaml：database.block_size 'wide' 不是正整数或 auto",
+            ),
+        ):
+            self.generate()
 
     def test_a_gpio_label_cannot_take_the_name_of_the_database(self):
         generator.libxr_settings["database"] = {"enable": True}
@@ -1667,6 +1720,21 @@ class GenerationRuns(GeneratorTestCase):
             ],
         )
         self.assertEqual(sorted(path.name for path in user.iterdir()), ["libxr_config.yaml"])
+
+    def test_a_new_config_gets_block_size_auto_and_a_number_stays(self):
+        user, _ = self.run_generator("new", self.project(), "database:\n  enable: true\n")
+        self.assertIn(
+            "database:\n  enable: true\n  block_size: auto\n",
+            (user / "libxr_config.yaml").read_text(encoding="utf-8"),
+        )
+        self.assertIn(
+            "DatabaseRaw<STM32Flash::MIN_WRITE_SIZE>",
+            (user / "app_main.cpp").read_text(encoding="utf-8"),
+        )
+        old = "database:\n  enable: true\n  block_size: 32\n"
+        user, _ = self.run_generator("old", self.project(), old)
+        self.assertEqual(self.config(user)["database"], {"enable": True, "block_size": 32})
+        self.assertIn("DatabaseRaw<32>", (user / "app_main.cpp").read_text(encoding="utf-8"))
 
     def test_without_a_flash_layout_the_old_map_is_removed(self):
         self.run_generator("demo", self.project())

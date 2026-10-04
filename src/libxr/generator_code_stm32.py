@@ -67,7 +67,7 @@ DEFAULT_SETTINGS = {
         "max_arg_number": 5,
         "max_history_number": 5,
     },
-    "database": {"enable": False, "block_size": 1},
+    "database": {"enable": False, "block_size": "auto"},
     "SYSTEM": "None",
 }
 # 生效的设置：DEFAULT_SETTINGS 合并 libxr_config.yaml，生成过程中再补上缺少的默认值。
@@ -2656,27 +2656,66 @@ def generate_gpio_config(project_data: dict) -> list[str]:
 # --------------------------
 # Flash 与数据库 / Flash and Database
 # --------------------------
+# database.block_size 的默认值：由 LibXR 按芯片的 HAL 推出 Flash 的最小写入单元。
+# The default of database.block_size: LibXR derives the minimum write unit of the Flash from
+# the HAL of the chip.
+AUTO_BLOCK_SIZE = "auto"
+# block_size 为 auto 时 DatabaseRaw 的模板参数。
+# The template argument of DatabaseRaw when block_size is auto.
+MIN_WRITE_SIZE = "STM32Flash::MIN_WRITE_SIZE"
+
+
+def _block_size(value) -> str:
+    """database.block_size 的值 value 对应的 DatabaseRaw 模板参数：auto 为 MIN_WRITE_SIZE，即
+    LibXR 按芯片的 HAL 推出的 Flash 最小写入单元；正整数（字节）原样写出，字符串按
+    _integer() 解析。auto 不区分大小写。
+    The DatabaseRaw template argument for value, the value of database.block_size: auto gives
+    MIN_WRITE_SIZE, the minimum write unit of the Flash that LibXR derives from the HAL of the
+    chip; a positive integer (bytes) is written as it is, a string read as in _integer(). auto
+    is not case-sensitive.
+
+    Raises:
+        LibXRConfigError: value 既不是 auto 也不是正整数；信息中写出这两种写法。
+            value is neither auto nor a positive integer; the message names both forms.
+    """
+    if isinstance(value, str) and value.strip().lower() == AUTO_BLOCK_SIZE:
+        return MIN_WRITE_SIZE
+    try:
+        return str(_integer("database.block_size", value))
+    except LibXRConfigError:
+        raise _invalid_setting(
+            "database.block_size",
+            value,
+            f"{AUTO_BLOCK_SIZE} or a positive integer",
+            f"正整数或 {AUTO_BLOCK_SIZE}",
+        ) from None
+
+
 def generate_database(flash_map: bool) -> list[str]:
     """database.enable 为真时生成 STM32Flash 对象和 DatabaseRaw 数据库，并把数据库登记为
     database；否则为空列表。
     With database.enable, generate the STM32Flash object and the DatabaseRaw database and
     register the database as database; an empty list otherwise.
 
-    STM32Flash 使用 flash_map.hpp 中的扇区表和末尾两个扇区，分别作主块和备份块。block_size 是
-    DatabaseRaw 的模板参数，即 Flash 的最小写入单元（字节，默认 1）。flash_map 为假表示没有
-    flash_map.hpp。
+    STM32Flash 使用 flash_map.hpp 中的扇区表和末尾两个扇区，分别作主块和备份块。block_size 决定
+    DatabaseRaw 的模板参数，即 Flash 的最小写入单元：默认的 auto 生成
+    DatabaseRaw<STM32Flash::MIN_WRITE_SIZE>，正整数生成 DatabaseRaw<N>（见 _block_size()）。
+    flash_map 为假表示没有 flash_map.hpp。
     STM32Flash uses the sector table of flash_map.hpp and its last two sectors, the main and the
-    backup block. block_size is the template argument of DatabaseRaw, the minimum write unit of
-    the Flash in bytes (default 1). Without flash_map there is no flash_map.hpp.
+    backup block. block_size gives the template argument of DatabaseRaw, the minimum write unit
+    of the Flash: the default auto generates DatabaseRaw<STM32Flash::MIN_WRITE_SIZE>, and a
+    positive integer generates DatabaseRaw<N> (see _block_size()). Without flash_map there is no
+    flash_map.hpp.
 
     Raises:
-        LibXRConfigError: enable 不是布尔值，block_size 不是正整数，或没有 flash_map.hpp。
-            enable is not a boolean, block_size is not a positive integer, or there is no
-            flash_map.hpp.
+        LibXRConfigError: enable 不是布尔值，block_size 既不是 auto 也不是正整数，或没有
+            flash_map.hpp。
+            enable is not a boolean, block_size is neither auto nor a positive integer, or there
+            is no flash_map.hpp.
     """
     database = _settings("database")
     enable = _flag("database.enable", database.setdefault("enable", False))
-    block_size = _integer("database.block_size", database.setdefault("block_size", 1))
+    block_size = _block_size(database.setdefault("block_size", AUTO_BLOCK_SIZE))
     if not enable:
         return []
     if not flash_map:

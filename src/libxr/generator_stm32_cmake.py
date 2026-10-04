@@ -8,14 +8,16 @@ It generates cmake/LibXR.CMake as a whole, restores the ST Arm Clang toolchain f
 CubeMX wrote, and includes LibXR.CMake from CMakeLists.txt. CMake reconfigures existing build
 directories on their next build after these files change.
 
-LibXR.CMake 的结构固定：“Project settings”块在最前，其后依次是 LibXR、Application 和库的优化
-设置。重写时保留 “Project settings” 块中用户改过的值；已有的旧格式文件迁移到这个结构，设置的值
-和用到的优化级别都保留，不认识的语句放在末尾的 “Kept” 块中保留。
+LibXR.CMake 的结构固定：“Project settings”块在最前，其后依次是 LibXR、Application、库的优化
+设置和固件镜像（链接后由 ELF 生成 .hex 和 .bin）。重写时保留 “Project settings” 块中用户改过的
+值；已有的旧格式文件迁移到这个结构，设置的值和用到的优化级别都保留，不认识的语句放在末尾的
+“Kept” 块中保留。
 The structure of LibXR.CMake is fixed: the "Project settings" block comes first, followed by
-LibXR, Application and the optimization of the libraries. Rewriting keeps the values the user
-changed in the "Project settings" block; a file in an earlier format migrates to this
-structure, keeping the values of the settings and the optimization levels it uses, and the
-statements it does not recognize are kept in a "Kept" block at the end.
+LibXR, Application, the optimization of the libraries and the firmware images (the .hex and
+.bin made from the ELF after linking). Rewriting keeps the values the user changed in the
+"Project settings" block; a file in an earlier format migrates to this structure, keeping the
+values of the settings and the optimization levels it uses, and the statements it does not
+recognize are kept in a "Kept" block at the end.
 """
 
 import logging
@@ -42,6 +44,7 @@ SETTINGS_TITLE = "Project settings"
 LIBXR_TITLE = "LibXR"
 APPLICATION_TITLE = "Application"
 OPTIMIZATION_TITLE = "Library optimization"
+FIRMWARE_TITLE = "Firmware images"
 KEPT_TITLE = "Kept from the earlier LibXR.CMake"
 # 新工程的默认优化级别：应用代码在 Debug 构建中的级别和 Release 构建的级别；空字符串表示沿用
 # 工具链文件中的级别（CubeMX 写出的 gcc 为 -Os，ST Arm Clang 为 -Oz）。
@@ -97,6 +100,20 @@ foreach(library IN LISTS LIBXR_LIBRARIES)
     target_compile_options(${library} PRIVATE
         $<$<CONFIG:Debug>:-O2> $<$<CONFIG:Release>:${LIBXR_OPT_RELEASE}>)
 endforeach()"""
+
+# 链接后由 ELF 生成 <工程名>.hex（Intel HEX）和 <工程名>.bin（二进制镜像），与 ELF 在同一目录；
+# CMAKE_OBJCOPY 来自 CubeMX 的工具链文件。
+# After linking, <project>.hex (Intel HEX) and <project>.bin (binary image) are made from the ELF
+# in its directory; CMAKE_OBJCOPY comes from the CubeMX toolchain file.
+FIRMWARE_BLOCK = """\
+# Each link of the application also writes <project>.hex and <project>.bin next to the ELF.
+add_custom_command(TARGET ${CMAKE_PROJECT_NAME} POST_BUILD
+    WORKING_DIRECTORY $<TARGET_FILE_DIR:${CMAKE_PROJECT_NAME}>
+    COMMAND ${CMAKE_OBJCOPY} --output-target ihex
+        $<TARGET_FILE_NAME:${CMAKE_PROJECT_NAME}> ${CMAKE_PROJECT_NAME}.hex
+    COMMAND ${CMAKE_OBJCOPY} --output-target binary --strip-all
+        $<TARGET_FILE_NAME:${CMAKE_PROJECT_NAME}> ${CMAKE_PROJECT_NAME}.bin
+    VERBATIM)"""
 
 include_cmake_cmd = "include(${CMAKE_CURRENT_LIST_DIR}/cmake/LibXR.CMake)\n"
 
@@ -198,6 +215,9 @@ def render_libxr_cmake(settings: str, kept: str = "") -> str:
         "",
         _rule(OPTIMIZATION_TITLE),
         OPTIMIZATION_BLOCK,
+        "",
+        _rule(FIRMWARE_TITLE),
+        FIRMWARE_BLOCK,
     ]
     if kept.strip():
         parts += ["", _rule(KEPT_TITLE), kept.strip("\n")]

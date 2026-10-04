@@ -223,7 +223,7 @@ class Integration(GeneratorTestCase):
         )
         self.assertEqual(
             list(stm32_cmake.split_blocks(text)),
-            ["Project settings", "LibXR", "Application", "Library optimization"],
+            ["Project settings", "LibXR", "Application", "Library optimization", "Firmware images"],
         )
         self.assertEqual(
             self.settings(text).splitlines(),
@@ -250,6 +250,46 @@ class Integration(GeneratorTestCase):
             text,
         )
         self.assertIn("BUILDSYSTEM_TARGETS", text)
+
+    def test_the_hex_and_bin_images_are_made_next_to_the_elf(self):
+        # 共享的 BSP CI 打包 <工程名>.elf、.hex 和 .bin；以前 CubeMX 工程只有 ELF，官方 BSP 在
+        # CMakeLists.txt 中手写 objcopy。
+        # The shared BSP CI packages <project>.elf, .hex and .bin; CubeMX projects used to have
+        # only the ELF, and the official BSPs added objcopy to CMakeLists.txt by hand.
+        text = self.run_cmake_generator()
+        self.assertEqual(
+            stm32_cmake.split_blocks(text)[stm32_cmake.FIRMWARE_TITLE],
+            "# Each link of the application also writes <project>.hex and <project>.bin next "
+            "to the ELF.\n"
+            "add_custom_command(TARGET ${CMAKE_PROJECT_NAME} POST_BUILD\n"
+            "    WORKING_DIRECTORY $<TARGET_FILE_DIR:${CMAKE_PROJECT_NAME}>\n"
+            "    COMMAND ${CMAKE_OBJCOPY} --output-target ihex\n"
+            "        $<TARGET_FILE_NAME:${CMAKE_PROJECT_NAME}> ${CMAKE_PROJECT_NAME}.hex\n"
+            "    COMMAND ${CMAKE_OBJCOPY} --output-target binary --strip-all\n"
+            "        $<TARGET_FILE_NAME:${CMAKE_PROJECT_NAME}> ${CMAKE_PROJECT_NAME}.bin\n"
+            "    VERBATIM)",
+        )
+
+    def test_an_existing_file_gains_the_firmware_images(self):
+        # 由没有固件镜像块的版本写出的文件：设置块和 Kept 块保留，固件镜像块排在 Kept 块之前。
+        # A file written by a version without the firmware image block: the settings block and
+        # the Kept block stay, and the firmware image block comes before the Kept block.
+        text = self.run_cmake_generator()
+        blocks = stm32_cmake.split_blocks(text)
+        settings = blocks[stm32_cmake.SETTINGS_TITLE].replace('"-Og"', '"-O1"')
+        kept = "target_compile_options(xr PRIVATE -Wno-deprecated-volatile)"
+        earlier = text[: text.index(stm32_cmake._rule(stm32_cmake.FIRMWARE_TITLE))].rstrip("\n")
+        earlier = earlier.replace(blocks[stm32_cmake.SETTINGS_TITLE], settings)
+        earlier += "\n\n" + stm32_cmake._rule(stm32_cmake.KEPT_TITLE) + "\n" + kept + "\n"
+        self.libxr_cmake.write_text(earlier, encoding="utf-8")
+        with self.assertLogs(level="INFO") as logs:
+            rewritten = self.run_cmake_generator()
+        self.assertEqual(rewritten, stm32_cmake.render_libxr_cmake(settings, kept))
+        self.assertEqual(
+            list(stm32_cmake.split_blocks(rewritten))[-2:],
+            [stm32_cmake.FIRMWARE_TITLE, stm32_cmake.KEPT_TITLE],
+        )
+        self.assertIn("INFO:root:Updated existing LibXR.CMake for system: bare metal", logs.output)
 
     def test_the_modules_directory_follows_app_main(self):
         # 还没有生成 app_main 的工程按纯 LibXR 工程处理。
@@ -494,7 +534,7 @@ class Migration(GeneratorTestCase):
         )
         # 其余块与新文件相同。
         # The other blocks equal those of a new file.
-        for title in ("LibXR", "Application", "Library optimization"):
+        for title in ("LibXR", "Application", "Library optimization", "Firmware images"):
             self.assertEqual(
                 blocks[title], stm32_cmake.split_blocks(stm32_cmake.render_libxr_cmake(""))[title]
             )
