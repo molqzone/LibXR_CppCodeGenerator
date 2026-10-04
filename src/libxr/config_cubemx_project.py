@@ -737,6 +737,8 @@ def setup_project(
         source=LibXRSource(git_source, all_mirrors),
         default_libxr_commit=default_libxr_commit if default_libxr_commit else None,
     )
+    if xrobot_enable:
+        check_xrobot_support(project_dir, default_libxr_commit)
 
     logging.info(tr(f"Found .ioc file: {ioc_file}", f"找到 .ioc 文件：{ioc_file}"))
 
@@ -766,21 +768,78 @@ def setup_project(
     integrate(project_dir)
 
     logging.info(tr("[Pass] All tasks completed.", "[通过] 全部任务已完成。"))
-    _report_next_steps(project_dir)
+    _report_next_steps(project_dir, xrobot_enable)
 
 
-def _report_next_steps(project_dir: str) -> None:
+# LibXR 中 XRobot 工程构建其模块所需的 CMake 文件，相对 LibXR 检出的路径。
+# The CMake file of LibXR that an XRobot project needs to build its Modules, relative to the
+# LibXR checkout.
+LIBXR_XROBOT_CMAKE = "cmake/XRobot.cmake"
+# XRobot 工程还没有 Modules/modules.yaml 时依次运行的命令：(命令, 英文说明, 中文说明)。
+# The commands an XRobot project without Modules/modules.yaml runs in order: (command, English
+# description, Chinese description).
+XROBOT_STEPS = (
+    (
+        "xrobot init",
+        "create Modules/modules.yaml, Modules/sources.yaml and User/xrobot.yaml",
+        "创建 Modules/modules.yaml、Modules/sources.yaml 和 User/xrobot.yaml",
+    ),
+    ("xrobot module add <owner>/<Module>", "add a Module", "加入模块"),
+    (
+        "xrobot setup",
+        "fetch the Modules and generate User/xrobot_main.hpp",
+        "拉取模块并生成 User/xrobot_main.hpp",
+    ),
+    ("xrobot instance add <owner>/<Module>", "add an instance of the Module", "新增模块的实例"),
+)
+
+
+def check_xrobot_support(project_dir: str, default_libxr_commit: str = "") -> None:
+    """LibXR 检出中没有 LIBXR_XROBOT_CMAKE 时记录错误并以退出码 1 结束，这时还没有生成任何文件。
+    Log an error and exit with code 1 when the LibXR checkout has no LIBXR_XROBOT_CMAKE; no file
+    has been generated at that point.
+
+    --xrobot 生成的工程由 LibXR 的这个文件构建 XRobot 模块，缺少它的检出（早于它的 LibXR）在构建时
+    报找不到模块头文件。提示用 --commit 检出较新的 LibXR；default_libxr_commit 非空且与当前检出
+    不同时写出它。
+    A project generated with --xrobot builds its XRobot Modules through this file of LibXR; a
+    checkout without it, a LibXR older than the file, fails at build time with missing Module
+    headers. The message suggests checking out a newer LibXR with --commit and names
+    default_libxr_commit when it is not empty and differs from the checkout.
+    """
+    libxr_path = os.path.join(project_dir, "Middlewares", "Third_Party", "LibXR")
+    if os.path.isfile(os.path.join(libxr_path, *LIBXR_XROBOT_CMAKE.split("/"))):
+        return
+    head = get_git_head(libxr_path) if is_git_worktree_root(libxr_path) else ""
+    checkout_en = checkout_zh = "Middlewares/Third_Party/LibXR"
+    if head:
+        checkout_en += f" ({head[:12]})"
+        checkout_zh += f"（{head[:12]}）"
+    commit = default_libxr_commit if default_libxr_commit and default_libxr_commit != head else ""
+    _stop(
+        f"{checkout_en} has no {LIBXR_XROBOT_CMAKE}, which a --xrobot project needs to build its "
+        "XRobot Modules; check out a LibXR commit that has it with `libxr stm32 setup --xrobot "
+        f"--commit {commit or '<commit>'}`",
+        f"{checkout_zh} 中没有 {LIBXR_XROBOT_CMAKE}，--xrobot 工程需要它构建 XRobot 模块；请用 "
+        f"`libxr stm32 setup --xrobot --commit {commit or '<提交>'}` 检出含有该文件的 LibXR 提交",
+    )
+
+
+def _report_next_steps(project_dir: str, xrobot: bool = False) -> None:
     """说明 setup 之后还需手动完成的事：CubeMX 生成的源文件还没有调用 app_main() 时说明在哪里调用，
-    工程有 CMake preset 时给出构建命令。
+    XRobot 工程还没有 Modules/modules.yaml 时依次给出 XRobot 的设置命令，工程有 CMake preset 时
+    给出构建命令。
     Describe what is left to do by hand after setup: where to call app_main() when the
-    CubeMX sources do not call it yet, and the build commands when the project has CMake
-    presets.
+    CubeMX sources do not call it yet, the XRobot setup commands in order when an XRobot project
+    has no Modules/modules.yaml yet, and the build commands when the project has CMake presets.
 
     FreeRTOS 工程在定义 StartDefaultTask 的源文件中调用，其他工程在 Core/Src/main.c 的 main()
-    中调用。构建命令使用第一个同时有 configure 和 build preset 的名字。
+    中调用。xrobot 为真表示入口源文件按 --xrobot 生成。构建命令使用第一个同时有 configure 和
+    build preset 的名字。
     A FreeRTOS project calls it in the source file defining StartDefaultTask, any other
-    project in main() of Core/Src/main.c. The build commands use the first name that has
-    both a configure and a build preset.
+    project in main() of Core/Src/main.c. xrobot true means the entry source was generated with
+    --xrobot. The build commands use the first name that has both a configure and a build
+    preset.
     """
     sources = os.path.join(project_dir, "Core", "Src")
     texts = {}
@@ -804,6 +863,15 @@ def _report_next_steps(project_dir: str) -> None:
                 "CubeMX 重新生成代码时保留。",
             )
         )
+    if xrobot and not os.path.isfile(os.path.join(project_dir, "Modules", "modules.yaml")):
+        logging.info(
+            tr(
+                "Next: Modules/modules.yaml does not exist yet; set up XRobot in this order:",
+                "下一步：还没有 Modules/modules.yaml，按以下顺序完成 XRobot 的设置：",
+            )
+        )
+        for command, english, chinese in XROBOT_STEPS:
+            logging.info(f"  {command:<36}  " + tr(english, chinese))
     preset = _build_preset(os.path.join(project_dir, "CMakePresets.json"))
     if preset:
         command = f"cmake --preset {preset} && cmake --build --preset {preset}"

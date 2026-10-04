@@ -483,6 +483,13 @@ $ libxr stm32 cmake
 [INFO] LibXR.CMake already included in CMakeLists.txt.
 ```
 
+BSP 根目录还没有 `Modules/modules.yaml` 时，`libxr stm32 setup --xrobot` 在最后依次列出 XRobot 的设置
+命令：`xrobot init`、`xrobot module add`、`xrobot setup` 和 `xrobot instance add`。
+
+While the BSP root has no `Modules/modules.yaml` yet, `libxr stm32 setup --xrobot` ends by listing
+the XRobot setup commands in order: `xrobot init`, `xrobot module add`, `xrobot setup` and
+`xrobot instance add`.
+
 详见 [与 XRobot 集成](https://xrobot.work/docs/code_gen/code-gen-xrobot-inter)。
 
 See [XRobot integration](https://xrobot.work/en/docs/code_gen/code-gen-xrobot-inter).
