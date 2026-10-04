@@ -6,7 +6,7 @@ LibXR 代码生成工具 / Code generator for LibXR
 <img src="https://github.com/xrobot-org/LibXR_CppCodeGenerator/raw/master/imgs/XRobot.jpeg" width="300">
 </h1><br>
 
-[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](https://github.com/xrobot-org/LibXR_CppCodeGenerator/blob/master/LICENSE)
 [![GitHub Repo](https://img.shields.io/github/stars/xrobot-org/libxr?style=social)](https://github.com/xrobot-org/libxr)
 [![Documentation](https://img.shields.io/badge/docs-online-brightgreen)](https://xrobot.work/docs/code_gen)
 [![GitHub Issues](https://img.shields.io/github/issues/xrobot-org/LibXR_CppCodeGenerator)](https://github.com/xrobot-org/LibXR_CppCodeGenerator/issues)
@@ -26,6 +26,10 @@ adds LibXR to the project's CMake build.
 ---
 
 ## 🔧 安装 / Installation
+
+需要 Python 3.10 或更高版本。
+
+Requires Python 3.10 or later.
 
 ### 使用 pipx 安装 (Install via `pipx`)
 
@@ -69,14 +73,15 @@ pip install .
 `libxr stm32 setup` checks out when it adds LibXR.
 
 以上三种方式只选其一，不要混用。系统中有多份安装时，命令行实际调用的版本可能与预期不同，而不同版本
-生成的代码并不一致。当前使用的版本可通过 `libxr --version` 查看。BSP 使用的版本记录在
-`User/libxr_config.yaml` 的 `generator:` 字段中，安装时应与之一致，例如 `pipx install libxr==6.0.0`。
+生成的代码并不一致。当前使用的版本可通过 `libxr --version` 查看。BSP 在 `User/libxr_config.yaml`
+顶层写 `generator: 6.0.0` 固定所用的版本，生成器重新生成时保留这个键；安装的版本应与之一致，例如
+`pipx install libxr==6.0.0`。
 
 Use only one of these methods. With several installations present, the command line may run a
 different version than expected, and different versions generate different code.
-`libxr --version` shows the version in use. The version a BSP uses is recorded in the
-`generator:` field of `User/libxr_config.yaml`; install the same version, e.g.
-`pipx install libxr==6.0.0`.
+`libxr --version` shows the version in use. A BSP pins the version it uses by writing
+`generator: 6.0.0` at the top level of `User/libxr_config.yaml`, and regeneration keeps this
+key; install the same version, e.g. `pipx install libxr==6.0.0`.
 
 ---
 
@@ -225,19 +230,20 @@ extern "C" void app_main(void)
   static STM32PowerManager power_manager;
 
   // GPIO
+  static STM32GPIO PA8(GPIOA, GPIO_PIN_8);
   static STM32GPIO LED(LED_GPIO_Port, LED_Pin);
 
   // ADC
-  static STM32ADC adc1(&hadc1, adc1_buf, {ADC_CHANNEL_1}, 3.3);
+  static STM32ADC adc1(&hadc1, adc1_buf, {ADC_CHANNEL_0}, 3.3);
   // ...
 
   // PWM
   static STM32PWM pwm_tim2_ch3(&htim2, TIM_CHANNEL_3, false);
 
   // SPI, UART, I2C
-  static STM32I2C i2c1(&hi2c1, i2c1_buf, 3);
   static STM32SPI spi1(&hspi1, {nullptr, 0}, {nullptr, 0}, 3);
   static STM32UART usart1(&huart1, usart1_rx_buf, usart1_tx_buf, 5);
+  static STM32I2C i2c1(&hi2c1, i2c1_buf, 3);
 
   // USB FS: 1 CDC
   // ...
@@ -411,7 +417,10 @@ objects need no `UNUSED(...)`:
   // Hardware registration
   XR_REGISTER(power_manager, LibXR::PowerManager);
 
+  XR_REGISTER(PA8, LibXR::GPIO);
   XR_REGISTER(LED, LibXR::GPIO);
+
+  XR_REGISTER(adc1_adc_channel_0, LibXR::ADC);
 
   XR_REGISTER(pwm_tim2_ch3, LibXR::PWM);
 
@@ -428,6 +437,13 @@ objects need no `UNUSED(...)`:
   XROBOT_MAIN();
 }
 ```
+
+已有入口源文件的 User Code 3 仍是不带 `--xrobot` 时生成的默认循环时，加上 `--xrobot` 重新生成会清空
+这个循环，使其后的 `XROBOT_MAIN()` 能够执行；User Code 3 的其他内容保持不变。
+
+When User Code 3 of an existing entry source still holds the default loop generated without
+`--xrobot`, regenerating with `--xrobot` empties the loop, so that the `XROBOT_MAIN()` after it
+runs; any other content of User Code 3 is kept.
 
 `libxr stm32 cmake` 和 `libxr stm32 setup` 按入口源文件的选择在 `cmake/LibXR.CMake` 的设置块中加入或
 删除 `XROBOT_MODULES_DIR`，XRobot 的模块随之参与构建：
@@ -521,7 +537,7 @@ $ libxr stm32 toolchain gcc
 [INFO] Done.
 
 $ libxr stm32 toolchain clang --newlib
-[INFO] Toolchain in default preset already set to cmake/starm-clang.cmake
+[INFO] Switched the default preset to cmake/starm-clang.cmake
 [INFO] Set STARM_TOOLCHAIN_CONFIG to "STARM_NEWLIB" in cmake\starm-clang.cmake
 [INFO] Done.
 ```
