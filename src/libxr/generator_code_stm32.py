@@ -872,11 +872,12 @@ DMA_DEFAULT_SIZES = {
     "ADC": {"buffer": 32},
 }
 
-# CubeMX 的 USB 实例名到规范名；USB（FSDEV）视为 USB_FS。
-# CubeMX USB instance names to their normalized names; USB (FSDEV) is USB_FS.
+# CubeMX 的 USB 实例名到规范名；USB 和 USB_DRD_FS（FSDEV）视为 USB_FS。
+# CubeMX USB instance names to their normalized names; USB and USB_DRD_FS (FSDEV) are USB_FS.
 _USB_INSTANCES = {
     "USB": "USB_FS",
     "USB_FS": "USB_FS",
+    "USB_DRD_FS": "USB_FS",
     "USB_HS": "USB_HS",
     "USB_OTG_FS": "USB_OTG_FS",
     "USB_OTG_HS": "USB_OTG_HS",
@@ -2807,6 +2808,30 @@ def _app_main_notice(project_data: dict) -> list[str]:
     ]
 
 
+# 不带 --xrobot 生成时 User Code 3 的默认循环，去掉全部空白；5.x 版本写成 while(true) { ... }，
+# 只有空白不同。
+# The default loop of User Code 3 generated without --xrobot, with all whitespace removed;
+# versions 5.x wrote it as while(true) { ... }, which differs only in whitespace.
+_DEFAULT_LOOP_3 = "while(true){Thread::Sleep(UINT32_MAX);}"
+
+
+def _without_default_loop(existing_code: str) -> str:
+    """User Code 3 仍是不带 --xrobot 生成的默认循环时清空它，使其后的 XROBOT_MAIN() 能够执行；
+    比较时忽略空白，其他内容不变。
+    Empty User Code 3 when it still holds the default loop generated without --xrobot, so that
+    the XROBOT_MAIN() after it runs; whitespace is ignored in the comparison, and any other
+    content is kept.
+    """
+    if not existing_code.strip():
+        return existing_code
+    document = CppDocument.parse(existing_code)
+    for region in document.user_regions():
+        if region.name == "3" and "".join(region.body_text.split()) == _DEFAULT_LOOP_3:
+            document = document.replace_region_body(region, "\n" + INDENT)
+            return document.render_bytes().decode("utf-8", errors="surrogateescape")
+    return existing_code
+
+
 def generate_full_code(
     project_data: dict, use_xrobot: bool, existing_code: str, flash_map: bool = True
 ) -> str:
@@ -2816,13 +2841,15 @@ def generate_full_code(
 
     输出已按 LibXR 的 clang-format 风格排版（见 libxr.cpp_layout），不再用 clang-format 和
     NOLINT 标记保护。启用 XRobot 时为每个生成的对象输出 XR_REGISTER，并在 User Code 3 之后调用
-    XROBOT_MAIN()；否则 User Code 3 的默认内容是一个无限休眠的循环。flash_map 为假表示没有
+    XROBOT_MAIN()；否则 User Code 3 的默认内容是一个无限休眠的循环。启用 XRobot 时，已有代码的
+    User Code 3 若仍是这个循环则被清空，否则 XROBOT_MAIN() 永远执行不到。flash_map 为假表示没有
     flash_map.hpp，这时不能启用数据库。
     The output is laid out in the clang-format style of LibXR (see libxr.cpp_layout) and is
     not protected by clang-format and NOLINT markers. With XRobot every generated object gets
     an XR_REGISTER line and XROBOT_MAIN() is called after User Code 3; otherwise the default
-    body of User Code 3 is a loop that sleeps forever. Without flash_map there is no
-    flash_map.hpp, and the database cannot be enabled.
+    body of User Code 3 is a loop that sleeps forever. With XRobot, a User Code 3 of the
+    existing code that still holds this loop is emptied, since XROBOT_MAIN() would never run
+    after it. Without flash_map there is no flash_map.hpp, and the database cannot be enabled.
 
     Raises:
         ValueError: 生成的对象名冲突，或 GPIO 名字、User Code 标记、遗留的 XROBOT_MAIN() 调用
@@ -2832,6 +2859,7 @@ def generate_full_code(
     """
     if use_xrobot:
         reject_user_xrobot_main(existing_code)
+        existing_code = _without_default_loop(existing_code)
     _default_usb_enables(project_data.get("Peripherals", {}))
     # DMA 缓冲区先登记，外设对象才能按缓冲区的存储方式引用它们。
     # The DMA buffers are registered first, so that the peripheral objects can refer to them

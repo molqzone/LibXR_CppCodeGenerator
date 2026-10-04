@@ -93,6 +93,42 @@ class EntrySource(GeneratorTestCase):
         )
         self.assertIn("// XROBOT_MAIN(); now follows this region", self.generate(existing=old))
 
+    def test_xrobot_empties_the_default_loop_of_a_libxr_only_entry(self):
+        # 以前从只用 LibXR 的工程切到 --xrobot 时，User Code 3 保留默认的无限循环，其后的
+        # XROBOT_MAIN() 永远执行不到，生成和构建都没有提示。5.x 版本把循环写成
+        # while(true) { ... }。
+        # Switching a LibXR-only project to --xrobot used to keep the endless default loop in
+        # User Code 3, so the XROBOT_MAIN() after it never ran, and neither generation nor the
+        # build said so. Versions 5.x wrote the loop as while(true) { ... }.
+        libxr_only = self.generate(use_xrobot=False)
+        layout_5 = libxr_only.replace(
+            user_region(libxr_only, 3), "while(true) {\n    Thread::Sleep(UINT32_MAX);\n  }"
+        )
+        self.assertNotEqual(layout_5, libxr_only)
+        for name, existing in (("6.x", libxr_only), ("5.x", layout_5)):
+            with self.subTest(layout=name):
+                code = self.generate(existing=existing)
+                self.assertEqual(user_region(code, 3), "")
+                self.assertTrue(
+                    code.endswith(
+                        "  /* User Code Begin 3 */\n  /* User Code End 3 */\n  XROBOT_MAIN();\n}\n"
+                    )
+                )
+                self.assertEqual(code, self.generate(existing=code))
+        self.assertEqual(self.generate(use_xrobot=False, existing=libxr_only), libxr_only)
+
+    def test_xrobot_keeps_any_other_user_code_3(self):
+        libxr_only = self.generate(use_xrobot=False)
+        for old, new in (
+            ("Thread::Sleep(UINT32_MAX);", "Thread::Sleep(1000);"),
+            ("  /* User Code End 3 */", "  // keep the loop\n  /* User Code End 3 */"),
+        ):
+            existing = libxr_only.replace(old, new)
+            with self.subTest(new=new):
+                self.assertEqual(
+                    user_region(self.generate(existing=existing), 3), user_region(existing, 3)
+                )
+
     def test_user_blocks_are_kept_across_regenerations(self):
         old = textwrap.dedent("""\
             /* User Code Begin 1 */
@@ -532,6 +568,22 @@ class PeripheralObjects(GeneratorTestCase):
         code = self.generate(self.usb_fs("Device"), use_xrobot=False)
         self.assertIn("extern PCD_HandleTypeDef hpcd_USB_DRD_FS;", code)
         self.assertIn("static STM32USBDeviceDevFs usb_fs(&hpcd_USB_DRD_FS,", code)
+
+    def test_the_usb_drd_fs_instance_is_the_usb_fs_device(self):
+        # STM32G0B1 的 .ioc 中 USB 的 IP 名是 USB_DRD_FS，参数全为默认值时没有 VirtualMode；以前
+        # 生成器不认这个实例名，不生成 USB 设备。
+        # The USB IP name in the .ioc file of the STM32G0B1 is USB_DRD_FS, with no VirtualMode
+        # while every parameter is at its default; the generator used not to know this instance
+        # name and generated no USB device.
+        project = self.project(
+            peripherals={"USB": {"USB_DRD_FS": {"PCDHandle": "hpcd_USB_DRD_FS"}}},
+            mcu="STM32G0B1CBU6",
+            family="STM32G0",
+        )
+        code = self.generate(project, use_xrobot=False)
+        self.assertIn("extern PCD_HandleTypeDef hpcd_USB_DRD_FS;", code)
+        self.assertIn("static STM32USBDeviceDevFs usb_fs(&hpcd_USB_DRD_FS,", code)
+        self.assertTrue(generator.libxr_settings["USB"]["usb_fs"]["enable"])
 
     def test_a_usb_in_host_mode_generates_no_device(self):
         with self.assertLogs(level="WARNING") as logs:
@@ -1287,11 +1339,12 @@ class GenerationRuns(GeneratorTestCase):
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
 
-    def run_generator(self, name, project, config=None):
-        """在 root/<name> 中由 project 生成（config 为 libxr_config.yaml 的初始内容），返回
-        User 目录和日志。
+    def run_generator(self, name, project, config=None, use_xrobot=False):
+        """在 root/<name> 中由 project 生成（config 为 libxr_config.yaml 的初始内容，use_xrobot
+        对应 --xrobot），返回 User 目录和日志。
         Generate from project in root/<name>, config being the initial content of
-        libxr_config.yaml; return the User directory and the log.
+        libxr_config.yaml and use_xrobot standing for --xrobot; return the User directory and
+        the log.
         """
         directory = self.root / name
         user = directory / "User"
@@ -1300,7 +1353,9 @@ class GenerationRuns(GeneratorTestCase):
         if config is not None:
             (user / "libxr_config.yaml").write_text(config, encoding="utf-8")
         with self.assertLogs(level="INFO") as logs:
-            generator.generate(str(directory / "cubemx.yaml"), str(user / "app_main.cpp"))
+            generator.generate(
+                str(directory / "cubemx.yaml"), str(user / "app_main.cpp"), use_xrobot
+            )
         return user, logs.output
 
     def config(self, user):
@@ -1319,6 +1374,26 @@ class GenerationRuns(GeneratorTestCase):
         times = {path.name: path.stat().st_mtime_ns for path in user.iterdir()}
         _, logs = self.run_generator("demo", self.project())
         self.assertEqual({path.name: path.stat().st_mtime_ns for path in user.iterdir()}, times)
+        self.assertEqual(
+            logs[-1],
+            f"INFO:root:Generated {os.path.normpath(user)}: unchanged app_main.cpp, app_main.h, "
+            "flash_map.hpp, libxr_config.yaml",
+        )
+
+    def test_switching_to_xrobot_lets_xrobot_main_run(self):
+        # 文档中的流程：先不带 --xrobot 生成，再带 --xrobot 生成。以前 User Code 3 中的默认
+        # 循环留在 XROBOT_MAIN() 之前，模块从不运行。
+        # The documented sequence: generate without --xrobot, then with --xrobot. The default
+        # loop of User Code 3 used to stay in front of XROBOT_MAIN(), and no Module ever ran.
+        user, _ = self.run_generator("demo", self.project())
+        source = user / "app_main.cpp"
+        self.assertIn("Thread::Sleep(UINT32_MAX);", source.read_text(encoding="utf-8"))
+        self.run_generator("demo", self.project(), use_xrobot=True)
+        code = source.read_text(encoding="utf-8")
+        self.assertEqual(user_region(code, 3), "")
+        self.assertIn("  /* User Code End 3 */\n  XROBOT_MAIN();\n}\n", code)
+        self.assertNotIn("Thread::Sleep", code)
+        _, logs = self.run_generator("demo", self.project(), use_xrobot=True)
         self.assertEqual(
             logs[-1],
             f"INFO:root:Generated {os.path.normpath(user)}: unchanged app_main.cpp, app_main.h, "
