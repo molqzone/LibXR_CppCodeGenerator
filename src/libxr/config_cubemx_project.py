@@ -552,19 +552,21 @@ def set_terminal_source(user_path, terminal_source):
     file when it does not exist.
 
     libxr gen 从这个文件读取终端设备，所以之后重新生成时沿用该设置；文件中的其他键和
-    注释保持不变。文件无法按 LibXR 配置读取时记录错误并以退出码 1 结束。
+    注释保持不变。新建的文件先写入固定为已安装 libxr 版本的 generator，与 libxr gen 新建的
+    配置相同。文件无法按 LibXR 配置读取时记录错误并以退出码 1 结束。
     libxr gen reads the terminal device from this file, so the choice persists for later
-    regenerations. Other keys and comments are kept. A file that cannot be read as a LibXR
-    configuration logs an error and exits with code 1.
+    regenerations. Other keys and comments are kept. A new file first gets generator pinned to
+    the installed libxr version, like a configuration libxr gen creates. A file that cannot be
+    read as a LibXR configuration logs an error and exits with code 1.
     """
-    from libxr import libxr_config_file
+    from libxr import libxr_config_file, update_notice
 
     config_path = os.path.join(user_path, "libxr_config.yaml")
     try:
         if os.path.exists(config_path):
             document, _ = libxr_config_file.read(config_path)
         else:
-            document = libxr_config_file.new_document()
+            document = libxr_config_file.new_document(update_notice.installed_version())
     except libxr_config_file.LibXRConfigError as error:
         logging.error(str(error))
         sys.exit(1)

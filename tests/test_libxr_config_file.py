@@ -10,6 +10,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import yaml
 from fixtures import GeneratorTestCase
@@ -35,6 +36,13 @@ class LibXRConfigFile(GeneratorTestCase):
         self.addCleanup(self.temporary.cleanup)
         self.directory = Path(self.temporary.name)
         self.path = self.directory / "libxr_config.yaml"
+        # 这些测试检查文件的布局和用户内容；新文件中固定版本的 generator 见
+        # test_generator_code_stm32.GeneratorPin。
+        # These tests check the layout of the file and the user content; the generator pin in a
+        # new file is covered by test_generator_code_stm32.GeneratorPin.
+        patcher = mock.patch("libxr.update_notice.installed_version", return_value=None)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def regenerate(self, use_xrobot=False):
         """像 main() 那样运行一次生成器（不写 app_main），返回写回的 libxr_config.yaml。

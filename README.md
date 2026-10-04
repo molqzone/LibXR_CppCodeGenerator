@@ -73,15 +73,16 @@ pip install .
 `libxr stm32 setup` checks out when it adds LibXR.
 
 以上三种方式只选其一，不要混用。系统中有多份安装时，命令行实际调用的版本可能与预期不同，而不同版本
-生成的代码并不一致。当前使用的版本可通过 `libxr --version` 查看。BSP 在 `User/libxr_config.yaml`
-顶层写 `generator: 6.0.0` 固定所用的版本，生成器重新生成时保留这个键；安装的版本应与之一致，例如
-`pipx install libxr==6.0.0`。
+生成的代码并不一致。当前使用的版本可通过 `libxr --version` 查看。BSP 所用的版本由
+`User/libxr_config.yaml` 顶层的 `generator: 6.0.0` 固定：生成器新建这个文件时写入当前的版本，重新
+生成时保留这个键；安装的版本应与之一致，例如 `pipx install libxr==6.0.0`。
 
 Use only one of these methods. With several installations present, the command line may run a
 different version than expected, and different versions generate different code.
-`libxr --version` shows the version in use. A BSP pins the version it uses by writing
-`generator: 6.0.0` at the top level of `User/libxr_config.yaml`, and regeneration keeps this
-key; install the same version, e.g. `pipx install libxr==6.0.0`.
+`libxr --version` shows the version in use. The version a BSP uses is pinned by
+`generator: 6.0.0` at the top level of `User/libxr_config.yaml`: the generator writes the
+current version when it creates this file, and regeneration keeps the key; install the same
+version, e.g. `pipx install libxr==6.0.0`.
 
 ---
 
@@ -308,6 +309,7 @@ with the new value; the changes and comments in the file are kept on regeneratio
 
 ```yaml
 # User/libxr_config.yaml（节选 / excerpt）
+generator: 6.0.0
 terminal_source: usart1
 software_timer:
   priority: 2

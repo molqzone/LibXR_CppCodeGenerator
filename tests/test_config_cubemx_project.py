@@ -44,9 +44,20 @@ class TerminalOption(TestCase):
         return generator.libxr_settings["terminal_source"]
 
     def test_terminal_is_recorded_for_a_new_project(self):
-        cubemx_cfg.set_terminal_source(str(self.user), "usart1")
-        self.assertEqual(self.path.read_text(encoding="utf-8"), "terminal_source: usart1\n")
+        # 新建的文件和 libxr gen 新建的一样先固定 generator 的版本；以前 setup -t 新建的文件没有
+        # 这一项，BSP CI 因缺少版本固定而失败。
+        # A new file pins the generator first, like one libxr gen creates; a file that setup -t
+        # created used to lack it, and BSP CI failed for want of the pin.
+        with mock.patch("libxr.update_notice.installed_version", return_value="6.0.0"):
+            cubemx_cfg.set_terminal_source(str(self.user), "usart1")
+        self.assertEqual(
+            self.path.read_text(encoding="utf-8"), "generator: 6.0.0\nterminal_source: usart1\n"
+        )
         self.assertEqual(self.effective_terminal(), "usart1")
+        self.path.unlink()
+        with mock.patch("libxr.update_notice.installed_version", return_value=None):
+            cubemx_cfg.set_terminal_source(str(self.user), "usart1")
+        self.assertEqual(self.path.read_text(encoding="utf-8"), "terminal_source: usart1\n")
 
     def test_terminal_replaces_the_configured_one_and_keeps_comments(self):
         self.path.write_text(

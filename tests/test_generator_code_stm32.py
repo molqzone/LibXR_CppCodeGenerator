@@ -2035,24 +2035,28 @@ class HashSeedIndependence(GeneratorTestCase):
 
 
 class GeneratorPin(GeneratorTestCase):
-    """libxr_config.yaml 固定的 generator 版本与已安装的不同时警告。
-    A warning when the generator pinned in libxr_config.yaml differs from the installed one.
+    """新建的 libxr_config.yaml 固定当前的 generator 版本；已有的配置没有固定或固定的版本与已安装
+    的不同时警告。
+    A new libxr_config.yaml pins the current generator version; an existing configuration
+    without a pin, or with a pin that differs from the installed version, is warned about.
     """
 
-    def warnings(self, pin):
-        """在固定 pin、已安装 6.0.0 时检查，返回警告日志。
-        Check with the pin pin and 6.0.0 installed; return the warning logs.
+    def warnings(self, pin, installed="6.0.0"):
+        """在固定 pin、已安装 installed 时检查，返回警告日志。
+        Check with the pin pin and installed installed; return the warning logs.
         """
-        generator.libxr_settings["generator"] = pin
+        generator.libxr_settings.pop("generator", None)
+        if pin is not None:
+            generator.libxr_settings["generator"] = pin
         with (
-            mock.patch("libxr.update_notice.installed_version", return_value="6.0.0"),
+            mock.patch("libxr.update_notice.installed_version", return_value=installed),
             self.assertLogs(level="WARNING") as logs,
         ):
             logging_marker()
             generator.check_generator_pin()
         return [line for line in logs.output if "marker" not in line]
 
-    def test_only_a_different_version_warns(self):
+    def test_a_missing_or_different_version_warns(self):
         for pin, warnings in (
             (
                 "5.2.4",
@@ -2063,10 +2067,37 @@ class GeneratorPin(GeneratorTestCase):
             ),
             ("6.0.0", []),
             ("0123456789abcdef0123456789abcdef01234567", []),
-            (None, []),
+            # 以前没有固定版本时不提示，BSP CI 到运行时才报缺少版本固定。
+            # A missing pin used to pass silently until BSP CI reported it.
+            (
+                None,
+                [
+                    "WARNING:root:libxr_config.yaml does not pin the generator; add "
+                    "`generator: 6.0.0` (the BSP CI installs the pinned version)"
+                ],
+            ),
         ):
             with self.subTest(pin=pin):
                 self.assertEqual(self.warnings(pin), warnings)
+        # 包没有安装、不知道版本时不检查。
+        # Nothing is checked when the package is not installed and the version is unknown.
+        self.assertEqual(self.warnings(None, installed=None), [])
+
+    def test_a_new_configuration_pins_the_installed_version_first(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for installed, first in (("6.0.0", "generator: 6.0.0\n"), (None, "terminal_source:")):
+                with self.subTest(installed=installed):
+                    self.setUp()
+                    with mock.patch(
+                        "libxr.update_notice.installed_version", return_value=installed
+                    ):
+                        generator.load_libxr_config(directory, "")
+                        self.generate(self.project(), use_xrobot=False)
+                        text = generator.libxr_config_text()
+                        self.assertTrue(text.startswith(first), text)
+                        self.assertEqual(text.count("generator:"), 1 if installed else 0)
+                        with self.assertNoLogs(level="WARNING"):
+                            generator.check_generator_pin()
 
 
 if __name__ == "__main__":
