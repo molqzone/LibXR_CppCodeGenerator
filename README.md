@@ -531,7 +531,8 @@ set(LIBXR_OPT_RELEASE "")
 各块重新生成。已有的 `LibXR.CMake` 按这个结构重写：设置的值保留，`LIBXR_OPT_DEBUG` 和
 `LIBXR_OPT_RELEASE` 取已用的优化级别（工具链文件中的 `CMAKE_CXX_FLAGS_DEBUG` 和
 `CMAKE_CXX_FLAGS_RELEASE`，两个工具链文件不同时留空），重新生成的语句之外的内容保留在
-`Kept from the earlier LibXR.CMake` 块中。
+`Kept from the earlier LibXR.CMake` 块中；旧文件 Debug 块中用户改过的库优化选项也原样放在这里，
+包在同样的 `if(CMAKE_BUILD_TYPE STREQUAL "Debug")` 中，排在库的 `-O2` 之后，因此仍然生效。
 `LIBXR_OPT_DEBUG` 是应用的 Debug 优化级别，`LIBXR_OPT_RELEASE` 是应用、`xr` 和 CubeMX 生成的库在
 Release 构建中的优化级别；Debug 构建中 `xr` 和 CubeMX 生成的全部库目标使用 `-O2`（libxr 5.x 只包括
 `FreeRTOS`、`STM32_Drivers` 和 `USB_Device_Library`，`ThreadX` 等其他库目标使用工具链的 Debug 级别）。
@@ -546,7 +547,9 @@ generated again. An existing `LibXR.CMake` is rewritten in this structure: the v
 settings stay, `LIBXR_OPT_DEBUG` and `LIBXR_OPT_RELEASE` take the optimization levels in use (the
 `CMAKE_CXX_FLAGS_DEBUG` and `CMAKE_CXX_FLAGS_RELEASE` of the toolchain files, empty when the two
 toolchain files differ), and what is not among the regenerated statements stays in the
-`Kept from the earlier LibXR.CMake` block.
+`Kept from the earlier LibXR.CMake` block; the library optimization options the user changed
+in the Debug block of the old file go there as written too, inside the same
+`if(CMAKE_BUILD_TYPE STREQUAL "Debug")` and after the `-O2` of the libraries, so they still apply.
 `LIBXR_OPT_DEBUG` is the Debug optimization level of the application, and `LIBXR_OPT_RELEASE`
 the Release level of the application, `xr` and the libraries CubeMX generates; in Debug builds
 `xr` and every library target CubeMX generates use `-O2` (libxr 5.x covered only `FreeRTOS`,
