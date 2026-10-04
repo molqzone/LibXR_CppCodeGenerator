@@ -1009,7 +1009,7 @@ class PeripheralObjects(GeneratorTestCase):
         peripherals = {
             "USART": {"USART1": {"DMA_RX": "ENABLE"}, "USART2": {}},
             "I2C": {"I2C1": {}},
-            "SPI": {"SPI1": {"DMA_TX": "ENABLE"}},
+            "SPI": {"SPI1": {"DMA_TX": "ENABLE", "DMA_RX": "ENABLE"}},
         }
         generator.libxr_settings["SPI"] = {"spi1": {"dma_section": ".axi_ram"}}
         h7 = self.project(peripherals=peripherals, mcu="STM32H723VGT6", family="STM32H7")
@@ -1056,7 +1056,7 @@ class PeripheralObjects(GeneratorTestCase):
             code,
         )
 
-    def test_uart_and_spi_buffers_follow_the_dma_directions(self):
+    def test_uart_buffers_follow_the_dma_directions(self):
         code = self.generate(
             self.project(
                 peripherals={
@@ -1065,7 +1065,7 @@ class PeripheralObjects(GeneratorTestCase):
                         "USART2": {"DMA_RX": "ENABLE"},
                         "USART3": {},
                     },
-                    "SPI": {"SPI1": {"DMA_TX": "ENABLE"}},
+                    "SPI": {"SPI1": {"DMA_TX": "ENABLE", "DMA_RX": "ENABLE"}},
                 }
             )
         )
@@ -1076,12 +1076,13 @@ class PeripheralObjects(GeneratorTestCase):
         ):
             with self.subTest(uart=uart):
                 self.assertIn(f"static STM32UART {uart}, {buffers}, 5);", code)
-        self.assertIn("static STM32SPI spi1(&hspi1, {nullptr, 0}, spi1_tx_buf, 3);", code)
+        self.assertIn("static STM32SPI spi1(&hspi1, spi1_rx_buf, spi1_tx_buf, 3);", code)
         # 缓冲区按名字排列，每个一行。
         # The buffers are sorted by name, one per line.
         self.assertEqual(
             [line for line in code.splitlines() if line.startswith("alignas(4) static uint8_t")],
             [
+                "alignas(4) static uint8_t spi1_rx_buf[32];",
                 "alignas(4) static uint8_t spi1_tx_buf[32];",
                 "alignas(4) static uint8_t usart1_rx_buf[128];",
                 "alignas(4) static uint8_t usart1_tx_buf[128];",
@@ -1096,16 +1097,17 @@ class PeripheralObjects(GeneratorTestCase):
         # into the transmit buffer on every transfer (a null write) and took the DMA branch above
         # 3 bytes.
         generator.libxr_settings["SPI"] = {"spi2": {"tx_buffer_size": 16, "rx_buffer_size": 64}}
-        peripherals = {"SPI": {"SPI1": {"DMA_RX": "ENABLE"}, "SPI2": {}}}
-        code = self.generate(self.project(peripherals=peripherals))
+        peripherals = {"SPI": {"SPI1": {"DMA_RX": "ENABLE", "DMA_TX": "ENABLE"}, "SPI2": {}}}
+        with self.assertNoLogs(level="WARNING"):
+            code = self.generate(self.project(peripherals=peripherals))
         self.assertIn("static STM32SPI spi2(&hspi2, spi2_rx_buf, spi2_tx_buf, UINT32_MAX);", code)
         self.assertIn("alignas(4) static uint8_t spi2_rx_buf[64];\n", code)
         self.assertIn("alignas(4) static uint8_t spi2_tx_buf[16];\n", code)
-        # 不用的 dma_enable_min_size 不写入；开启了 DMA 的 SPI 不变。
-        # The unused dma_enable_min_size is not written; an SPI with DMA stays as it was.
+        # 不用的 dma_enable_min_size 不写入；两个方向都有 DMA 的 SPI 不变。
+        # The unused dma_enable_min_size is not written; an SPI with DMA in both directions stays
+        # as it was.
         self.assertNotIn("dma_enable_min_size", generator.libxr_settings["SPI"]["spi2"])
-        self.assertIn("static STM32SPI spi1(&hspi1, spi1_rx_buf, {nullptr, 0}, 3);", code)
-        self.assertNotIn("spi1_tx_buf", code)
+        self.assertIn("static STM32SPI spi1(&hspi1, spi1_rx_buf, spi1_tx_buf, 3);", code)
         # H7 上它们只由 CPU 访问，不提示 dma_section。
         # On H7 the CPU alone accesses them, so dma_section is not asked for.
         self.setUp()
@@ -1115,6 +1117,48 @@ class PeripheralObjects(GeneratorTestCase):
                 self.project(peripherals=peripherals, mcu="STM32H723VGT6", family="STM32H7")
             )
         self.assertIn("alignas(32) static uint8_t spi2_rx_buf[32];\n", code)
+
+    def test_an_spi_with_dma_in_one_direction_polls_like_one_without_dma(self):
+        # 以前只有一个方向有 DMA 的 SPI 另一方向得到 {nullptr, 0}，STM32SPI 在这个方向上访问
+        # 空指针。现在两个方向都有 DMA 才使用 DMA。
+        # An SPI with DMA in one direction used to get {nullptr, 0} for the other, and STM32SPI
+        # accessed a null pointer in that direction. DMA is now used only with both.
+        generator.libxr_settings["SPI"] = {
+            "spi6": {"tx_buffer_size": 48, "dma_section": ".axi_ram", "dma_enable_min_size": 8}
+        }
+        for config, on, off in (
+            ({"DMA_TX": "ENABLE"}, "TX", "RX"),
+            ({"DMA_RX": "ENABLE"}, "RX", "TX"),
+        ):
+            with self.subTest(on=on):
+                project = self.project(
+                    peripherals={"SPI": {"SPI6": config}},
+                    mcu="STM32H723VGT6",
+                    family="STM32H7",
+                )
+                with self.assertLogs(level="WARNING") as logs:
+                    code = self.generate(project)
+                # 48 字节的发送缓冲区取整到两个 cache 行，驱动仍按 48 字节使用；已有的
+                # dma_enable_min_size 不被使用。
+                # The 48-byte transmit buffer rounds up to two cache lines and the driver still
+                # uses 48 bytes; the existing dma_enable_min_size is not used.
+                self.assertIn(
+                    "static STM32SPI spi6(&hspi6, spi6_rx_buf, {spi6_tx_buf, 48}, UINT32_MAX);",
+                    code,
+                )
+                self.assertIn(
+                    'alignas(32) static uint8_t spi6_rx_buf[32] __attribute__((section(".axi_ram")));\n'
+                    'alignas(32) static uint8_t spi6_tx_buf[64] __attribute__((section(".axi_ram")));\n',
+                    code,
+                )
+                self.assertEqual(
+                    logs.output,
+                    [
+                        f"WARNING:root:SPI6 has DMA for {on} only; an SPI uses DMA only with DMA "
+                        f"for both RX and TX, so spi6 takes the polling path and its {on} DMA "
+                        f"channel is not used. Enable DMA for {off} in STM32CubeMX to use DMA"
+                    ],
+                )
 
     def test_a_channel_in_several_ranks_gets_one_reference_per_rank(self):
         # DevC 的 ADC3 在第 1 和第 12 个 rank 都转换 IN8；以前两个引用同名，生成时报名字冲突。

@@ -222,17 +222,18 @@ Active Peripherals:
 
 `libxr gen` 为每个外设生成一个静态对象，CubeMX 中的引脚标签成为对象名。入口源文件按这些部分排列：
 include 和 `extern` 声明只列出用到的驱动头文件和 HAL 句柄，DMA 缓冲区每个一行，`app_main()` 中每组
-外设前有一行说明注释。串口和 SPI 为开启了 DMA 的方向分配缓冲区，例子中的 USART1 两个方向都开启了
-DMA。SPI1 两个方向都没有 DMA，同样得到发送和接收缓冲区，最后一个参数（DMA 切换阈值）为
-`UINT32_MAX`，传输总是走轮询路径：
+外设前有一行说明注释。串口为开启了 DMA 的方向分配缓冲区，例子中的 USART1 两个方向都开启了 DMA。
+SPI 总是有发送和接收缓冲区，两个方向都开启 DMA 时才使用 DMA；其他情况下最后一个参数（DMA 切换阈值）
+为 `UINT32_MAX`，传输总是走轮询路径。例子中的 SPI1 没有 DMA：
 
 `libxr gen` generates one static object per peripheral, and the pin labels set in CubeMX become
 object names. The entry source is arranged in these parts: the includes and the `extern`
 declarations list only the driver headers and HAL handles that are used, each DMA buffer takes
-one line, and every group of peripherals in `app_main()` has a comment line. UARTs and SPI get
-buffers for the directions with DMA; in the example USART1 has DMA in both directions. SPI1 has
-DMA in neither direction and gets transmit and receive buffers as well, with `UINT32_MAX` as the
-last argument (the DMA threshold), so its transfers always take the polling path:
+one line, and every group of peripherals in `app_main()` has a comment line. UARTs get buffers
+for the directions with DMA; in the example USART1 has DMA in both directions. An SPI always has
+transmit and receive buffers and uses DMA only with DMA in both directions; otherwise the last
+argument (the DMA threshold) is `UINT32_MAX` and transfers always take the polling path. SPI1 in
+the example has no DMA:
 
 ```cpp
 // User/app_main.cpp（节选 / excerpt）
