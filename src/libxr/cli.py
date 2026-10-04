@@ -122,8 +122,8 @@ def platform_of(directory: str) -> Platform:
 
 
 def recorded_platform(config: str) -> Platform | None:
-    """配置 YAML config 中 parse 记录的平台（Platform 键）；没有记录或文件无法读取时为 None。
-    The platform that parse recorded in the configuration YAML config (the Platform key); None
+    """工程 YAML config 中 parse 记录的平台（Platform 键）；没有记录或文件无法读取时为 None。
+    The platform that parse recorded in the project YAML config (the Platform key); None
     when none is recorded or the file cannot be read.
 
     文件无法读取或解析时由生成器报告详细的错误。记录的平台不受支持时记录错误并以状态 1 退出。
@@ -151,9 +151,9 @@ def recorded_platform(config: str) -> Platform | None:
 
 
 def cmd_parse(args: argparse.Namespace) -> None:
-    """libxr parse：识别 -d 目录中工程的平台，解析工程并写出配置 YAML。
+    """libxr parse：识别 -d 目录中工程的平台，解析工程并写出工程 YAML。
     libxr parse: recognize the platform of the project in the -d directory, parse the project
-    and write the configuration YAML.
+    and write the project YAML.
     """
     if not os.path.isdir(args.directory):
         logging.error(
@@ -164,8 +164,8 @@ def cmd_parse(args: argparse.Namespace) -> None:
 
 
 def cmd_gen(args: argparse.Namespace) -> None:
-    """libxr gen：按配置 YAML 记录的平台由它生成代码。
-    libxr gen: generate code from the configuration YAML by the platform it records.
+    """libxr gen：按工程 YAML 记录的平台由它生成代码。
+    libxr gen: generate code from the project YAML by the platform it records.
 
     YAML 没有记录平台时（旧版 parse 写出的文件），按 -d 工程目录（默认当前目录）识别平台。
     When the YAML records no platform (a file written by an older parse), the platform of the
@@ -305,8 +305,8 @@ def _add_parse(commands) -> None:
         commands,
         "parse",
         tr(
-            "parse a project into the configuration YAML that gen reads",
-            "解析工程，写出 gen 读取的配置 YAML",
+            "parse a project into the project YAML that gen reads",
+            "解析工程，写出 gen 读取的工程 YAML",
         ),
         cmd_parse,
     )
@@ -338,8 +338,8 @@ def _add_gen(commands) -> None:
         commands,
         "gen",
         tr(
-            "generate the LibXR code of a project from its configuration YAML",
-            "由配置 YAML 生成工程的 LibXR 代码",
+            "generate the LibXR code of a project from its project YAML",
+            "由工程 YAML 生成 LibXR 代码",
         ),
         cmd_gen,
     )
@@ -348,8 +348,8 @@ def _add_gen(commands) -> None:
         "--input",
         required=True,
         help=tr(
-            "configuration YAML written by parse; it records the platform",
-            "parse 写出的配置 YAML，其中记录了平台",
+            "project YAML written by parse; it records the platform",
+            "parse 写出的工程 YAML，其中记录了平台",
         ),
     )
     parser.add_argument(

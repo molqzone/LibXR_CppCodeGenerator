@@ -7,7 +7,7 @@ LibXR 代码生成工具 / Code generator for LibXR
 </h1><br>
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](https://github.com/xrobot-org/LibXR_CppCodeGenerator/blob/master/LICENSE)
-[![GitHub Repo](https://img.shields.io/github/stars/xrobot-org/libxr?style=social)](https://github.com/xrobot-org/libxr)
+[![GitHub Repo](https://img.shields.io/github/stars/xrobot-org/LibXR_CppCodeGenerator?style=social)](https://github.com/xrobot-org/LibXR_CppCodeGenerator)
 [![Documentation](https://img.shields.io/badge/docs-online-brightgreen)](https://xrobot.work/docs/code_gen)
 [![GitHub Issues](https://img.shields.io/github/issues/xrobot-org/LibXR_CppCodeGenerator)](https://github.com/xrobot-org/LibXR_CppCodeGenerator/issues)
 [![CI/CD - Python Package](https://github.com/xrobot-org/LibXR_CppCodeGenerator/actions/workflows/python-publish.yml/badge.svg)](https://github.com/xrobot-org/LibXR_CppCodeGenerator/actions/workflows/python-publish.yml)
@@ -53,8 +53,29 @@ pipx install libxr
 
 ### 使用 pip 安装 (Install via `pip`)
 
-```bash
+pip 用于 Windows 或虚拟环境。Debian、Ubuntu 等发行版的系统 Python 由包管理器管理，直接运行
+`pip install` 会报 `externally-managed-environment`；在这类系统上使用 pipx，或先建立虚拟环境再用 pip
+安装。
+
+pip is for Windows or a virtual environment. On Debian, Ubuntu and similar distributions the
+package manager owns the system Python, and a plain `pip install` fails with
+`externally-managed-environment`; there, use pipx, or create a virtual environment first and
+install with pip.
+
+Windows
+
+```powershell
 pip install libxr
+```
+
+Linux
+
+```bash
+sudo apt install python3-venv
+python3 -m venv ~/.venvs/libxr
+. ~/.venvs/libxr/bin/activate
+pip install libxr
+# 在激活了虚拟环境的终端中使用 libxr / Use libxr in a terminal with the environment activated
 ```
 
 ### 从源码安装 (Install from source)
