@@ -55,12 +55,13 @@ class LegacyCommands(TestCase):
             mock.patch("libxr.update_notice._cache_path", return_value=None),
             contextlib.redirect_stdout(out),
             contextlib.redirect_stderr(err),
-            self.assertLogs(level="WARNING"),
+            self.assertLogs(level="WARNING") as logs,
         ):
             try:
                 code = legacy.run(old, list(argv))
             except SystemExit as exit:
                 code = exit.code
+        self.log = logs.output
         return code, out.getvalue(), err.getvalue()
 
     def test_an_old_command_warns_and_runs_the_new_one(self):
@@ -199,6 +200,50 @@ class LegacyCommands(TestCase):
                 str(elsewhere / "cubemx.yaml"), "app_main.cpp", False, ""
             )
         self.assertEqual(self.run_old("xr_gen_code", *argv, "-d", str(project))[0], 2)
+
+    def test_xr_parse_writes_the_yaml_named_after_the_ioc_file(self):
+        # 6.0.0 之前不给 -o 时写 <ioc 名>.yaml，之后的 xr_gen_code_stm32 -i <ioc 名>.yaml 依赖它；
+        # 旧命令曾改为写 .config.yaml。libxr parse 仍写 .config.yaml。
+        # Before 6.0.0 the output without -o was <ioc name>.yaml, which a following
+        # xr_gen_code_stm32 -i <ioc name>.yaml relies on; the old command used to write
+        # .config.yaml instead. libxr parse still writes .config.yaml.
+        (self.root / "demo.ioc").write_text(IOC, encoding="utf-8")
+        for old in ("xr_parse", "xr_parse_ioc"):
+            with self.subTest(old=old):
+                self.assertEqual(self.run_old(old, "-d", str(self.root))[0], 0)
+                self.assertTrue((self.root / "demo.yaml").is_file())
+                self.assertFalse((self.root / ".config.yaml").exists())
+                (self.root / "demo.yaml").unlink()
+        with contextlib.redirect_stdout(io.StringIO()), self.assertLogs(level="INFO"):
+            self.assertEqual(run_libxr("parse", "-d", str(self.root))[0], 0)
+        self.assertEqual(
+            sorted(path.name for path in self.root.iterdir()), [".config.yaml", "demo.ioc"]
+        )
+
+    def test_hw_cntr_stops_with_its_replacement(self):
+        # 6.0.0 的旧命令曾以“无法识别的参数”退出，没有说明原因。
+        # The old commands of 6.0.0 used to exit with "unrecognized arguments" and no reason.
+        project = self.root / "project"
+        project.mkdir()
+        (project / "demo.ioc").write_text(IOC, encoding="utf-8")
+        (project / "cubemx.yaml").write_text("{}\n", encoding="utf-8")
+        argv = ["-i", str(project / "cubemx.yaml"), "-o", "app_main.cpp", "--hw-cntr"]
+        for old in ("xr_gen_code", "xr_gen_code_stm32"):
+            with (
+                self.subTest(old=old),
+                mock.patch("libxr.generator_code_stm32.generate") as generate,
+            ):
+                self.assertEqual(self.run_old(old, *argv)[0], 1)
+                generate.assert_not_called()
+                self.assertEqual(
+                    self.log[1:],
+                    [
+                        "ERROR:root:--hw-cntr generated a LibXR::HardwareContainer, which LibXR "
+                        "no longer has. With --xrobot the generated objects are registered with "
+                        "XR_REGISTER and the XRobot Modules use them by name; without it, User "
+                        "Code uses the objects directly."
+                    ],
+                )
 
     def test_xr_cubemx_cfg_without_xrobot_does_not_use_it(self):
         with mock.patch("libxr.config_cubemx_project.setup_project") as setup:

@@ -129,6 +129,86 @@ class EntrySource(GeneratorTestCase):
                     user_region(self.generate(existing=existing), 3), user_region(existing, 3)
                 )
 
+    def test_xrobot_empties_the_xrobot_main_call_of_libxr_5(self):
+        # libxr 5.2.4 带 --xrobot 生成的 User Code 3 是 XRobotMain(peripherals);。以前它原样留在
+        # 区域中，其后再追加 XROBOT_MAIN()，生成成功而编译报 peripherals 未声明。
+        # With --xrobot libxr 5.2.4 generated XRobotMain(peripherals); as User Code 3. It used
+        # to stay in the region with XROBOT_MAIN() added after it, so generation succeeded and
+        # the build failed on the undeclared peripherals.
+        code = self.generate()
+        for body in ("XRobotMain(peripherals);", "XRobotMain( peripherals )\n  ;"):
+            existing = code.replace(
+                "/* User Code Begin 3 */", f"/* User Code Begin 3 */\n  {body}", 1
+            )
+            with self.subTest(body=body), self.assertLogs(level="INFO") as logs:
+                self.assertEqual(self.generate(existing=existing), code)
+            self.assertIn(
+                "INFO:root:User Code 3: removed XRobotMain(peripherals);, the default of libxr "
+                "5.x; XROBOT_MAIN() after the User Code regions replaces it",
+                logs.output,
+            )
+
+    def test_other_uses_of_the_hardware_container_stop_generation(self):
+        # LibXR 已删除 HardwareContainer；以前这样的 User Code 原样保留，到编译时才失败。
+        # LibXR no longer has HardwareContainer; such User Code used to be kept as it was and
+        # failed only in the build.
+        existing = (
+            self.generate()
+            .replace(
+                "/* User Code Begin 1 */",
+                "/* User Code Begin 1 */\n"
+                "static LibXR::HardwareContainer* hardware;  // HardwareContainer, in a comment",
+                1,
+            )
+            .replace(
+                "/* User Code Begin 2 */",
+                '/* User Code Begin 2 */\n  Log("peripherals.Find");\n'
+                "  auto* uart = peripherals.template Find<LibXR::UART>({});",
+                1,
+            )
+            .replace(
+                "/* User Code Begin 3 */",
+                "/* User Code Begin 3 */\n  Prepare();\n  XRobotMain(peripherals);",
+                1,
+            )
+        )
+        lines = existing.splitlines()
+
+        def line(text):
+            """existing 中含 text 的第一行的行号。
+            The number of the first line of existing that holds text.
+            """
+            return next(number for number, value in enumerate(lines, 1) if text in value)
+
+        message = (
+            "User Code still uses the HardwareContainer of libxr 5.x, which LibXR no longer has; "
+            "nothing was written. With --xrobot the generator registers the objects with "
+            "XR_REGISTER and calls XROBOT_MAIN() after the User Code regions, which replaces "
+            "XRobotMain(peripherals). Remove these uses and regenerate:\n"
+            f"  line {line('hardware;')}: User Code 1 uses HardwareContainer\n"
+            f"  line {line('auto* uart')}: User Code 2 uses peripherals.\n"
+            f"  line {line('XRobotMain')}: User Code 3 uses XRobotMain(...)"
+        )
+        for use_xrobot in (True, False):
+            with (
+                self.subTest(use_xrobot=use_xrobot),
+                self.assertRaisesMessage(ValueError, message),
+            ):
+                self.generate(use_xrobot=use_xrobot, existing=existing)
+        # 不带 --xrobot 时，5.x 的默认内容也被拒绝：没有其后的 XROBOT_MAIN() 来取代它。
+        # Without --xrobot the default of 5.x is rejected as well: no XROBOT_MAIN() after it
+        # replaces it.
+        libxr_only = self.generate(use_xrobot=False)
+        existing = libxr_only.replace(user_region(libxr_only, 3), "XRobotMain(peripherals);")
+        with self.assertRaises(ValueError) as context:
+            self.generate(use_xrobot=False, existing=existing)
+        self.assertTrue(
+            str(context.exception).endswith(
+                f"\n  line {existing.splitlines().index('  XRobotMain(peripherals);') + 1}: "
+                "User Code 3 uses XRobotMain(...)"
+            )
+        )
+
     def test_user_blocks_are_kept_across_regenerations(self):
         old = textwrap.dedent("""\
             /* User Code Begin 1 */
@@ -629,6 +709,22 @@ class PeripheralObjects(GeneratorTestCase):
                 if notice:
                     self.assertEqual(logs.output, notice)
 
+    def test_an_unknown_usb_instance_is_warned_about(self):
+        # 以前认不出的 USB 实例（例如曾经的 USB_DRD_FS）不生成设备，也没有任何提示。
+        # An unrecognized USB instance (such as USB_DRD_FS once was) used to get no device, and
+        # nothing said so.
+        usb = {"USB_XYZ": {"Role": "Device"}, "USB_DEVICE": {}, "USBPD": {}}
+        with self.assertLogs(level="WARNING") as logs:
+            code = self.generate(self.project(peripherals={"USB": usb}), use_xrobot=False)
+        self.assertNotIn("STM32USBDevice", code)
+        self.assertEqual(
+            logs.output,
+            [
+                "WARNING:root:USB instance 'USB_XYZ' is not one the generator knows (USB, USB_FS, "
+                "USB_DRD_FS, USB_HS, USB_OTG_FS, USB_OTG_HS); no USB device is generated for it"
+            ],
+        )
+
     def test_a_terminal_on_a_port_that_is_not_generated_is_not_initialized(self):
         # 终端串口是未生成的 USB 实例的 CDC 串口时，警告写出要修改的键。
         # When the terminal port is the CDC port of a USB instance that is not generated, the
@@ -739,6 +835,68 @@ class PeripheralObjects(GeneratorTestCase):
             code,
         )
         self.assertNotIn("static_cast<Thread::Priority>", code)
+
+    def test_a_priority_number_whose_rtos_priority_changed_is_noted(self):
+        # libxr 5.x 把 software_timer.priority 等整数原样交给 RTOS；现在它是等级，
+        # configMAX_PRIORITIES 为 56 时 2 成了 22，ThreadX 上 2 成了 12，以前生成时没有提示。
+        # libxr 5.x passed integers such as software_timer.priority to the RTOS as they were;
+        # now they are levels, so 2 became 22 with configMAX_PRIORITIES 56 and 12 on ThreadX,
+        # and generation used to say nothing.
+        def note(system, priority, count):
+            """software_timer.priority 2 的说明。
+            The notice for software_timer.priority 2.
+            """
+            return (
+                f"INFO:root:software_timer.priority 2 is the priority level MEDIUM, which is "
+                f"{system} priority {priority} with {count}; libxr 5.x passed 2 to {system} as "
+                "it was"
+            )
+
+        for system, count, priority, notes in (
+            ("FreeRTOS", 56, 2, [note("FreeRTOS", 22, "configMAX_PRIORITIES 56")]),
+            ("FreeRTOS", 7, 2, []),
+            ("FreeRTOS", None, 2, []),
+            ("ThreadX", 32, 2, [note("ThreadX", 12, "TX_MAX_PRIORITIES 32")]),
+            # 等级名的含义没有变化，不提示。
+            # A level name kept its meaning and gets no notice.
+            ("FreeRTOS", 56, "MEDIUM", []),
+        ):
+            with self.subTest(system=system, count=count, priority=priority):
+                self.setUp()
+                generator.libxr_settings["SYSTEM"] = system
+                generator.libxr_settings["software_timer"]["priority"] = priority
+                generator.rtos_priorities = count
+                with self.assertLogs(level="INFO") as logs:
+                    logging_marker()
+                    code = self.generate()
+                self.assertIn("Thread::Priority::MEDIUM", code)
+                self.assertEqual([entry for entry in logs.output if "level" in entry], notes)
+
+    def test_the_rtos_priority_count_comes_from_the_project_header(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        (root / "Core" / "Inc").mkdir(parents=True)
+        for system, header, text, count in (
+            (
+                "FreeRTOS",
+                "FreeRTOSConfig.h",
+                "/* #define configMAX_PRIORITIES 9 */\n"
+                "#define configMAX_PRIORITIES                     ( 56 )\n",
+                56,
+            ),
+            ("ThreadX", "tx_user.h", "/*#define TX_MAX_PRIORITIES                32*/\n", 32),
+            ("ThreadX", "tx_user.h", "#define TX_MAX_PRIORITIES 64\n", 64),
+            ("None", "FreeRTOSConfig.h", "#define configMAX_PRIORITIES 7\n", None),
+        ):
+            with self.subTest(system=system, text=text):
+                (root / "Core" / "Inc" / header).write_text(text, encoding="utf-8")
+                generator.libxr_settings["SYSTEM"] = system
+                self.assertEqual(
+                    generator.read_rtos_priorities([str(root / "missing"), str(root)]), count
+                )
+        generator.libxr_settings["SYSTEM"] = "FreeRTOS"
+        self.assertIsNone(generator.read_rtos_priorities([str(root / "missing")]))
 
     def test_bare_metal_platform_init_takes_no_priority(self):
         generator.libxr_settings["software_timer"]["priority"] = 9
@@ -1026,6 +1184,52 @@ class UserCodeNames(GeneratorTestCase):
         # htim7 is not used, and the project has no ADC9.
         self.assertNotIn("extern TIM_HandleTypeDef htim7;", code)
         self.assertNotIn("extern ADC_HandleTypeDef", code)
+
+    def test_renamed_flash_names_are_warned_about(self):
+        # 5.2.4 时期的官网让 User Code 写 STM32Flash flash(FLASH_SECTORS, FLASH_SECTOR_NUMBER);；
+        # 这些名字改名后，生成成功而编译失败，以前没有提示。
+        # The website of the 5.2.4 era had User Code write STM32Flash flash(FLASH_SECTORS,
+        # FLASH_SECTOR_NUMBER);. After these names were renamed, generation succeeded and the
+        # build failed, and nothing used to say so.
+        existing = self.existing(
+            "  static STM32Flash flash(FLASH_SECTORS, FLASH_SECTOR_NUMBER);\n"
+            "  // FlashSector in a comment does not count\n"
+        )
+        with self.assertLogs(level="WARNING") as logs:
+            code = self.generate(existing=existing)
+        self.assertEqual(user_region(code, 3), user_region(existing, 3))
+        self.assertEqual(
+            logs.output,
+            [
+                "WARNING:root:User Code uses names of libxr 5.x that LibXR renamed: "
+                "FLASH_SECTORS -> FLASH_REGIONS, FLASH_SECTOR_NUMBER -> FLASH_REGION_NUMBER; the "
+                "third argument of STM32Flash is now the start address of the storage area "
+                "instead of a sector index"
+            ],
+        )
+
+    def test_the_old_name_of_a_usb_otg_device_is_warned_about(self):
+        # libxr 5.x 按速度把 OTG FS 设备对象命名为 usb_fs，现在按实例命名为 usb_otg_fs。
+        # libxr 5.x named the OTG FS device object usb_fs after its speed; it is now usb_otg_fs
+        # after its instance.
+        existing = self.existing("  usb_fs.Stop(false);\n")
+        otg = self.project(peripherals={"USB": {"USB_OTG_FS": {"Role": "Device"}}})
+        with self.assertLogs(level="WARNING") as logs:
+            self.generate(otg, existing=existing)
+        self.assertEqual(
+            logs.output,
+            [
+                "WARNING:root:User Code uses usb_fs: the USB OTG device object is now named "
+                "usb_otg_fs after its instance (libxr 5.x named it usb_fs after its speed)"
+            ],
+        )
+        # USB（FSDEV）的设备对象仍叫 usb_fs。
+        # The device object of USB (FSDEV) is still usb_fs.
+        fsdev = self.project(
+            peripherals={"USB": {"USB": {"Role": "Device"}}}, mcu="STM32F103C8T6", family="STM32F1"
+        )
+        with self.assertNoLogs(level="WARNING"):
+            self.generate(fsdev, existing=existing)
 
     def test_existing_code_with_a_faulty_marker_is_still_reported(self):
         existing = self.generate().replace("/* User Code End 3 */", "/* User Code End 4 */")
@@ -1398,6 +1602,37 @@ class GenerationRuns(GeneratorTestCase):
             logs[-1],
             f"INFO:root:Generated {os.path.normpath(user)}: unchanged app_main.cpp, app_main.h, "
             "flash_map.hpp, libxr_config.yaml",
+        )
+
+    def test_a_hardware_container_left_in_user_code_writes_nothing(self):
+        user = self.root / "demo" / "User"
+        user.mkdir(parents=True)
+        project = self.root / "demo" / "cubemx.yaml"
+        project.write_text(yaml.safe_dump(self.project()), encoding="utf-8")
+        existing = generator.generate_full_code(self.project(), True, "").replace(
+            "/* User Code Begin 2 */", "/* User Code Begin 2 */\n  peripherals.Init();", 1
+        )
+        (user / "app_main.cpp").write_text(existing, encoding="utf-8")
+        with self.assertLogs(level="ERROR") as logs, self.assertRaises(SystemExit):
+            generator.generate(str(project), str(user / "app_main.cpp"), True)
+        line = existing.splitlines().index("  peripherals.Init();") + 1
+        self.assertTrue(logs.output[0].endswith(f"line {line}: User Code 2 uses peripherals."))
+        self.assertEqual(sorted(path.name for path in user.iterdir()), ["app_main.cpp"])
+        self.assertEqual((user / "app_main.cpp").read_text(encoding="utf-8"), existing)
+
+    def test_the_priority_notice_reads_the_rtos_header_of_the_project(self):
+        project = self.project()
+        project["FreeRTOS"] = {"Enabled": True}
+        inc = self.root / "demo" / "Core" / "Inc"
+        inc.mkdir(parents=True)
+        (inc / "FreeRTOSConfig.h").write_text(
+            "#define configMAX_PRIORITIES                     ( 56 )\n", encoding="utf-8"
+        )
+        _, logs = self.run_generator("demo", project, "software_timer:\n  priority: 3\n")
+        self.assertIn(
+            "INFO:root:software_timer.priority 3 is the priority level HIGH, which is FreeRTOS "
+            "priority 33 with configMAX_PRIORITIES 56; libxr 5.x passed 3 to FreeRTOS as it was",
+            logs,
         )
 
     def test_the_flash_layout_is_not_copied_to_libxr_config(self):

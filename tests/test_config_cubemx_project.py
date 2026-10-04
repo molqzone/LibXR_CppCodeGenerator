@@ -343,7 +343,11 @@ class SetupProject(GeneratorTestCase):
             (
                 "missing Core",
                 lambda root: shutil.rmtree(root / "Core"),
-                "{} is not a valid STM32CubeMX project: missing Core/ directory",
+                # 只有 .ioc 的目录以前只报缺少 Core/，没有说明怎样生成代码。
+                # A directory with only the .ioc file used to report the missing Core/ without
+                # saying how to generate the code.
+                "{} is not a valid STM32CubeMX project: missing Core/ directory; generate the "
+                "code with STM32CubeMX, or run `libxr stm32 cubemx-gen`",
             ),
             ("no .ioc", lambda root: (root / "demo.ioc").unlink(), "{} holds no .ioc file"),
             (

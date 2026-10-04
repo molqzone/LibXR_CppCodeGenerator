@@ -332,12 +332,31 @@ database:
   block_size: 1
 ```
 
+`software_timer.priority` 以及终端和看门狗的 `thread_priority` 取 0 到 4 或等级名，0 到 4 依次为
+`IDLE`、`LOW`、`MEDIUM`、`HIGH`、`REALTIME`。LibXR 按 RTOS 的优先级数把等级换算为 RTOS 优先级，步长
+`LIBXR_PRIORITY_STEP` 为（优先级数 - 1）/ 5：FreeRTOS 的第 n 级为 n 倍步长，`configMAX_PRIORITIES` 为
+56 时 `MEDIUM` 是 22；ThreadX 数值越小优先级越高，`TX_MAX_PRIORITIES` 为 32 时 `MEDIUM` 是 12。
+libxr 5.x 把这个数原样作为 RTOS 优先级，步长为 1 的 FreeRTOS 工程两者相同。
+
+`software_timer.priority` and the `thread_priority` of the terminal and the watchdog take 0 to 4
+or a level name; 0 to 4 are `IDLE`, `LOW`, `MEDIUM`, `HIGH` and `REALTIME` in that order. LibXR
+converts the levels to RTOS priorities by the RTOS priority count, with the step
+`LIBXR_PRIORITY_STEP` being (priority count - 1) / 5: level n on FreeRTOS is n steps, so `MEDIUM`
+is 22 with `configMAX_PRIORITIES` 56; on ThreadX lower numbers are higher priorities, and
+`MEDIUM` is 12 with `TX_MAX_PRIORITIES` 32. libxr 5.x passed the number to the RTOS as it was,
+which gives the same priority on a FreeRTOS project with a step of 1.
+
 CubeMX 中处于设备模式的 USB 生成 USB 设备和 CDC 串口 `usb_fs_cdc`。`USB.usb_fs.enable` 为 false 时
-不生成；工程启用了 CubeMX 的 USB 中间件（如 `USB_DEVICE`）时，`enable` 的默认值为 false。
+不生成；工程启用了 CubeMX 的 USB 中间件（如 `USB_DEVICE`）时，`enable` 的默认值为 false。设备对象
+以 USB 实例命名，例如 USB（FSDEV）为 `usb_fs`，OTG 为 `usb_otg_fs` 和 `usb_otg_hs`。libxr 5.x 按速度
+把 OTG 的设备对象命名为 `usb_fs` 和 `usb_hs`，CDC 串口的名字没有变化。
 
 A USB in device mode in CubeMX produces a USB device and the CDC serial port `usb_fs_cdc`. With
 `USB.usb_fs.enable` set to false it is not generated; when the project enables a CubeMX USB
-middleware such as `USB_DEVICE`, `enable` defaults to false.
+middleware such as `USB_DEVICE`, `enable` defaults to false. The device object is named after
+the USB instance, such as `usb_fs` for USB (FSDEV) and `usb_otg_fs` and `usb_otg_hs` for OTG.
+libxr 5.x named the OTG device objects `usb_fs` and `usb_hs` after their speed; the names of the
+CDC serial ports are unchanged.
 
 `cdc` 每路 CDC 写一项，一个 USB 设备可以有几路 CDC。第 N 路（N 从 1 起）生成 `usb_otg_hs_cdc`、
 `usb_otg_hs_cdc2` 这样的 `USB::CDCUart` 对象，按顺序分配端点：数据 IN 端点为 EP(2N-1)，通知端点为
@@ -500,9 +519,11 @@ set(LIBXR_OPT_RELEASE "")
 `CMAKE_CXX_FLAGS_RELEASE`，两个工具链文件不同时留空），重新生成的语句之外的内容保留在
 `Kept from the earlier LibXR.CMake` 块中。
 `LIBXR_OPT_DEBUG` 是应用的 Debug 优化级别，`LIBXR_OPT_RELEASE` 是应用、`xr` 和 CubeMX 生成的库在
-Release 构建中的优化级别；Debug 构建中 `xr` 和这些库保持 `-O2`。目标的编译选项排在工具链的
-`CMAKE_<LANG>_FLAGS_<CONFIG>` 之后，所以最后一个 `-O` 就是这里设置的级别。值为 `""` 时沿用工具链文件中的
-级别，CubeMX 写出的 GCC 为 `-Os`、ST Arm Clang 为 `-Oz`；新工程的 `LIBXR_OPT_RELEASE` 为 `""`。
+Release 构建中的优化级别；Debug 构建中 `xr` 和 CubeMX 生成的全部库目标使用 `-O2`（libxr 5.x 只包括
+`FreeRTOS`、`STM32_Drivers` 和 `USB_Device_Library`，`ThreadX` 等其他库目标使用工具链的 Debug 级别）。
+目标的编译选项排在工具链的 `CMAKE_<LANG>_FLAGS_<CONFIG>` 之后，所以最后一个 `-O` 就是这里设置的级别。
+值为 `""` 时沿用工具链文件中的级别，CubeMX 写出的 GCC 为 `-Os`、ST Arm Clang 为 `-Oz`；新工程的
+`LIBXR_OPT_RELEASE` 为 `""`。
 
 On a rewrite the values the user changed in the settings block, and what the user added there,
 stay; `LIBXR_SYSTEM` takes the system that `FreeRTOSConfig.h` or `app_threadx.h` in `Core/Inc`
@@ -514,7 +535,9 @@ toolchain files differ), and what is not among the regenerated statements stays 
 `Kept from the earlier LibXR.CMake` block.
 `LIBXR_OPT_DEBUG` is the Debug optimization level of the application, and `LIBXR_OPT_RELEASE`
 the Release level of the application, `xr` and the libraries CubeMX generates; in Debug builds
-`xr` and these libraries stay at `-O2`. Target compile options come after the toolchain's
+`xr` and every library target CubeMX generates use `-O2` (libxr 5.x covered only `FreeRTOS`,
+`STM32_Drivers` and `USB_Device_Library`, and other library targets such as `ThreadX` used the
+Debug level of the toolchain). Target compile options come after the toolchain's
 `CMAKE_<LANG>_FLAGS_<CONFIG>`, so the last `-O` is the level set here. With `""` the level of the
 toolchain file applies, `-Os` for GCC and `-Oz` for ST Arm Clang as CubeMX writes them; a new
 project has `LIBXR_OPT_RELEASE` set to `""`.
@@ -593,10 +616,22 @@ belong to one platform sit under its name.
 
 ### 旧命令 / Old commands
 
-6.0.0 之前的 `xr_*` 命令仍可使用，参数及其含义与原来相同，运行时提示对应的新命令，将在 7.0.0 删除。
+6.0.0 之前的 `xr_*` 命令仍可使用，参数与原来相同，运行时提示对应的新命令，将在 7.0.0 删除。以下几处
+行为与 libxr 5.2.4 不同：`xr_gen_code` 和 `xr_gen_code_stm32` 收到 `--hw-cntr` 时报错退出，它生成的
+`HardwareContainer` 已从 LibXR 删除，XRobot 工程改用 `--xrobot`；`xr_parse` 和 `xr_parse_ioc` 在含有
+多个 `.ioc` 文件的目录中报错退出，不再逐个解析；`xr_stm32_toolchain_switch clang` 不带 `-g`、`-n` 或
+`-p` 时保持当前的标准库，不再报错；`xr_stm32_toolchain_switch` 在 GCC 与 ST Arm Clang 之间切换时删除
+`build/` 和 `cmake-build*`，`xr_stm32_cmake` 则不再删除它们，CMake 在下次构建时重新配置。
 
-The `xr_*` commands of versions before 6.0.0 still work with the same arguments and meaning;
-they name their new command when run and are removed in 7.0.0.
+The `xr_*` commands of versions before 6.0.0 still work with the same arguments; they name their
+new command when run and are removed in 7.0.0. A few behaviors differ from libxr 5.2.4:
+`xr_gen_code` and `xr_gen_code_stm32` stop with an error on `--hw-cntr`, as LibXR no longer has
+the `HardwareContainer` it generated, and XRobot projects use `--xrobot` instead; `xr_parse` and
+`xr_parse_ioc` stop with an error in a directory with several `.ioc` files instead of parsing
+each; `xr_stm32_toolchain_switch clang` without `-g`, `-n` or `-p` keeps the current standard
+library instead of failing; `xr_stm32_toolchain_switch` removes `build/` and `cmake-build*` when
+it switches between GCC and ST Arm Clang, while `xr_stm32_cmake` no longer removes them, and
+CMake configures again on the next build.
 
 | 旧命令 Old | 新命令 New |
 | --- | --- |

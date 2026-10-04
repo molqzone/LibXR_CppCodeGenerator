@@ -2,9 +2,11 @@
 The xr_* commands of versions before 6.0.0: their arguments keep their old meaning, and they
 name their libxr subcommand when they run; they are removed in 7.0.0.
 
-每个旧命令用原来的参数解析器读取参数，再调用新命令的实现。
+每个旧命令用原来的参数解析器读取参数，再调用新命令的实现。--hw-cntr 是例外：它生成的
+HardwareContainer 已从 LibXR 删除，收到时报错退出。
 Each old command reads its arguments with its original parser, then calls the implementation of
-the new command.
+the new command. --hw-cntr is the exception: LibXR no longer has the HardwareContainer it
+generated, so it exits with an error.
 """
 
 from __future__ import annotations
@@ -31,8 +33,12 @@ def _parser(prog: str, description: str, **options) -> argparse.ArgumentParser:
 
 
 def _parse(prog: str, argv: list[str]) -> None:
-    """xr_parse、xr_parse_ioc：-d 必须给出。
-    xr_parse, xr_parse_ioc: -d is required.
+    """xr_parse、xr_parse_ioc：-d 必须给出；没有 -o 时写入 DIRECTORY 中与 .ioc 同名的 .yaml，与
+    6.0.0 之前相同（libxr parse 写入 .config.yaml）。目录中没有或有多个 .ioc 时由 libxr parse
+    报错。
+    xr_parse, xr_parse_ioc: -d is required; without -o the output is the .yaml named after the
+    .ioc file in DIRECTORY, as before 6.0.0 (libxr parse writes .config.yaml). A directory with
+    no or several .ioc files is reported by libxr parse.
     """
     parser = _parser(
         prog, tr("STM32CubeMX IOC Configuration Parser", "STM32CubeMX .ioc 配置解析器")
@@ -47,8 +53,8 @@ def _parse(prog: str, argv: list[str]) -> None:
         "-o",
         "--output",
         help=tr(
-            "output YAML file (default: .config.yaml in DIRECTORY)",
-            "输出的 YAML 文件（默认：DIRECTORY 中的 .config.yaml）",
+            "output YAML file (default: <name of the .ioc file>.yaml in DIRECTORY)",
+            "输出的 YAML 文件（默认：DIRECTORY 中与 .ioc 文件同名的 .yaml）",
         ),
     )
     parser.add_argument(
@@ -57,12 +63,21 @@ def _parse(prog: str, argv: list[str]) -> None:
     args = parser.parse_args(argv)
     if args.verbose:
         configure_output(logging.DEBUG)
+    if not args.output and os.path.isdir(args.directory):
+        ioc_files = [name for name in os.listdir(args.directory) if name.endswith(".ioc")]
+        if len(ioc_files) == 1:
+            args.output = os.path.join(args.directory, os.path.splitext(ioc_files[0])[0] + ".yaml")
     cli.cmd_parse(args)
 
 
 def _gen_arguments(prog: str, argv: list[str]) -> argparse.Namespace:
     """xr_gen_code、xr_gen_code_stm32 的参数：没有 -d。
     The arguments of xr_gen_code and xr_gen_code_stm32: there is no -d.
+
+    --hw-cntr 仍被接受，但 LibXR 已删除它生成的 HardwareContainer，所以记录错误并以状态 1 退出，
+    说明替代写法。
+    --hw-cntr is still accepted, but LibXR no longer has the HardwareContainer it generated, so
+    it logs an error naming the replacement and exits with status 1.
     """
     parser = _parser(
         prog,
@@ -90,7 +105,29 @@ def _gen_arguments(prog: str, argv: list[str]) -> argparse.Namespace:
             "libxr_config.yaml 的路径或 URL（可选）",
         ),
     )
-    return parser.parse_args(argv)
+    parser.add_argument(
+        "--hw-cntr",
+        action="store_true",
+        help=tr(
+            "Removed: LibXR no longer has HardwareContainer; use --xrobot (XR_REGISTER)",
+            "已删除：LibXR 不再有 HardwareContainer；请改用 --xrobot（XR_REGISTER）",
+        ),
+    )
+    args = parser.parse_args(argv)
+    if args.hw_cntr:
+        logging.error(
+            tr(
+                "--hw-cntr generated a LibXR::HardwareContainer, which LibXR no longer has. With "
+                "--xrobot the generated objects are registered with XR_REGISTER and the XRobot "
+                "Modules use them by name; without it, User Code uses the objects directly.",
+                "--hw-cntr 生成的 LibXR::HardwareContainer 已从 LibXR 删除。带 --xrobot 时生成的"
+                "对象以 XR_REGISTER 注册，XRobot 模块按名字使用它们；不带 --xrobot 时 User Code "
+                "直接使用这些对象。",
+            )
+        )
+        sys.exit(1)
+    del args.hw_cntr
+    return args
 
 
 def _gen_code(prog: str, argv: list[str]) -> None:

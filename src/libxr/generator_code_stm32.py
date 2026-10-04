@@ -84,23 +84,29 @@ libxr_config_origin = "libxr_config.yaml"
 # 从 URL 下载 libxr_config.yaml 的时限（秒）。
 # Time limit in seconds for downloading libxr_config.yaml from a URL.
 CONFIG_DOWNLOAD_TIMEOUT = 30
+# 工程的 RTOS 优先级数，generate() 用 read_rtos_priorities() 读出；不知道时为 None。
+# The RTOS priority count of the project, which generate() reads with read_rtos_priorities();
+# None when unknown.
+rtos_priorities: int | None = None
 
 
 # --------------------------
 # 配置初始化 / Configuration Initialization
 # --------------------------
 def reset_settings() -> None:
-    """把生效的设置恢复为 DEFAULT_SETTINGS，并丢掉已加载的 libxr_config.yaml 文档和它的来源，使
-    同一进程中的下一次生成不带上一次的设置。
+    """把生效的设置恢复为 DEFAULT_SETTINGS，并丢掉已加载的 libxr_config.yaml 文档和它的来源以及
+    RTOS 的优先级数，使同一进程中的下一次生成不带上一次的设置。
     Restore the effective settings to DEFAULT_SETTINGS and drop the loaded libxr_config.yaml
-    document and its origin, so the next generation in the same process carries nothing over.
+    document, its origin and the RTOS priority count, so the next generation in the same process
+    carries nothing over.
     """
-    global libxr_config_document, libxr_config_origin, libxr_config_label
+    global libxr_config_document, libxr_config_origin, libxr_config_label, rtos_priorities
     libxr_settings.clear()
     libxr_settings.update(copy.deepcopy(DEFAULT_SETTINGS))
     libxr_config_document = None
     libxr_config_origin = "libxr_config.yaml"
     libxr_config_label = "libxr_config.yaml"
+    rtos_priorities = None
 
 
 def initialize_registry(use_xrobot: bool) -> None:
@@ -448,12 +454,16 @@ def load_libxr_config(output_dir: str, config_source: str) -> None:
 
 
 def _report_dropped_device_aliases(aliases) -> None:
-    """以警告列出已移除的 device_aliases 表中的每个别名（别名 -> 设备），便于迁移配置。
-    Log a warning that names every alias of the removed device_aliases table (alias -> device),
-    for migrating configurations.
+    """以警告列出已移除的 device_aliases 表中与设备名不同的别名（别名 -> 设备），便于迁移配置。
+    Log a warning that names every alias of the removed device_aliases table that differs from
+    its device (alias -> device), for migrating configurations.
 
-    表中没有可识别的别名时列出表的 repr。
-    When the table holds no recognizable alias, its repr is listed instead.
+    与设备名相同的别名不列出：对象仍叫这个名字（5.x 的 --xrobot 默认每项只有设备名本身）。表中的
+    别名都与设备名相同时只记录一条说明；表不是映射时列出表的 repr。
+    An alias equal to its device name is not listed: the object still has that name (5.x with
+    --xrobot wrote only the device name itself for each entry by default). When every alias of
+    the table equals its device name, a single notice is logged; a table that is not a mapping
+    is listed by its repr.
     """
     pairs = []
     if isinstance(aliases, dict):
@@ -462,7 +472,18 @@ def _report_dropped_device_aliases(aliases) -> None:
             if isinstance(names, str):
                 names = [names]
             for name in names or []:
-                pairs.append(f"{name} -> {device}")
+                if str(name) != str(device):
+                    pairs.append(f"{name} -> {device}")
+        if not pairs:
+            logging.info(
+                tr(
+                    "libxr_config.yaml: removed device_aliases, which is no longer used; each "
+                    "alias in it equals the name of its object, so nothing needs to change",
+                    "libxr_config.yaml：已删除不再使用的 device_aliases；其中的别名都与对象名相同，"
+                    "无需改动",
+                )
+            )
+            return
     logging.warning(
         tr(
             "Removed the legacy device_aliases table from libxr_config.yaml; generated "
@@ -1021,6 +1042,10 @@ def _number(key: str, value) -> float | int:
 # These CubeMX middlewares use the handle of the USB peripheral themselves and cannot be used
 # together with the LibXR USB device.
 _USB_MIDDLEWARE = ("USB_DEVICE", "USB_HOST", "USBX")
+# USB 段中不是 USB 外设实例的名字：CubeMX 的中间件和 USB PD（USBPD），不生成 USB 设备也不警告。
+# The names in the USB section that are not USB peripheral instances: the CubeMX middleware and
+# USB PD (USBPD); they get no USB device and no warning.
+_NOT_USB_DEVICES = (*_USB_MIDDLEWARE, "USBPD")
 
 
 def _default_usb_enables(peripherals: dict) -> None:
@@ -1028,15 +1053,28 @@ def _default_usb_enables(peripherals: dict) -> None:
     Write the default enable of the USB instances that have none in libxr_config.
 
     CubeMX 中不是主机模式的 USB 实例默认启用；工程启用了 CubeMX 的 USB 中间件时都不启用，并记录
-    一条说明。
+    一条说明。既不是 _USB_INSTANCES 中的实例、也不是中间件（_NOT_USB_DEVICES）的名字记录一条警告，
+    这样的实例不生成对象。
     A USB instance that is not in host mode in CubeMX is enabled by default; when the project
-    enables a CubeMX USB middleware, none is, and a notice says why.
+    enables a CubeMX USB middleware, none is, and a notice says why. A name that is neither an
+    instance of _USB_INSTANCES nor a middleware (_NOT_USB_DEVICES) is warned about; no object is
+    generated for it.
     """
     usb = peripherals.get("USB", {})
     middleware = sorted(name for name in usb if name.upper() in _USB_MIDDLEWARE)
     for instance, config in usb.items():
         name = _USB_INSTANCES.get(instance.upper())
         if name is None:
+            if instance.upper() not in _NOT_USB_DEVICES:
+                known = ", ".join(_USB_INSTANCES)
+                logging.warning(
+                    tr(
+                        f"USB instance '{instance}' is not one the generator knows ({known}); "
+                        "no USB device is generated for it",
+                        f"生成器不认识 USB 实例 '{instance}'（可识别的实例为 {known}），"
+                        "不为它生成 USB 设备",
+                    )
+                )
             continue
         settings = _settings("USB", name.lower())
         if "enable" in settings:
@@ -2127,11 +2165,66 @@ _HANDLE_TYPES = {
 }
 
 
+# libxr 5.x 的 flash_map.hpp 和 LibXR 中改了名的名字及其新名字。
+# Names of the flash_map.hpp of libxr 5.x and of LibXR that were renamed, with their new names.
+_RENAMED_FLASH_NAMES = {
+    "FLASH_SECTORS": "FLASH_REGIONS",
+    "FLASH_SECTOR_NUMBER": "FLASH_REGION_NUMBER",
+    "FlashSector": "FlashRegion",
+}
+# libxr 5.x 按速度命名的 USB OTG 设备对象及其现在按实例的名字。
+# The USB OTG device objects that libxr 5.x named after their speed, with their names after the
+# instance now.
+_RENAMED_USB_OBJECTS = {"usb_fs": "usb_otg_fs", "usb_hs": "usb_otg_hs"}
+
+
+def _report_renamed_names(project_data: dict, names: set[str]) -> None:
+    """User Code 中的标识符 names 用到 libxr 5.x 之后改了名的名字时给出警告，写出新名字。
+    Warn when the identifiers names of the User Code use a name that changed after libxr 5.x,
+    giving the new name.
+
+    Flash 的名字（_RENAMED_FLASH_NAMES）随 LibXR 的 FlashRegion 改名，STM32Flash 的第三个参数也由
+    扇区序号改为存储区的起始地址。USB OTG 设备对象改为按实例命名（_RENAMED_USB_OBJECTS）：工程有
+    这个 OTG 实例、没有同名的 USB 实例而 User Code 用到旧名字时才警告。生成的文件不变。
+    The Flash names (_RENAMED_FLASH_NAMES) follow the renaming to FlashRegion in LibXR, and the
+    third argument of STM32Flash changed from a sector index to the start address of the storage
+    area. The USB OTG device objects are now named after the instance (_RENAMED_USB_OBJECTS): the
+    warning comes only when the project has that OTG instance, no USB instance of the old name,
+    and the User Code uses the old name. The generated files stay the same.
+    """
+    flash = [f"{old} -> {new}" for old, new in _RENAMED_FLASH_NAMES.items() if old in names]
+    if flash:
+        logging.warning(
+            tr(
+                "User Code uses names of libxr 5.x that LibXR renamed: "
+                f"{', '.join(flash)}; the third argument of STM32Flash is now the start "
+                "address of the storage area instead of a sector index",
+                f"User Code 用到了 libxr 5.x 中 LibXR 已改名的名字：{'、'.join(flash)}；"
+                "STM32Flash 的第三个参数由扇区序号改为存储区的起始地址",
+            )
+        )
+    objects = {
+        (_USB_INSTANCES.get(instance.upper()) or "").lower()
+        for instance in project_data.get("Peripherals", {}).get("USB", {})
+    }
+    for old, new in _RENAMED_USB_OBJECTS.items():
+        if old in names and old not in objects and new in objects:
+            logging.warning(
+                tr(
+                    f"User Code uses {old}: the USB OTG device object is now named {new} after "
+                    f"its instance (libxr 5.x named it {old} after its speed)",
+                    f"User Code 用到了 {old}：USB OTG 设备对象现在按实例命名为 {new}"
+                    f"（libxr 5.x 按速度命名为 {old}）",
+                )
+            )
+
+
 def _use_names_of_user_code(project_data: dict, existing_code: str, flash_map: bool) -> None:
     """记录 User Code 区域中的手写代码用到的驱动头文件和 HAL 句柄，让生成的文件仍然 include
-    和声明它们。
+    和声明它们；用到 libxr 5.x 之后改了名的名字时给出警告（见 _report_renamed_names()）。
     Record the driver headers and HAL handles that hand-written code in the User Code regions
-    uses, so that the generated file still includes and declares them.
+    uses, so that the generated file still includes and declares them; names that changed after
+    libxr 5.x are warned about (see _report_renamed_names()).
 
     只看区域内的标识符，注释和字符串不算；工程中没有的外设不会得到句柄声明。标记有问题的
     已有代码在这里跳过，由 validate_user_regions() 报告。
@@ -2149,6 +2242,7 @@ def _use_names_of_user_code(project_data: dict, existing_code: str, flash_map: b
         }
     except ValueError:
         return
+    _report_renamed_names(project_data, names)
     for header, symbols in _HEADER_NAMES.items():
         if names.intersection(symbols) and (flash_map or header != "flash_map.hpp"):
             _use_header(header)
@@ -2385,15 +2479,77 @@ def _preserve_generated_regions(existing_code: str, generated_code: str) -> str:
 _PRIORITY_LEVELS = ("IDLE", "LOW", "MEDIUM", "HIGH", "REALTIME")
 
 
+# RTOS 的优先级数所在的头文件（相对工程根目录）和宏，以及头文件中没有定义时的默认值。
+# The header (relative to the project root) and macro of the RTOS priority count, and the
+# default when the header does not define it.
+_RTOS_PRIORITY_COUNTS = {
+    "FreeRTOS": (os.path.join("Core", "Inc", "FreeRTOSConfig.h"), "configMAX_PRIORITIES", None),
+    "ThreadX": (os.path.join("Core", "Inc", "tx_user.h"), "TX_MAX_PRIORITIES", 32),
+}
+
+
+def read_rtos_priorities(directories: list[str]) -> int | None:
+    """工程的 RTOS 优先级数：FreeRTOS 的 configMAX_PRIORITIES 或 ThreadX 的 TX_MAX_PRIORITIES。
+    The RTOS priority count of the project: configMAX_PRIORITIES of FreeRTOS or
+    TX_MAX_PRIORITIES of ThreadX.
+
+    依次在 directories 中找 Core/Inc 下的头文件（FreeRTOSConfig.h 或 tx_user.h），取第一个找到的
+    文件中未注释的 #define；tx_user.h 没有定义时为 ThreadX 的默认值 32。裸机工程、找不到头文件或
+    读不出数值时为 None。SYSTEM 取 load_configuration() 写入的值。
+    The header under Core/Inc (FreeRTOSConfig.h or tx_user.h) is looked for in each of
+    directories in turn, and the #define that is not commented out in the first one found is
+    taken; a tx_user.h without it gives the ThreadX default 32. A bare-metal project, a missing
+    header or an unreadable number gives None. SYSTEM is the value load_configuration() wrote.
+    """
+    entry = _RTOS_PRIORITY_COUNTS.get(libxr_settings["SYSTEM"])
+    if entry is None:
+        return None
+    header, macro, default = entry
+    for directory in directories:
+        path = os.path.join(directory, header)
+        try:
+            with open(path, encoding="utf-8", errors="replace") as stream:
+                text = stream.read()
+        except OSError:
+            continue
+        text = re.sub(r"/\*.*?\*/|//[^\n]*", "", text, flags=re.S)
+        match = re.search(rf"^[ \t]*#[ \t]*define[ \t]+{macro}[ \t]+\(?[ \t]*(\d+)", text, re.M)
+        return int(match.group(1)) if match else default
+    return None
+
+
+def _rtos_priority(level: str) -> int | None:
+    """等级 level 在本工程中对应的 RTOS 优先级（按 LibXR 的 LIBXR_PRIORITY_STEP 换算）；裸机工程
+    或不知道 RTOS 的优先级数时为 None。
+    The RTOS priority of the level level in this project, converted by LibXR's
+    LIBXR_PRIORITY_STEP; None for a bare-metal project or when the RTOS priority count is unknown.
+
+    LIBXR_PRIORITY_STEP 为 (优先级数 - 1) / 5。FreeRTOS 的等级 n 为 n 倍步长；ThreadX 数值越小越高，
+    IDLE 到 HIGH 为 4 到 1 倍步长，REALTIME 为 1。
+    LIBXR_PRIORITY_STEP is (priority count - 1) / 5. On FreeRTOS level n is n steps; on ThreadX,
+    where lower numbers are higher, IDLE to HIGH are 4 to 1 steps and REALTIME is 1.
+    """
+    if rtos_priorities is None or libxr_settings["SYSTEM"] not in _RTOS_PRIORITY_COUNTS:
+        return None
+    step = (rtos_priorities - 1) // 5
+    index = _PRIORITY_LEVELS.index(level)
+    if libxr_settings["SYSTEM"] == "ThreadX":
+        return 1 if level == "REALTIME" else step * (4 - index)
+    return step * index
+
+
 def _priority_level(key: str, value) -> str:
     """配置中的线程优先级 value 对应的 LibXR::Thread::Priority 枚举名。
     The LibXR::Thread::Priority enumerator of the thread priority value of the configuration.
 
     value 是 0-4 的整数或大小写不限的等级名。LibXR 按 RTOS 的优先级数把等级换算为 RTOS 优先级
-    （FreeRTOS 数值越大越高，ThreadX 数值越小越高），所以生成的代码写枚举而不写数值。
+    （FreeRTOS 数值越大越高，ThreadX 数值越小越高），所以生成的代码写枚举而不写数值。libxr 5.x
+    把整数原样作为 RTOS 优先级；换算后的优先级与这个整数不同时记录一条说明（见 _rtos_priority()）。
     value is an integer 0-4 or a level name in any case. LibXR converts the levels to RTOS
     priorities by the RTOS priority count (higher numbers are higher on FreeRTOS, lower numbers
-    on ThreadX), so the generated code names the enumerator instead of a number.
+    on ThreadX), so the generated code names the enumerator instead of a number. libxr 5.x
+    passed the integer to the RTOS as it was; when the converted priority differs from that
+    integer, a notice is logged (see _rtos_priority()).
 
     Raises:
         LibXRConfigError: value 既不是 0-4 也不是等级名；key 是出错的设置。
@@ -2401,7 +2557,21 @@ def _priority_level(key: str, value) -> str:
     """
     if isinstance(value, int) and not isinstance(value, bool):
         if 0 <= value < len(_PRIORITY_LEVELS):
-            return _PRIORITY_LEVELS[value]
+            level = _PRIORITY_LEVELS[value]
+            priority = _rtos_priority(level)
+            if priority is not None and priority != value:
+                system = libxr_settings["SYSTEM"]
+                count = f"{_RTOS_PRIORITY_COUNTS[system][1]} {rtos_priorities}"
+                logging.info(
+                    tr(
+                        f"{key} {value} is the priority level {level}, which is {system} "
+                        f"priority {priority} with {count}; libxr 5.x passed {value} to "
+                        f"{system} as it was",
+                        f"{key} 的 {value} 表示优先级等级 {level}，按 {count} 即 {system} 优先级 "
+                        f"{priority}；libxr 5.x 把 {value} 原样作为 {system} 的优先级",
+                    )
+                )
+            return level
     elif isinstance(value, str) and value.strip().upper() in _PRIORITY_LEVELS:
         return value.strip().upper()
     raise _invalid_setting(
@@ -2789,6 +2959,95 @@ def reject_user_xrobot_main(existing_code: str) -> None:
                 )
 
 
+# libxr 5.x 带 --xrobot 生成时 User Code 3 的默认内容，去掉全部空白：以生成的 HardwareContainer
+# 调用 XRobot 的主函数。
+# The default body of User Code 3 that libxr 5.x generated with --xrobot, with all whitespace
+# removed: it called the XRobot main function with the generated HardwareContainer.
+_XROBOT_MAIN_3_V5 = "XRobotMain(peripherals);"
+
+
+def _hardware_container_use(occurrence) -> str | None:
+    """标识符 occurrence 是否用到 libxr 5.x 的 HardwareContainer：返回用法的写法（调用
+    XRobotMain、访问 peripherals 的成员或写出 HardwareContainer），否则为 None。
+    Whether the identifier occurrence uses the HardwareContainer of libxr 5.x: the spelling of
+    the use (a call of XRobotMain, a member access of peripherals or the name HardwareContainer),
+    None otherwise.
+    """
+    if occurrence.text == "XRobotMain" and occurrence.following in ("(", "<"):
+        return "XRobotMain(...)"
+    if occurrence.text == "peripherals" and occurrence.following == ".":
+        return "peripherals."
+    if occurrence.text == "HardwareContainer":
+        return "HardwareContainer"
+    return None
+
+
+def reject_user_hardware_container(existing_code: str, use_xrobot: bool) -> None:
+    """拒绝 User Code 区域中仍用到 libxr 5.x 的 HardwareContainer 的已有代码，逐条写出行号。
+    Reject existing code whose User Code regions still use the HardwareContainer of libxr 5.x,
+    naming the line of each use.
+
+    5.x 带 --xrobot（或 --hw-cntr）时生成 LibXR::HardwareContainer peripherals，User Code 3 的默认
+    内容是 XRobotMain(peripherals);。LibXR 已删除 HardwareContainer，这些代码无法编译，所以在写入
+    任何文件之前停止。use_xrobot 为真时，内容恰好是这个默认值的 User Code 3 不算（由
+    _without_default_loop() 清空）；注释和字符串中的名字不算。
+    With --xrobot (or --hw-cntr) 5.x generated LibXR::HardwareContainer peripherals, and the
+    default body of User Code 3 was XRobotMain(peripherals);. LibXR no longer has
+    HardwareContainer and such code cannot compile, so generation stops before any file is
+    written. With use_xrobot, a User Code 3 whose body is exactly that default does not count
+    (_without_default_loop() empties it); names in comments and strings do not count.
+
+    Raises:
+        ValueError: User Code 调用了 XRobotMain、访问了 peripherals 的成员或写出 HardwareContainer；
+            信息逐条列出这些行。
+            User Code calls XRobotMain, accesses a member of peripherals or names
+            HardwareContainer; the message lists each line.
+    """
+    if not existing_code.strip():
+        return
+    document = CppDocument.parse(existing_code)
+    try:
+        occurrences = document.identifier_occurrences()
+    except ValueError:
+        # 词法错误由 validate_user_regions() 报告。
+        # validate_user_regions() reports lexical errors.
+        return
+    source = document.render_bytes()
+    problems = []
+    for region in document.user_regions():
+        body = "".join(region.body_text.split())
+        if use_xrobot and region.name == "3" and body == _XROBOT_MAIN_3_V5:
+            continue
+        for occurrence in occurrences:
+            if not region.body_span.start <= occurrence.span.start < region.body_span.end:
+                continue
+            use = _hardware_container_use(occurrence)
+            if use is not None:
+                line = _source_line(source, occurrence.span.start)
+                problems.append(
+                    (
+                        line,
+                        tr(
+                            f"line {line}: User Code {region.name} uses {use}",
+                            f"第 {line} 行：User Code {region.name} 用到了 {use}",
+                        ),
+                    )
+                )
+    if problems:
+        raise ValueError(
+            tr(
+                "User Code still uses the HardwareContainer of libxr 5.x, which LibXR no longer "
+                "has; nothing was written. With --xrobot the generator registers the objects "
+                "with XR_REGISTER and calls XROBOT_MAIN() after the User Code regions, which "
+                "replaces XRobotMain(peripherals). Remove these uses and regenerate:\n  ",
+                "User Code 仍然用到 libxr 5.x 的 HardwareContainer，LibXR 已删除它，未写入任何文件。"
+                "带 --xrobot 时生成器以 XR_REGISTER 注册对象，并在 User Code 区域之后调用 "
+                "XROBOT_MAIN()，取代 XRobotMain(peripherals)。请删除以下用法后重新生成：\n  ",
+            )
+            + "\n  ".join(text for _, text in sorted(problems))
+        )
+
+
 GENERATED_NOTICE = "// Generated by `libxr gen`; do not edit by hand."
 
 
@@ -2817,18 +3076,33 @@ _DEFAULT_LOOP_3 = "while(true){Thread::Sleep(UINT32_MAX);}"
 
 def _without_default_loop(existing_code: str) -> str:
     """User Code 3 仍是不带 --xrobot 生成的默认循环时清空它，使其后的 XROBOT_MAIN() 能够执行；
+    仍是 libxr 5.x 带 --xrobot 生成的默认内容 XRobotMain(peripherals); 时同样清空，并记录一条说明。
     比较时忽略空白，其他内容不变。
     Empty User Code 3 when it still holds the default loop generated without --xrobot, so that
-    the XROBOT_MAIN() after it runs; whitespace is ignored in the comparison, and any other
-    content is kept.
+    the XROBOT_MAIN() after it runs; the default body XRobotMain(peripherals); that libxr 5.x
+    generated with --xrobot is emptied too, with a notice. Whitespace is ignored in the
+    comparison, and any other content is kept.
     """
     if not existing_code.strip():
         return existing_code
     document = CppDocument.parse(existing_code)
     for region in document.user_regions():
-        if region.name == "3" and "".join(region.body_text.split()) == _DEFAULT_LOOP_3:
-            document = document.replace_region_body(region, "\n" + INDENT)
-            return document.render_bytes().decode("utf-8", errors="surrogateescape")
+        if region.name != "3":
+            continue
+        body = "".join(region.body_text.split())
+        if body not in (_DEFAULT_LOOP_3, _XROBOT_MAIN_3_V5):
+            return existing_code
+        if body == _XROBOT_MAIN_3_V5:
+            logging.info(
+                tr(
+                    "User Code 3: removed XRobotMain(peripherals);, the default of libxr 5.x; "
+                    "XROBOT_MAIN() after the User Code regions replaces it",
+                    "User Code 3：已删除 libxr 5.x 的默认内容 XRobotMain(peripherals);，"
+                    "User Code 区域之后的 XROBOT_MAIN() 取代了它",
+                )
+            )
+        document = document.replace_region_body(region, "\n" + INDENT)
+        return document.render_bytes().decode("utf-8", errors="surrogateescape")
     return existing_code
 
 
@@ -2842,21 +3116,25 @@ def generate_full_code(
     输出已按 LibXR 的 clang-format 风格排版（见 libxr.cpp_layout），不再用 clang-format 和
     NOLINT 标记保护。启用 XRobot 时为每个生成的对象输出 XR_REGISTER，并在 User Code 3 之后调用
     XROBOT_MAIN()；否则 User Code 3 的默认内容是一个无限休眠的循环。启用 XRobot 时，已有代码的
-    User Code 3 若仍是这个循环则被清空，否则 XROBOT_MAIN() 永远执行不到。flash_map 为假表示没有
-    flash_map.hpp，这时不能启用数据库。
+    User Code 3 若仍是这个循环（或 libxr 5.x 的默认内容 XRobotMain(peripherals);）则被清空，否则
+    XROBOT_MAIN() 永远执行不到。User Code 中其他用到 HardwareContainer 的代码被拒绝（见
+    reject_user_hardware_container()）。flash_map 为假表示没有 flash_map.hpp，这时不能启用数据库。
     The output is laid out in the clang-format style of LibXR (see libxr.cpp_layout) and is
     not protected by clang-format and NOLINT markers. With XRobot every generated object gets
     an XR_REGISTER line and XROBOT_MAIN() is called after User Code 3; otherwise the default
     body of User Code 3 is a loop that sleeps forever. With XRobot, a User Code 3 of the
-    existing code that still holds this loop is emptied, since XROBOT_MAIN() would never run
-    after it. Without flash_map there is no flash_map.hpp, and the database cannot be enabled.
+    existing code that still holds this loop (or XRobotMain(peripherals);, the default of libxr
+    5.x) is emptied, since XROBOT_MAIN() would never run after it. Any other use of
+    HardwareContainer in the User Code is rejected (see reject_user_hardware_container()).
+    Without flash_map there is no flash_map.hpp, and the database cannot be enabled.
 
     Raises:
-        ValueError: 生成的对象名冲突，或 GPIO 名字、User Code 标记、遗留的 XROBOT_MAIN() 调用
-            不合要求。
-            Generated object names collide, or a GPIO name, a User Code marker or a leftover
-            XROBOT_MAIN() call is rejected.
+        ValueError: 生成的对象名冲突，或 GPIO 名字、User Code 标记、遗留的 XROBOT_MAIN() 调用、
+            遗留的 HardwareContainer 用法不合要求。
+            Generated object names collide, or a GPIO name, a User Code marker, a leftover
+            XROBOT_MAIN() call or a leftover use of HardwareContainer is rejected.
     """
+    reject_user_hardware_container(existing_code, use_xrobot)
     if use_xrobot:
         reject_user_xrobot_main(existing_code)
         existing_code = _without_default_loop(existing_code)
@@ -3111,6 +3389,7 @@ def generate(
     libxr_config.yaml is removed. The User Code bodies of an existing output file are kept. An
     error is logged, with the traceback at debug level, and exits with status 1.
     """
+    global rtos_priorities
     try:
         # 只给出文件名时写入当前目录。
         # A bare file name writes into the current directory.
@@ -3118,6 +3397,15 @@ def generate(
 
         reset_settings()
         project_data = load_configuration(input_path)
+        # 工程根目录是工程 YAML 所在的目录，或输出目录（User）的上一级。
+        # The project root is the directory of the project YAML or the parent of the output
+        # directory (User).
+        rtos_priorities = read_rtos_priorities(
+            [
+                os.path.dirname(os.path.abspath(input_path)),
+                os.path.dirname(os.path.abspath(output_dir)),
+            ]
+        )
         load_libxr_config(output_dir, libxr_config)
         _name_libxr_config(output_dir, libxr_config)
         check_generator_pin()
