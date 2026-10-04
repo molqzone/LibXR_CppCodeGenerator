@@ -201,21 +201,25 @@ Active Peripherals:
 
 `libxr gen` 为每个外设生成一个静态对象，CubeMX 中的引脚标签成为对象名。入口源文件按这些部分排列：
 include 和 `extern` 声明只列出用到的驱动头文件和 HAL 句柄，DMA 缓冲区每个一行，`app_main()` 中每组
-外设前有一行说明注释。串口和 SPI 只为开启了 DMA 的方向分配缓冲区，例子中的 USART1 两个方向都开启了
-DMA，SPI1 都没有：
+外设前有一行说明注释。串口和 SPI 为开启了 DMA 的方向分配缓冲区，例子中的 USART1 两个方向都开启了
+DMA。SPI1 两个方向都没有 DMA，同样得到发送和接收缓冲区，最后一个参数（DMA 切换阈值）为
+`UINT32_MAX`，传输总是走轮询路径：
 
 `libxr gen` generates one static object per peripheral, and the pin labels set in CubeMX become
 object names. The entry source is arranged in these parts: the includes and the `extern`
 declarations list only the driver headers and HAL handles that are used, each DMA buffer takes
 one line, and every group of peripherals in `app_main()` has a comment line. UARTs and SPI get
-buffers only for the directions with DMA; in the example USART1 has DMA in both directions and
-SPI1 in neither:
+buffers for the directions with DMA; in the example USART1 has DMA in both directions. SPI1 has
+DMA in neither direction and gets transmit and receive buffers as well, with `UINT32_MAX` as the
+last argument (the DMA threshold), so its transfers always take the polling path:
 
 ```cpp
 // User/app_main.cpp（节选 / excerpt）
 // DMA buffers (STM32F103RC: no D-cache)
 alignas(4) static uint16_t adc1_buf[16];
 alignas(4) static uint8_t i2c1_buf[32];
+alignas(4) static uint8_t spi1_rx_buf[32];
+alignas(4) static uint8_t spi1_tx_buf[32];
 alignas(4) static uint8_t usart1_rx_buf[128];
 alignas(4) static uint8_t usart1_tx_buf[128];
 // ...
@@ -242,7 +246,7 @@ extern "C" void app_main(void)
   static STM32PWM pwm_tim2_ch3(&htim2, TIM_CHANNEL_3, false);
 
   // SPI, UART, I2C
-  static STM32SPI spi1(&hspi1, {nullptr, 0}, {nullptr, 0}, 3);
+  static STM32SPI spi1(&hspi1, spi1_rx_buf, spi1_tx_buf, UINT32_MAX);
   static STM32UART usart1(&huart1, usart1_rx_buf, usart1_tx_buf, 5);
   static STM32I2C i2c1(&hi2c1, i2c1_buf, 3);
 

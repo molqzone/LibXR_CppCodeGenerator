@@ -1493,16 +1493,18 @@ def generate_dma_resources(project_data: dict) -> list[str]:
     Register the DMA buffers of the peripherals and return their definitions, one line per
     buffer; an empty list without any buffer.
 
-    SPI 和 USART（含 UART、LPUART）为开启 DMA 的方向各生成一个缓冲区；I2C 和 ADC 各生成一个缓冲区，
-    ADC 的元素数为通道数乘以每通道元素数；已启用的 USB 实例生成端点缓冲区。缓冲区大小和 dma_section
-    取自 libxr_settings，缺少时写入默认值，大小必须是正整数；dma_section 非空时声明带
+    SPI 和 USART（含 UART、LPUART）为开启 DMA 的方向各生成一个缓冲区，两个方向都没有 DMA 的 SPI
+    也生成发送和接收缓冲区（见 _generate_spi()）；I2C 和 ADC 各生成一个缓冲区，ADC 的元素数为
+    通道数乘以每通道元素数；已启用的 USB 实例生成端点缓冲区。缓冲区大小和 dma_section 取自
+    libxr_settings，缺少时写入默认值，大小必须是正整数；dma_section 非空时声明带
     __attribute__((section("...")))。缓冲区按名字的自然顺序排列。
-    SPI and USART, UART and LPUART included, get one buffer per direction with DMA enabled; I2C
-    and ADC get one buffer each, the ADC one holding the channel count times the elements per
-    channel; enabled USB instances get endpoint buffers. Buffer sizes and dma_section come from
-    libxr_settings, which receives the defaults for missing values, and sizes must be positive
-    integers; a non-empty dma_section adds __attribute__((section("..."))) to the declarations.
-    The buffers are sorted by name in natural order.
+    SPI and USART, UART and LPUART included, get one buffer per direction with DMA enabled, and an
+    SPI without DMA in either direction gets its transmit and receive buffers too (see
+    _generate_spi()); I2C and ADC get one buffer each, the ADC one holding the channel count times
+    the elements per channel; enabled USB instances get endpoint buffers. Buffer sizes and
+    dma_section come from libxr_settings, which receives the defaults for missing values, and
+    sizes must be positive integers; a non-empty dma_section adds __attribute__((section("...")))
+    to the declarations. The buffers are sorted by name in natural order.
 
     没有数据 cache 的 MCU 按 4 字节对齐；有数据 cache 的 MCU 按 cache 行对齐，数组长度向上取整到
     cache 行的整数倍，缓冲区两端不与其他数据共用 cache 行；驱动被告知的大小不变，见
@@ -1512,10 +1514,11 @@ def generate_dma_resources(project_data: dict) -> list[str]:
     shares a cache line with either end of a buffer; the size a driver is told stays, see
     DmaBuffer.argument().
 
-    _DTCM_BSS_FAMILIES 中的系列上有缓冲区而 dma_section 为空的实例记录一条警告，见
-    _warn_dtcm_buffers()。
-    On a family of _DTCM_BSS_FAMILIES, the instances with buffers and an empty dma_section are
-    warned about, see _warn_dtcm_buffers().
+    _DTCM_BSS_FAMILIES 中的系列上有 DMA 访问的缓冲区而 dma_section 为空的实例记录一条警告，见
+    _warn_dtcm_buffers()；没有 DMA 的 SPI 的缓冲区只由 CPU 访问，不计入。
+    On a family of _DTCM_BSS_FAMILIES, the instances with buffers that DMA accesses and an empty
+    dma_section are warned about, see _warn_dtcm_buffers(); the buffers of an SPI without DMA
+    are accessed by the CPU only and do not count.
 
     Raises:
         LibXRConfigError: 某个设置段不是映射，或某个大小或 dma_section 无效。
@@ -1586,6 +1589,14 @@ def generate_dma_resources(project_data: dict) -> list[str]:
                     add(key, "uint8_t", f"{instance_lower}_tx_buf", tx_size, section)
                 if rx_dma:
                     add(key, "uint8_t", f"{instance_lower}_rx_buf", rx_size, section)
+                if p_type_base == "SPI" and not (tx_dma or rx_dma):
+                    # STM32SPI 的轮询路径也经过这两个缓冲区，见 _generate_spi()；CPU 访问它们，
+                    # 所在的 RAM 不受 DMA 的限制。
+                    # The polling path of STM32SPI goes through these two buffers as well, see
+                    # _generate_spi(); the CPU accesses them, so their RAM has no DMA limit.
+                    for direction, size in (("tx", tx_size), ("rx", rx_size)):
+                        name = f"{instance_lower}_{direction}_buf"
+                        dma_buffers[name] = DmaBuffer(name, "uint8_t", size, section, size)
 
         # I2C/ADC 外设
         # I2C/ADC
@@ -1954,26 +1965,40 @@ class PeripheralFactory:
 
     @staticmethod
     def _generate_spi(instance: str, config: dict) -> tuple:
-        """生成 STM32SPI 对象；未开启 DMA 的方向使用空缓冲区 {nullptr, 0}。
-        Generate the STM32SPI object; a direction without DMA gets the empty buffer
-        {nullptr, 0}.
+        """生成 STM32SPI 对象。
+        Generate the STM32SPI object.
 
-        dma_enable_min_size 取自 libxr_settings 中 SPI 下的设置，默认为 3。
-        dma_enable_min_size comes from the SPI settings in libxr_settings and defaults to 3.
+        开启了 DMA 的 SPI 中，开启 DMA 的方向使用它的 DMA 缓冲区，另一方向使用空缓冲区
+        {nullptr, 0}；dma_enable_min_size 取自 libxr_settings 中 SPI 下的设置，默认为 3。两个方向
+        都没有 DMA 的 SPI 使用 generate_dma_resources() 为它生成的发送和接收缓冲区（大小取自
+        tx_buffer_size 和 rx_buffer_size），dma_enable_min_size 写成 UINT32_MAX：传输长度总不超过
+        它，STM32SPI 总是走轮询路径，经这两个缓冲区收发；这时不读取也不写入 dma_enable_min_size
+        设置。
+        In an SPI with DMA, a direction with DMA uses its DMA buffer and the other direction the
+        empty buffer {nullptr, 0}; dma_enable_min_size comes from the SPI settings in
+        libxr_settings and defaults to 3. An SPI without DMA in either direction uses the
+        transmit and receive buffers that generate_dma_resources() generates for it, sized by
+        tx_buffer_size and rx_buffer_size, and dma_enable_min_size is written as UINT32_MAX: no
+        transfer is longer, so STM32SPI always takes the polling path through these two buffers;
+        the dma_enable_min_size setting is then neither read nor written.
         """
         name = instance.lower()
         tx_enabled = config.get("DMA_TX", "DISABLE") == "ENABLE"
         rx_enabled = config.get("DMA_RX", "DISABLE") == "ENABLE"
 
-        spi_config = _settings("SPI", name)
-        dma_min_size = _integer(
-            f"SPI.{name}.dma_enable_min_size",
-            spi_config.setdefault("dma_enable_min_size", 3),
-            0,
-        )
-
-        tx_buf = dma_argument(f"{name}_tx_buf") if tx_enabled else Braces("nullptr", "0")
-        rx_buf = dma_argument(f"{name}_rx_buf") if rx_enabled else Braces("nullptr", "0")
+        if tx_enabled or rx_enabled:
+            spi_config = _settings("SPI", name)
+            dma_min_size = _integer(
+                f"SPI.{name}.dma_enable_min_size",
+                spi_config.setdefault("dma_enable_min_size", 3),
+                0,
+            )
+            tx_buf = dma_argument(f"{name}_tx_buf") if tx_enabled else Braces("nullptr", "0")
+            rx_buf = dma_argument(f"{name}_rx_buf") if rx_enabled else Braces("nullptr", "0")
+        else:
+            dma_min_size = "UINT32_MAX"
+            tx_buf = dma_argument(f"{name}_tx_buf")
+            rx_buf = dma_argument(f"{name}_rx_buf")
 
         _use_header("stm32_spi.hpp")
         _use_handle("SPI_HandleTypeDef", f"h{name}")

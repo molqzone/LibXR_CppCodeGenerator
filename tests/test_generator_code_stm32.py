@@ -792,7 +792,7 @@ class PeripheralObjects(GeneratorTestCase):
                 "  static STM32PWM pwm_tim1_ch1n(&htim1, TIM_CHANNEL_1, true);",
                 "  static STM32UART usart1(&huart1, {nullptr, 0}, {nullptr, 0}, 5);",
                 "  static STM32I2C i2c1(&hi2c1, i2c1_buf, 3);",
-                "  static STM32SPI spi1(&hspi1, {nullptr, 0}, {nullptr, 0}, 3);",
+                "  static STM32SPI spi1(&hspi1, spi1_rx_buf, spi1_tx_buf, UINT32_MAX);",
                 "  static STM32CAN can1(&hcan1, 5);",
                 "  static STM32CANFD fdcan2(&hfdcan2, 5);",
                 '  static RamFS ramfs("XRobot");',
@@ -954,6 +954,8 @@ class PeripheralObjects(GeneratorTestCase):
                 code = self.generate(self.project(peripherals=peripherals, mcu=mcu, family=family))
                 self.assertIn(
                     f"// DMA buffers ({comment})\n"
+                    f"alignas({alignment}) static uint8_t spi1_rx_buf[32];\n"
+                    f"alignas({alignment}) static uint8_t spi1_tx_buf[32];\n"
                     f"alignas({alignment}) static uint8_t usart1_rx_buf[128];\n",
                     code,
                 )
@@ -1086,6 +1088,33 @@ class PeripheralObjects(GeneratorTestCase):
                 "alignas(4) static uint8_t usart2_rx_buf[128];",
             ],
         )
+
+    def test_an_spi_without_dma_polls_through_its_own_buffers(self):
+        # 以前没有 DMA 的 SPI 得到 {nullptr, 0} 和 dma_enable_min_size 3：STM32SPI 每次传输都先
+        # 复制到发送缓冲区（写空指针），超过 3 字节时还进入 DMA 分支。
+        # An SPI without DMA used to get {nullptr, 0} and dma_enable_min_size 3: STM32SPI copies
+        # into the transmit buffer on every transfer (a null write) and took the DMA branch above
+        # 3 bytes.
+        generator.libxr_settings["SPI"] = {"spi2": {"tx_buffer_size": 16, "rx_buffer_size": 64}}
+        peripherals = {"SPI": {"SPI1": {"DMA_RX": "ENABLE"}, "SPI2": {}}}
+        code = self.generate(self.project(peripherals=peripherals))
+        self.assertIn("static STM32SPI spi2(&hspi2, spi2_rx_buf, spi2_tx_buf, UINT32_MAX);", code)
+        self.assertIn("alignas(4) static uint8_t spi2_rx_buf[64];\n", code)
+        self.assertIn("alignas(4) static uint8_t spi2_tx_buf[16];\n", code)
+        # 不用的 dma_enable_min_size 不写入；开启了 DMA 的 SPI 不变。
+        # The unused dma_enable_min_size is not written; an SPI with DMA stays as it was.
+        self.assertNotIn("dma_enable_min_size", generator.libxr_settings["SPI"]["spi2"])
+        self.assertIn("static STM32SPI spi1(&hspi1, spi1_rx_buf, {nullptr, 0}, 3);", code)
+        self.assertNotIn("spi1_tx_buf", code)
+        # H7 上它们只由 CPU 访问，不提示 dma_section。
+        # On H7 the CPU alone accesses them, so dma_section is not asked for.
+        self.setUp()
+        peripherals = {"SPI": {"SPI2": {}}}
+        with self.assertNoLogs(level="WARNING"):
+            code = self.generate(
+                self.project(peripherals=peripherals, mcu="STM32H723VGT6", family="STM32H7")
+            )
+        self.assertIn("alignas(32) static uint8_t spi2_rx_buf[32];\n", code)
 
     def test_a_channel_in_several_ranks_gets_one_reference_per_rank(self):
         # DevC 的 ADC3 在第 1 和第 12 个 rank 都转换 IN8；以前两个引用同名，生成时报名字冲突。
