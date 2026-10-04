@@ -3032,19 +3032,33 @@ def check_generator_pin() -> None:
 
 
 def _name_libxr_config(output_dir: str, config_source: str) -> None:
-    """记下说明注释中写出的 libxr_config.yaml 名字：指定了配置来源时为它的文件名，否则为输出目录
-    名加文件名，例如 User/libxr_config.yaml。
-    Record the name of libxr_config.yaml for the notice comment: the file name of the
-    configuration source when one is given, otherwise the output directory name and the file
-    name, such as User/libxr_config.yaml.
+    """记下说明注释中写出的 libxr_config.yaml 名字：相对工程根目录（输出目录的上一级）的路径，
+    例如 User/libxr_config.yaml；配置来源在工程之外或是 URL 时为它的文件名。无论是否用
+    --libxr-config 指定，同一个文件得到同一个名字。
+    Record the name of libxr_config.yaml for the notice comment: its path relative to the
+    project root (the parent of the output directory), such as User/libxr_config.yaml; the
+    file name when the source lies outside the project or is a URL. The same file gets the
+    same name whether or not --libxr-config names it.
     """
     global libxr_config_label
+    root = os.path.dirname(os.path.abspath(output_dir))
     if config_source:
         path = config_source.split("?")[0].rstrip("/\\")
-        libxr_config_label = re.split(r"[\\/]", path)[-1] or "libxr_config.yaml"
-        return
-    directory = os.path.basename(os.path.abspath(output_dir))
-    libxr_config_label = f"{directory}/libxr_config.yaml" if directory else "libxr_config.yaml"
+        if "://" in path:
+            libxr_config_label = re.split(r"[\\/]", path)[-1] or "libxr_config.yaml"
+            return
+        path = os.path.abspath(path)
+    else:
+        path = os.path.join(os.path.abspath(output_dir), "libxr_config.yaml")
+    relative = (
+        os.path.relpath(path, root)
+        if os.path.splitdrive(path)[0].lower() == (os.path.splitdrive(root)[0].lower())
+        else ".."
+    )
+    if relative == ".." or relative.startswith(".." + os.sep):
+        libxr_config_label = os.path.basename(path) or "libxr_config.yaml"
+    else:
+        libxr_config_label = relative.replace(os.sep, "/")
 
 
 def generate(
