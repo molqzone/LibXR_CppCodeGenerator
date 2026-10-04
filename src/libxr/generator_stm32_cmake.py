@@ -43,11 +43,13 @@ LIBXR_TITLE = "LibXR"
 APPLICATION_TITLE = "Application"
 OPTIMIZATION_TITLE = "Library optimization"
 KEPT_TITLE = "Kept from the earlier LibXR.CMake"
-# 新工程的默认优化级别：应用代码在 Debug 和 Release 构建中的级别。
-# The default optimization levels of a new project: those of the application code in Debug and
-# Release builds.
+# 新工程的默认优化级别：应用代码在 Debug 构建中的级别和 Release 构建的级别；空字符串表示沿用
+# 工具链文件中的级别（CubeMX 写出的 gcc 为 -Os，ST Arm Clang 为 -Oz）。
+# The default optimization levels of a new project: that of the application code in Debug builds
+# and that of Release builds; an empty string keeps the level of the toolchain file (-Os for gcc
+# and -Oz for ST Arm Clang as CubeMX writes them).
 DEFAULT_OPT_DEBUG = "-Og"
-DEFAULT_OPT_RELEASE = "-O3"
+DEFAULT_OPT_RELEASE = ""
 # “Project settings” 块中 User 源文件的默认写法；写成空字符串表示由 CMakeLists.txt 自己加入。
 # The default of the User sources in the "Project settings" block; an empty string means that
 # CMakeLists.txt adds them itself.
@@ -212,7 +214,7 @@ def _setting_lines(opt_debug: str, opt_release: str, user_sources: str) -> list[
         '# User sources of the application; "" when CMakeLists.txt adds them itself.\n'
         f'set(LIBXR_USER_SOURCES_GLOB "{user_sources}")',
         "# Optimization level of the application in Debug builds and of everything in Release "
-        "builds.\n"
+        'builds;\n# "" keeps the level of the toolchain file.\n'
         f'set(LIBXR_OPT_DEBUG "{opt_debug}")',
         f'set(LIBXR_OPT_RELEASE "{opt_release}")',
     ]
@@ -423,38 +425,38 @@ def _toolchain_level(text: str, configuration: str) -> str | None:
     return level.group() if level else None
 
 
-def toolchain_levels(cmake_dir: str) -> tuple[str | None, str | None]:
-    """cmake 目录中工具链文件设置的 (Debug, Release) 优化级别，没有设置的为 None。
-    The (Debug, Release) optimization levels the toolchain files in the cmake directory set;
-    None for the one that is not set.
+def toolchain_level(cmake_dir: str, configuration: str) -> str | None:
+    """cmake 目录中工具链文件为配置 configuration（DEBUG 或 RELEASE）设置的优化级别。
+    The optimization level the toolchain files in the cmake directory set for configuration,
+    DEBUG or RELEASE.
 
-    先看 gcc-arm-none-eabi.cmake，再看 starm-clang.cmake；两个文件的 Release 级别不同时记录一条
-    说明：LIBXR_OPT_RELEASE 只有一个值，对两个工具链都生效。
-    gcc-arm-none-eabi.cmake is read first, then starm-clang.cmake; when the two files have
-    different Release levels a notice is logged: LIBXR_OPT_RELEASE has one value, which applies
-    to both toolchains.
+    gcc-arm-none-eabi.cmake 和 starm-clang.cmake 的级别相同时返回该级别；都没有设置时返回 None；
+    两个文件的级别不同时也返回 None，并记录一条说明：LIBXR_OPT_<配置> 留空，各工具链保持自己的级别。
+    The level is returned when gcc-arm-none-eabi.cmake and starm-clang.cmake agree on it, and
+    None when neither sets one; when the two files differ, None is returned as well and a notice
+    is logged: LIBXR_OPT_<configuration> stays empty and each toolchain keeps its own level.
     """
     levels = {}
     for name in ("gcc-arm-none-eabi.cmake", "starm-clang.cmake"):
         path = os.path.join(cmake_dir, name)
         if not os.path.isfile(path):
             continue
-        text = read_text_with_fallback(path)
-        levels[name] = (_toolchain_level(text, "DEBUG"), _toolchain_level(text, "RELEASE"))
-    debug = next((debug for debug, _ in levels.values() if debug), None)
-    release = next((release for _, release in levels.values() if release), None)
-    releases = {release for _, release in levels.values() if release}
-    if len(releases) > 1:
-        described = ", ".join(f"{name} {level[1]}" for name, level in levels.items())
+        level = _toolchain_level(read_text_with_fallback(path), configuration)
+        if level:
+            levels[name] = level
+    if len(set(levels.values())) > 1:
+        described = ", ".join(f"{name} {level}" for name, level in levels.items())
+        variable = f"LIBXR_OPT_{configuration}"
         logging.info(
             tr(
-                f"The Release levels of the toolchain files differ ({described}); "
-                f"LIBXR_OPT_RELEASE is {release} and applies to both toolchains",
-                f"两个工具链文件的 Release 优化级别不同（{described}）；LIBXR_OPT_RELEASE 为 "
-                f"{release}，对两个工具链都生效",
+                f"The {configuration.capitalize()} levels of the toolchain files differ "
+                f"({described}); {variable} stays empty and each toolchain keeps its own level",
+                f"两个工具链文件的 {configuration.capitalize()} 优化级别不同（{described}）；"
+                f"{variable} 留空，各工具链保持自己的级别",
             )
         )
-    return debug, release
+        return None
+    return next(iter(levels.values()), None)
 
 
 def migrate_libxr_cmake(content: str, cmake_dir: str) -> tuple[str, str]:
@@ -463,15 +465,16 @@ def migrate_libxr_cmake(content: str, cmake_dir: str) -> tuple[str, str]:
     settings" block, the "Kept" block).
 
     保留旧文件的 LIBXR_DRIVER 和 XROBOT_MODULES_DIR；Debug 优化级别取旧文件中应用目标的 -O 选项，
-    没有时取工具链文件的 Debug 级别，Release 级别取工具链文件的（见 toolchain_levels()），再没有
-    就用默认值。旧模板中会重新生成的语句被丢弃。其余语句不丢：add_subdirectory(LibXR) 之前的放在
-    设置块中，之后的放在 “Kept” 块中，并各记录一条说明。
+    没有时取工具链文件的 Debug 级别，Release 级别取工具链文件的（见 toolchain_level()），再没有
+    就留空，由各工具链文件决定，与迁移前相同。旧模板中会重新生成的语句被丢弃。其余语句不丢：
+    add_subdirectory(LibXR) 之前的放在设置块中，之后的放在 “Kept” 块中，并各记录一条说明。
     The old LIBXR_DRIVER and XROBOT_MODULES_DIR are kept; the Debug level is the -O option of the
     application target in the old file, or the Debug level of the toolchain files without one,
-    and the Release level is that of the toolchain files (see toolchain_levels()); the defaults
-    apply when there is none. The statements of the earlier templates that are generated again
-    are dropped. No other statement is lost: those before add_subdirectory(LibXR) go into the
-    settings block and those after it into the "Kept" block, with a notice each.
+    and the Release level is that of the toolchain files (see toolchain_level()); without a level
+    the setting stays empty and the toolchain files decide, as before the migration. The
+    statements of the earlier templates that are generated again are dropped. No other statement
+    is lost: those before add_subdirectory(LibXR) go into the settings block and those after it
+    into the "Kept" block, with a notice each.
     """
     driver = "st"
     modules_dir = None
@@ -525,9 +528,8 @@ def migrate_libxr_cmake(content: str, cmake_dir: str) -> tuple[str, str]:
                 f"LibXR.CMake：已把旧文件中的 {summary} 保留在 {where} 块中",
             )
         )
-    toolchain_debug, toolchain_release = toolchain_levels(cmake_dir)
-    opt_debug = app_debug or toolchain_debug or DEFAULT_OPT_DEBUG
-    opt_release = toolchain_release or DEFAULT_OPT_RELEASE
+    opt_debug = app_debug or toolchain_level(cmake_dir, "DEBUG") or ""
+    opt_release = toolchain_level(cmake_dir, "RELEASE") or ""
     lines = ["set(LIBXR_SYSTEM None)", f"set(LIBXR_DRIVER {driver})"]
     if modules_dir:
         lines.append(f"set(XROBOT_MODULES_DIR {modules_dir})")

@@ -120,9 +120,10 @@ target_link_libraries(${CMAKE_PROJECT_NAME} stm32cubemx xr)
 SOURCES_AND_LEVELS = [
     '# User sources of the application; "" when CMakeLists.txt adds them itself.',
     'set(LIBXR_USER_SOURCES_GLOB "${CMAKE_CURRENT_SOURCE_DIR}/User/*.cpp")',
-    "# Optimization level of the application in Debug builds and of everything in Release builds.",
+    "# Optimization level of the application in Debug builds and of everything in Release builds;",
+    '# "" keeps the level of the toolchain file.',
     'set(LIBXR_OPT_DEBUG "-Og")',
-    'set(LIBXR_OPT_RELEASE "-O3")',
+    'set(LIBXR_OPT_RELEASE "")',
 ]
 
 # CubeMX 的工具链文件中 CMAKE_<LANG>_FLAGS_<配置> 的设置。
@@ -281,7 +282,7 @@ class Integration(GeneratorTestCase):
         edited = (
             text.replace("set(LIBXR_DRIVER st)", "set(LIBXR_DRIVER st)  # my driver")
             .replace('"-Og"', '"-O1"')
-            .replace('"-O3"', '"-O2"')
+            .replace('set(LIBXR_OPT_RELEASE "")', 'set(LIBXR_OPT_RELEASE "-O2")')
             .replace("set(LIBXR_SYSTEM None)", "set(LIBXR_SYSTEM None)\nset(MY_FLAG ON)")
             # 其他块中的改动在重写时恢复。
             # Edits in the other blocks are undone on a rewrite.
@@ -292,15 +293,13 @@ class Integration(GeneratorTestCase):
         (self.root / "Core" / "Inc" / "FreeRTOSConfig.h").write_text("", encoding="utf-8")
         rewritten = self.run_cmake_generator()
         self.assertEqual(
-            self.settings(rewritten).splitlines()[:7],
+            self.settings(rewritten).splitlines()[:8],
             [
                 "set(LIBXR_SYSTEM FreeRTOS)",
                 "set(MY_FLAG ON)",
                 "set(LIBXR_DRIVER st)  # my driver",
-                SOURCES_AND_LEVELS[0],
-                SOURCES_AND_LEVELS[1],
-                SOURCES_AND_LEVELS[2],
-                SOURCES_AND_LEVELS[3].replace('"-Og"', '"-O1"'),
+                *SOURCES_AND_LEVELS[:4],
+                SOURCES_AND_LEVELS[4].replace('"-Og"', '"-O1"'),
             ],
         )
         self.assertIn('set(LIBXR_OPT_RELEASE "-O2")', rewritten)
@@ -488,14 +487,17 @@ class Migration(GeneratorTestCase):
             self.log,
         )
 
-    def test_the_release_level_of_the_toolchain_files_is_noted_when_they_differ(self):
-        self.migrate(DEVC_LIBXR_CMAKE, GCC_TOOLCHAIN, CLANG_TOOLCHAIN)
+    def test_different_release_levels_of_the_toolchain_files_stay_with_each_toolchain(self):
+        text = self.migrate(DEVC_LIBXR_CMAKE, GCC_TOOLCHAIN, CLANG_TOOLCHAIN)
+        self.assertIn('set(LIBXR_OPT_RELEASE "")', text)
         self.assertIn(
             "The Release levels of the toolchain files differ (gcc-arm-none-eabi.cmake -O3, "
-            "starm-clang.cmake -Oz); LIBXR_OPT_RELEASE is -O3 and applies to both toolchains",
+            "starm-clang.cmake -Oz); LIBXR_OPT_RELEASE stays empty and each toolchain keeps its "
+            "own level",
             self.log,
         )
-        self.migrate(DEVC_LIBXR_CMAKE, GCC_TOOLCHAIN, GCC_TOOLCHAIN)
+        text = self.migrate(DEVC_LIBXR_CMAKE, GCC_TOOLCHAIN, GCC_TOOLCHAIN)
+        self.assertIn('set(LIBXR_OPT_RELEASE "-O3")', text)
         self.assertFalse([entry for entry in self.log if "differ" in entry])
 
     def test_levels_come_from_the_toolchain_files_when_the_old_file_sets_none(self):
@@ -508,6 +510,24 @@ class Migration(GeneratorTestCase):
         self.assertIn('set(LIBXR_OPT_DEBUG "-O0")', settings)
         self.assertIn('set(LIBXR_OPT_RELEASE "-Os")', settings)
 
+    def test_cubemx_toolchain_files_keep_their_own_levels(self):
+        # CubeMX 写出的 gcc 为 -O0 / -Os，ST Arm Clang 为 -Og / -Oz。
+        # CubeMX writes -O0 / -Os for gcc and -Og / -Oz for ST Arm Clang.
+        text = self.migrate(
+            OPENCR_LIBXR_CMAKE,
+            GCC_TOOLCHAIN.replace("-Og", "-O0").replace("-O3", "-Os"),
+            CLANG_TOOLCHAIN,
+        )
+        settings = stm32_cmake.split_blocks(text)["Project settings"]
+        self.assertIn('set(LIBXR_OPT_DEBUG "")', settings)
+        self.assertIn('set(LIBXR_OPT_RELEASE "")', settings)
+        self.assertIn(
+            "The Debug levels of the toolchain files differ (gcc-arm-none-eabi.cmake -O0, "
+            "starm-clang.cmake -Og); LIBXR_OPT_DEBUG stays empty and each toolchain keeps its "
+            "own level",
+            self.log,
+        )
+
     def test_the_old_application_level_wins_over_the_toolchain_debug_level(self):
         text = self.migrate(
             DEVC_LIBXR_CMAKE.replace("PRIVATE -Og", "PRIVATE -O1"),
@@ -515,14 +535,14 @@ class Migration(GeneratorTestCase):
         )
         self.assertIn('set(LIBXR_OPT_DEBUG "-O1")', text)
 
-    def test_the_default_levels_apply_without_toolchain_files(self):
+    def test_the_levels_stay_empty_without_a_level_to_take(self):
         text = self.migrate(
             DEVC_LIBXR_CMAKE.replace(
                 "target_compile_options(${CMAKE_PROJECT_NAME} PRIVATE -Og)", ""
             )
         )
-        self.assertIn('set(LIBXR_OPT_DEBUG "-Og")', text)
-        self.assertIn('set(LIBXR_OPT_RELEASE "-O3")', text)
+        self.assertIn('set(LIBXR_OPT_DEBUG "")', text)
+        self.assertIn('set(LIBXR_OPT_RELEASE "")', text)
 
     def test_a_file_without_a_glob_keeps_adding_the_sources_in_cmakelists(self):
         text = self.migrate(OPENCR_LIBXR_CMAKE)

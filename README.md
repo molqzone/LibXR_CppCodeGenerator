@@ -468,9 +468,10 @@ set(LIBXR_DRIVER st)
 set(XROBOT_MODULES_DIR "${CMAKE_CURRENT_SOURCE_DIR}/Modules")
 # User sources of the application; "" when CMakeLists.txt adds them itself.
 set(LIBXR_USER_SOURCES_GLOB "${CMAKE_CURRENT_SOURCE_DIR}/User/*.cpp")
-# Optimization level of the application in Debug builds and of everything in Release builds.
+# Optimization level of the application in Debug builds and of everything in Release builds;
+# "" keeps the level of the toolchain file.
 set(LIBXR_OPT_DEBUG "-Og")
-set(LIBXR_OPT_RELEASE "-O3")
+set(LIBXR_OPT_RELEASE "")
 
 # ---- LibXR -------------------------------------------------------------------
 # ...
@@ -480,22 +481,27 @@ set(LIBXR_OPT_RELEASE "-O3")
 `FreeRTOSConfig.h` 或 `app_threadx.h` 所决定的系统，`XROBOT_MODULES_DIR` 与入口源文件的选择一致，其余
 各块重新生成。已有的 `LibXR.CMake` 按这个结构重写：设置的值保留，`LIBXR_OPT_DEBUG` 和
 `LIBXR_OPT_RELEASE` 取已用的优化级别（工具链文件中的 `CMAKE_CXX_FLAGS_DEBUG` 和
-`CMAKE_CXX_FLAGS_RELEASE`），重新生成的语句之外的内容保留在 `Kept from the earlier LibXR.CMake` 块中。
+`CMAKE_CXX_FLAGS_RELEASE`，两个工具链文件不同时留空），重新生成的语句之外的内容保留在
+`Kept from the earlier LibXR.CMake` 块中。
 `LIBXR_OPT_DEBUG` 是应用的 Debug 优化级别，`LIBXR_OPT_RELEASE` 是应用、`xr` 和 CubeMX 生成的库在
 Release 构建中的优化级别；Debug 构建中 `xr` 和这些库保持 `-O2`。目标的编译选项排在工具链的
-`CMAKE_<LANG>_FLAGS_<CONFIG>` 之后，所以最后一个 `-O` 就是这里设置的级别。
+`CMAKE_<LANG>_FLAGS_<CONFIG>` 之后，所以最后一个 `-O` 就是这里设置的级别。值为 `""` 时沿用工具链文件中的
+级别，CubeMX 写出的 GCC 为 `-Os`、ST Arm Clang 为 `-Oz`；新工程的 `LIBXR_OPT_RELEASE` 为 `""`。
 
 On a rewrite the values the user changed in the settings block, and what the user added there,
 stay; `LIBXR_SYSTEM` takes the system that `FreeRTOSConfig.h` or `app_threadx.h` in `Core/Inc`
 decides, `XROBOT_MODULES_DIR` agrees with the entry source's choice, and the other blocks are
 generated again. An existing `LibXR.CMake` is rewritten in this structure: the values of the
 settings stay, `LIBXR_OPT_DEBUG` and `LIBXR_OPT_RELEASE` take the optimization levels in use (the
-`CMAKE_CXX_FLAGS_DEBUG` and `CMAKE_CXX_FLAGS_RELEASE` of the toolchain files), and what is not
-among the regenerated statements stays in the `Kept from the earlier LibXR.CMake` block.
+`CMAKE_CXX_FLAGS_DEBUG` and `CMAKE_CXX_FLAGS_RELEASE` of the toolchain files, empty when the two
+toolchain files differ), and what is not among the regenerated statements stays in the
+`Kept from the earlier LibXR.CMake` block.
 `LIBXR_OPT_DEBUG` is the Debug optimization level of the application, and `LIBXR_OPT_RELEASE`
 the Release level of the application, `xr` and the libraries CubeMX generates; in Debug builds
 `xr` and these libraries stay at `-O2`. Target compile options come after the toolchain's
-`CMAKE_<LANG>_FLAGS_<CONFIG>`, so the last `-O` is the level set here.
+`CMAKE_<LANG>_FLAGS_<CONFIG>`, so the last `-O` is the level set here. With `""` the level of the
+toolchain file applies, `-Os` for GCC and `-Oz` for ST Arm Clang as CubeMX writes them; a new
+project has `LIBXR_OPT_RELEASE` set to `""`.
 
 `cmake/starm-clang.cmake` 和 `cmake/gcc-arm-none-eabi.cmake` 保持 CubeMX 写出的内容。`libxr stm32 toolchain`
 切换 `CMakePresets.json` 中默认的工具链，在 GCC 与 ST Arm Clang 之间切换时删除以前的构建目录，下次
