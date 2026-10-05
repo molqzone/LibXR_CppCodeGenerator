@@ -1629,10 +1629,10 @@ def parse_ioc_file(ioc_path: str, context: str | None = None) -> dict[str, Any] 
     logged as an error and gives None.
 
     context 不为空时只保留全局设置和该 CubeMX 上下文（多核工程的一个核，如 CortexM7）拥有的
-    条目（见 filter_ioc_context()）；上下文不存在时抛出 ValueError。
+    条目（见 filter_ioc_context()）；上下文不存在时记录错误并返回 None。
     With a non-empty context, only global settings and the entries owned by that CubeMX context
     (one core of a multicore project, such as CortexM7) are kept (see filter_ioc_context());
-    an unknown context raises ValueError.
+    an unknown context is logged as an error and gives None.
 
     先读取时基（NVIC.TimeBaseIP、NVIC.TimeBase）和 GPIO，再运行各外设解析器；DMA 解析器最后
     运行，把 DMA 配置和开关挂到对应的外设实例下。之后去掉 CubeMX 不会为其生成 HAL 句柄的实例
@@ -1666,7 +1666,14 @@ def parse_ioc_file(ioc_path: str, context: str | None = None) -> dict[str, Any] 
         return None
 
     if context:
-        raw_map = filter_ioc_context(raw_map, context)
+        # 上下文有误时不解析、不写 YAML；错误信息由 filter_ioc_context() 写好，这里补上 .ioc 路径。
+        # A bad context parses nothing and writes no YAML; filter_ioc_context() writes the
+        # message, and the path of the .ioc file is prefixed here.
+        try:
+            raw_map = filter_ioc_context(raw_map, context)
+        except ValueError as error:
+            logging.error(tr(f"{ioc_path}: {error}", f"{ioc_path}：{error}"))
+            return None
 
     # 解析时基的特殊字段。
     # Timebase special fields parsing
@@ -2000,9 +2007,25 @@ def _context_aliases(context: str) -> set[str]:
     return {normalized}
 
 
+def _unknown_context_error(context: str) -> ValueError:
+    """找不到上下文的 ValueError；信息中说明上下文是多核工程的一个核。
+    The ValueError of a context the .ioc file does not hold; its message says that a context
+    names one core of a multicore project.
+    """
+    return ValueError(
+        tr(
+            f"Unknown CubeMX context: {context}; a context names one core of a multicore project",
+            f"找不到 CubeMX 上下文 {context}；上下文指定多核工程的一个核",
+        )
+    )
+
+
 def _context_ip_names(raw_map: dict[str, str], context: str) -> set[str]:
     """返回一个 CubeMX 上下文拥有的 IP 实例名。
     Return the IP instance names assigned to a CubeMX context.
+
+    上下文不存在或没有 IP 列表时抛出 ValueError。
+    An unknown context or a context without an IP list raises ValueError.
     """
     normalized_context = _ioc_context_name(context)
     context_key = next(
@@ -2015,12 +2038,17 @@ def _context_ip_names(raw_map: dict[str, str], context: str) -> set[str]:
         None,
     )
     if context_key is None:
-        raise ValueError(f"Unknown CubeMX context: {context}")
+        raise _unknown_context_error(context)
 
     context_name = raw_map[context_key]
     ip_key = next((key for key in raw_map if key == f"{context_name}.IPs"), None)
     if ip_key is None:
-        raise ValueError(f"CubeMX context {context_name} has no IP list")
+        raise ValueError(
+            tr(
+                f"CubeMX context {context_name} has no IP list; the .ioc file is incomplete",
+                f"CubeMX 上下文 {context_name} 没有 IP 列表；.ioc 文件不完整",
+            )
+        )
 
     names = set()
     for item in raw_map[ip_key].split(","):
@@ -2083,7 +2111,7 @@ def filter_ioc_context(raw_map: dict[str, str], context: str) -> dict[str, str]:
         None,
     )
     if context_name is None:
-        raise ValueError(f"Unknown CubeMX context: {context}")
+        raise _unknown_context_error(context)
 
     ip_names = _context_ip_names(raw_map, context_name)
     all_context_ip_names = _context_ip_names_by_context(raw_map)
@@ -2285,9 +2313,10 @@ def parse_project(
     is set.
 
     context 不为空时只解析该 CubeMX 上下文（多核工程的一个核）拥有的条目；输出的 YAML 描述这
-    一个核的硬件。
+    一个核的硬件。context 为 .ioc 中没有的上下文时记录错误并以状态 1 退出。
     With a non-empty context only the entries owned by that CubeMX context (one core of a
-    multicore project) are parsed; the YAML then describes that one core's hardware.
+    multicore project) are parsed; the YAML then describes that one core's hardware. An unknown
+    context is logged as an error, and the command exits with status 1.
 
     输出路径默认为该目录下的 .config.yaml。调用方（libxr parse 和 setup）已确认目录存在且含有
     .ioc 文件；有多个 .ioc 文件时以状态 1 退出。

@@ -115,6 +115,22 @@ ADC_RANKS_IOC = textwrap.dedent(r"""
     """)
 
 
+# 一个双核 .ioc 的最小片段：CortexM7 拥有 USART3，CortexM4 拥有 USART1。
+# A minimal dual-core .ioc excerpt: CortexM7 owns USART3 and CortexM4 owns USART1.
+DUAL_CORE_IOC = textwrap.dedent("""\
+    Mcu.Context0=CortexM7
+    Mcu.Context1=CortexM4
+    Mcu.ContextNb=2
+    Mcu.Family=STM32H7
+    Mcu.Name=STM32H755BIT6
+    Mcu.UserName=STM32H755BIT6
+    CortexM7.IPs=RCC\\:I,NVIC1\\:I,USART3\\:I
+    CortexM4.IPs=RCC\\:I,NVIC2\\:I,USART1\\:I
+    USART1.BaudRate=115200
+    USART3.BaudRate=115200
+    """)
+
+
 class ParseIoc(TestCase):
     """命令行：读取目录中唯一的 .ioc 文件并写出 YAML。
     The command line: read the one .ioc file of a directory and write the YAML.
@@ -174,6 +190,60 @@ class ParseIoc(TestCase):
             ],
         )
         self.assertFalse((self.project / ".config.yaml").exists())
+
+    def test_an_unknown_context_fails_the_command(self):
+        (self.project / "demo.ioc").write_text(DUAL_CORE_IOC, encoding="utf-8")
+        with self.assertLogs(level="ERROR") as logs:
+            self.assertEqual(self.parse("--context", "CortexM33"), 1)
+        self.assertEqual(
+            logs.output,
+            [
+                f"ERROR:root:{self.project / 'demo.ioc'}: Unknown CubeMX context: CortexM33; "
+                "a context names one core of a multicore project"
+            ],
+        )
+        self.assertFalse((self.project / ".config.yaml").exists())
+
+    def test_a_context_without_an_ip_list_fails_the_command(self):
+        # 有 Mcu.Context0，却没有它的 IP 列表条目 CortexM4.IPs。
+        # Mcu.Context0 is there, but its IP list entry CortexM4.IPs is not.
+        (self.project / "demo.ioc").write_text(
+            "Mcu.Context0=CortexM4\nMcu.ContextNb=1\n", encoding="utf-8"
+        )
+        with self.assertLogs(level="ERROR") as logs:
+            self.assertEqual(self.parse("--context", "CortexM4"), 1)
+        self.assertEqual(
+            logs.output,
+            [
+                f"ERROR:root:{self.project / 'demo.ioc'}: CubeMX context CortexM4 has no IP "
+                "list; the .ioc file is incomplete"
+            ],
+        )
+        self.assertFalse((self.project / ".config.yaml").exists())
+
+    def test_a_single_core_project_has_no_context_to_parse(self):
+        # setUp 写入的 .ioc 是单核工程的，没有 Mcu.ContextN 条目。
+        # The .ioc of setUp is a single-core project: it has no Mcu.ContextN entry.
+        with self.assertLogs(level="ERROR") as logs:
+            self.assertEqual(self.parse("--context", "CortexM7"), 1)
+        self.assertEqual(
+            logs.output,
+            [
+                f"ERROR:root:{self.project / 'demo.ioc'}: Unknown CubeMX context: CortexM7; "
+                "a context names one core of a multicore project"
+            ],
+        )
+        self.assertFalse((self.project / ".config.yaml").exists())
+
+    def test_a_known_context_of_a_multicore_project_is_parsed(self):
+        (self.project / "demo.ioc").write_text(DUAL_CORE_IOC, encoding="utf-8")
+        self.assertEqual(self.parse("--context", "CortexM4"), 0)
+        text = (self.project / ".config.yaml").read_text(encoding="utf-8")
+        # 只解析 CortexM4 的硬件：有它的 USART1，没有 CortexM7 的 USART3。
+        # Only the hardware of CortexM4 is parsed: its USART1 is there, the USART3 of
+        # CortexM7 is not.
+        self.assertIn("USART1", text)
+        self.assertNotIn("USART3", text)
 
 
 class ParsedConfiguration(TestCase):
