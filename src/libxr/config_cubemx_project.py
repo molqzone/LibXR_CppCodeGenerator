@@ -598,18 +598,20 @@ def _stop(english: str, chinese: str) -> None:
     sys.exit(1)
 
 
-def check_project(project_dir: str) -> str:
+def check_project(project_dir: str, require_ioc: bool = True) -> str:
     """检查 project_dir 是 CMake 形式的 STM32CubeMX 工程，返回其中唯一的 .ioc 文件的路径。
     Check that project_dir is an STM32CubeMX project in CMake form and return the path of its
     only .ioc file.
 
     setup 在改动工程之前调用它。目录不存在、没有 Core/、.ioc 文件不是恰好一个，或者没有
     CMakeLists.txt（CubeMX 生成的不是 CMake 工程）时记录错误并以退出码 1 结束；提示中用目录名
-    代替 '.'。
+    代替 '.'。require_ioc 为假时（多核工程的一个核，它的 .ioc 在工程根目录里）跳过 .ioc 的
+    检查，没有 .ioc 时返回空字符串。
     setup calls it before it changes the project. A missing directory, no Core/, other than
     exactly one .ioc file, or no CMakeLists.txt (CubeMX generated something other than a CMake
     project) logs an error and exits with code 1; the messages show the folder name instead
-    of '.'.
+    of '.'. With require_ioc false (a core of a multicore project, whose .ioc sits in the
+    project root) the .ioc checks are skipped and the empty string is returned without one.
     """
     name = _friendly_path_name(project_dir)
     if not os.path.isdir(project_dir):
@@ -622,14 +624,6 @@ def check_project(project_dir: str) -> str:
             "或运行 `libxr stm32 cubemx-gen`",
         )
     ioc_files = sorted(entry for entry in os.listdir(project_dir) if entry.endswith(".ioc"))
-    if not ioc_files:
-        _stop(f"{name} holds no .ioc file", f"{name} 中没有 .ioc 文件")
-    if len(ioc_files) > 1:
-        _stop(
-            f"{name} holds several .ioc files ({', '.join(ioc_files)}); a directory holds one "
-            "CubeMX project",
-            f"{name} 中有多个 .ioc 文件（{'、'.join(ioc_files)}）；一个目录只放一个 CubeMX 工程",
-        )
     if not os.path.isfile(os.path.join(project_dir, "CMakeLists.txt")):
         _stop(
             f"{name} has no CMakeLists.txt; set Toolchain / IDE to CMake in the Project Manager "
@@ -637,7 +631,25 @@ def check_project(project_dir: str) -> str:
             f"{name} 中没有 CMakeLists.txt；请在 STM32CubeMX 的 Project Manager 中把 "
             "Toolchain / IDE 设为 CMake，然后重新生成工程",
         )
-    return os.path.join(project_dir, ioc_files[0])
+    if require_ioc:
+        if not ioc_files:
+            _stop(f"{name} holds no .ioc file", f"{name} 中没有 .ioc 文件")
+        if len(ioc_files) > 1:
+            _stop(
+                f"{name} holds several .ioc files ({', '.join(ioc_files)}); a directory holds "
+                "one CubeMX project",
+                f"{name} 中有多个 .ioc 文件（{'、'.join(ioc_files)}）；"
+                "一个目录只放一个 CubeMX 工程",
+            )
+        return os.path.join(project_dir, ioc_files[0])
+    if len(ioc_files) > 1:
+        _stop(
+            f"{name} holds several .ioc files ({', '.join(ioc_files)}); a core of a multicore "
+            "project has none, the project root holds the only one",
+            f"{name} 中有多个 .ioc 文件（{'、'.join(ioc_files)}）；"
+            "多核工程的核没有 .ioc，唯一的 .ioc 在工程根目录",
+        )
+    return os.path.join(project_dir, ioc_files[0]) if ioc_files else ""
 
 
 # --------------------------
@@ -1008,10 +1020,11 @@ def setup_project(
         sys.exit(1)
 
     if contexts:
-        # 每个上下文的子工程仍然要是合法的 CubeMX CMake 工程。
-        # The subproject of every context must still be a valid CubeMX CMake project.
+        # 每个上下文的子工程仍然要是合法的 CubeMX CMake 工程；它们的 .ioc 在工程根目录。
+        # The subproject of every context must still be a valid CubeMX CMake project; their
+        # .ioc sits in the project root.
         for context in contexts:
-            check_project(context["project_dir"])
+            check_project(context["project_dir"], require_ioc=False)
         logging.info(
             tr(
                 "Detected CubeMX contexts: " + ", ".join(c["name"] for c in contexts),
