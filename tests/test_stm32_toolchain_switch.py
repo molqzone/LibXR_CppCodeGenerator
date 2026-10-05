@@ -1,0 +1,285 @@
+"""libxr stm32 toolchain（libxr.stm32_toolchain_switch）：切换工具链和 ST Arm Clang 运行库
+配置。
+libxr stm32 toolchain (libxr.stm32_toolchain_switch): switching the toolchain and the ST
+Arm Clang runtime profile.
+"""
+
+import contextlib
+import io
+import json
+import os
+import tempfile
+import unittest
+from pathlib import Path
+from unittest import mock
+
+from fixtures import CUBEMX_STARM, TestCase
+
+from libxr import stm32_toolchain_switch as toolchain_switch
+
+
+# CubeMX 生成的 CMakePresets.json 的 default preset 部分。
+# The default preset part of a CubeMX-generated CMakePresets.json.
+def presets(toolchain):
+    """default preset 使用 cmake/<toolchain> 的 CMakePresets.json 内容。
+    The content of a CMakePresets.json whose default preset uses cmake/<toolchain>.
+    """
+    return {
+        "version": 3,
+        "configurePresets": [
+            {
+                "name": "default",
+                "hidden": True,
+                "generator": "Ninja",
+                "binaryDir": "${sourceDir}/build/${presetName}",
+                "toolchainFile": "${sourceDir}/cmake/" + toolchain,
+            },
+            {"name": "debug", "inherits": "default"},
+        ],
+    }
+
+
+class StarmProfile(TestCase):
+    """libxr stm32 toolchain 只改写 CubeMX 写出的那一行 set(STARM_TOOLCHAIN_CONFIG ...)。
+    libxr stm32 toolchain rewrites only the set(STARM_TOOLCHAIN_CONFIG ...) line that CubeMX
+    wrote.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.project = Path(self.temporary.name)
+        (self.project / "cmake").mkdir()
+        self.toolchain = self.project / "cmake" / "starm-clang.cmake"
+        self.toolchain.write_text(CUBEMX_STARM, encoding="utf-8")
+        (self.project / "CMakePresets.json").write_text(
+            json.dumps(presets("starm-clang.cmake")), encoding="utf-8"
+        )
+
+    def switch(self, profile):
+        """以 libxr stm32 toolchain clang 把工程的运行库配置切换为 profile。
+        Switch the runtime profile of the project to profile with libxr stm32 toolchain clang.
+        """
+        std = {value: key for key, value in toolchain_switch.STD_MAP.items()}[profile]
+        with contextlib.redirect_stderr(io.StringIO()):
+            toolchain_switch.switch_toolchain(str(self.project), "clang", std)
+
+    def test_only_the_default_line_changes(self):
+        self.switch("STARM_NEWLIB")
+        self.assertEqual(
+            self.toolchain.read_text(encoding="utf-8"),
+            CUBEMX_STARM.replace('"STARM_PICOLIBC"', '"STARM_NEWLIB"'),
+        )
+        self.switch("STARM_HYBRID")
+        self.assertEqual(
+            self.toolchain.read_text(encoding="utf-8"),
+            CUBEMX_STARM.replace('"STARM_PICOLIBC"', '"STARM_HYBRID"'),
+        )
+
+    def test_the_current_profile_is_not_rewritten(self):
+        os.utime(self.toolchain, ns=(10**9, 10**9))
+        self.switch("STARM_PICOLIBC")
+        self.assertEqual(self.toolchain.stat().st_mtime_ns, 10**9)
+
+    def test_the_default_line_of_earlier_versions_is_found_after_the_selection_block(self):
+        # 旧版本的选择块在默认行之后，其中的 set(STARM_TOOLCHAIN_CONFIG ${...} ...) 不是切换的目标。
+        # The selection block of earlier versions follows the default line, and its
+        # set(STARM_TOOLCHAIN_CONFIG ${...} ...) is not the target of the switch.
+        text = CUBEMX_STARM.replace(
+            'set(STARM_TOOLCHAIN_CONFIG "STARM_PICOLIBC")\n',
+            'set(STARM_TOOLCHAIN_CONFIG "STARM_PICOLIBC")\n'
+            "set(_xr_starm_default ${STARM_TOOLCHAIN_CONFIG})\n"
+            'set(STARM_TOOLCHAIN_CONFIG ${_xr_starm_default} CACHE STRING "profile" FORCE)\n',
+        )
+        self.toolchain.write_text(text, encoding="utf-8")
+        self.switch("STARM_NEWLIB")
+        self.assertEqual(
+            self.toolchain.read_text(encoding="utf-8"),
+            text.replace('"STARM_PICOLIBC"', '"STARM_NEWLIB"', 1),
+        )
+
+
+class SwitchToolchain(TestCase):
+    """切换默认 preset 的工具链：先检查再修改，工具链改变时删除旧的构建目录。
+    Switching the toolchain of the default preset: check first, then change, and remove the old
+    build directories when the toolchain changes.
+    """
+
+    def setUp(self):
+        super().setUp()
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.project = Path(temporary.name)
+        (self.project / "cmake").mkdir()
+        (self.project / "cmake" / "gcc-arm-none-eabi.cmake").write_text("", encoding="utf-8")
+        self.starm = self.project / "cmake" / "starm-clang.cmake"
+        self.starm.write_text(CUBEMX_STARM, encoding="utf-8")
+        self.presets = self.project / "CMakePresets.json"
+        self.presets.write_text(json.dumps(presets("gcc-arm-none-eabi.cmake")), encoding="utf-8")
+        for folder in ("build/debug", "cmake-build-release", "keep"):
+            (self.project / folder).mkdir(parents=True)
+
+    def switch(self, compiler, std=None):
+        """运行 switch_toolchain，返回退出码（成功时为 0）。
+        Run switch_toolchain and return the exit code, 0 on success.
+        """
+        with contextlib.redirect_stderr(io.StringIO()):
+            try:
+                toolchain_switch.switch_toolchain(str(self.project), compiler, std)
+            except SystemExit as exit:
+                return exit.code
+        return 0
+
+    def toolchain_file(self):
+        """CMakePresets.json 中 default preset 的工具链文件。
+        The toolchain file of the default preset in CMakePresets.json.
+        """
+        data = json.loads(self.presets.read_text(encoding="utf-8"))
+        return data["configurePresets"][0]["toolchainFile"]
+
+    def folders(self):
+        """工程根目录中的目录名。
+        The folder names in the project root.
+        """
+        return sorted(p.name for p in self.project.iterdir() if p.is_dir())
+
+    def test_a_new_compiler_removes_the_build_directories(self):
+        self.assertEqual(self.switch("clang", "newlib"), 0)
+        self.assertEqual(self.toolchain_file(), "${sourceDir}/cmake/starm-clang.cmake")
+        self.assertIn('set(STARM_TOOLCHAIN_CONFIG "STARM_NEWLIB")', self.starm.read_text("utf-8"))
+        self.assertEqual(self.folders(), ["cmake", "keep"])
+
+    def test_the_same_compiler_keeps_the_build_directories(self):
+        self.assertEqual(self.switch("gcc"), 0)
+        self.assertEqual(self.folders(), ["build", "cmake", "cmake-build-release", "keep"])
+
+    def test_clang_without_a_library_keeps_the_current_one(self):
+        self.assertEqual(self.switch("clang"), 0)
+        self.assertEqual(self.toolchain_file(), "${sourceDir}/cmake/starm-clang.cmake")
+        self.assertEqual(self.starm.read_text(encoding="utf-8"), CUBEMX_STARM)
+
+    def test_hybrid_warns_about_missing_environment_variables(self):
+        # 以前两个变量都没设时切换照样成功，到 CMake 配置时才报 starm-clang: error: '/..' does
+        # not contain a GCC installation。
+        # With neither variable set the switch used to succeed, and only CMake configure then
+        # reported starm-clang: error: '/..' does not contain a GCC installation.
+        warning = (
+            "WARNING:root:STARM_HYBRID: {} not set; cmake/starm-clang.cmake finds the GNU "
+            "toolchain through CLANG_GCC_CMSIS_COMPILER (the ST Arm Clang installation directory) "
+            "and GCC_TOOLCHAIN_ROOT (the bin directory of arm-none-eabi-gcc), and CMake fails to "
+            "configure the project without them"
+        )
+        for environment, std, missing in (
+            ({}, "hybrid", "CLANG_GCC_CMSIS_COMPILER, GCC_TOOLCHAIN_ROOT"),
+            ({"CLANG_GCC_CMSIS_COMPILER": "/opt/st-arm-clang"}, "hybrid", "GCC_TOOLCHAIN_ROOT"),
+            # clang 不给标准库时沿用已选的 STARM_HYBRID，同样检查。
+            # clang without a library keeps the STARM_HYBRID already selected and checks too.
+            ({"GCC_TOOLCHAIN_ROOT": ""}, None, "CLANG_GCC_CMSIS_COMPILER, GCC_TOOLCHAIN_ROOT"),
+            (
+                {"CLANG_GCC_CMSIS_COMPILER": "/opt/st-arm-clang", "GCC_TOOLCHAIN_ROOT": "/bin"},
+                "hybrid",
+                None,
+            ),
+            ({}, "newlib", None),
+        ):
+            with self.subTest(environment=environment, std=std):
+                if std is None:
+                    self.starm.write_text(
+                        CUBEMX_STARM.replace('"STARM_PICOLIBC"', '"STARM_HYBRID"'),
+                        encoding="utf-8",
+                    )
+                names = ("CLANG_GCC_CMSIS_COMPILER", "GCC_TOOLCHAIN_ROOT")
+                with (
+                    mock.patch.dict(os.environ, environment),
+                    self.assertLogs(level="INFO") as logs,
+                ):
+                    for name in names:
+                        if name not in environment:
+                            os.environ.pop(name, None)
+                    self.assertEqual(self.switch("clang", std), 0)
+                warnings = [line for line in logs.output if line.startswith("WARNING")]
+                self.assertEqual(warnings, [warning.format(missing)] if missing else [])
+
+    def test_a_failed_check_changes_nothing(self):
+        def missing_gcc():
+            self.presets.write_text(json.dumps(presets("starm-clang.cmake")), encoding="utf-8")
+            (self.project / "cmake" / "gcc-arm-none-eabi.cmake").unlink()
+
+        cmake = self.project / "cmake"
+        cases = (
+            (
+                lambda: None,
+                ("gcc", "hybrid"),
+                "Standard library option (-g/-n/-p) cannot be used with gcc.",
+            ),
+            (self.starm.unlink, ("clang", "hybrid"), f"{cmake / 'starm-clang.cmake'} not found."),
+            (missing_gcc, ("gcc",), f"{cmake / 'gcc-arm-none-eabi.cmake'} not found."),
+        )
+        for prepare, arguments, message in cases:
+            with self.subTest(arguments=arguments):
+                prepare()
+                before = self.presets.read_text(encoding="utf-8")
+                with self.assertLogs(level="ERROR") as logs:
+                    self.assertEqual(self.switch(*arguments), 1)
+                self.assertEqual(logs.output, [f"ERROR:root:{message}"])
+                self.assertEqual(self.presets.read_text(encoding="utf-8"), before)
+                self.assertIn("build", self.folders())
+
+    def test_a_profile_line_is_needed_before_anything_changes(self):
+        before = self.presets.read_text(encoding="utf-8")
+        self.starm.write_text("set(CMAKE_SYSTEM_NAME Generic)\n", encoding="utf-8")
+        with self.assertLogs(level="ERROR") as logs:
+            self.assertEqual(self.switch("clang", "hybrid"), 1)
+        self.assertEqual(
+            logs.output,
+            [f"ERROR:root:Could not find 'set(STARM_TOOLCHAIN_CONFIG ...)' in {self.starm}"],
+        )
+        self.assertEqual(self.presets.read_text(encoding="utf-8"), before)
+        self.assertIn("build", self.folders())
+
+    def test_invalid_presets_are_an_error(self):
+        for content, message in (
+            (
+                b"{ broken",
+                "line 1, column 3: Expecting property name enclosed in double quotes",
+            ),
+            ('{"name": "调试"}'.encode("gbk"), "is not UTF-8 text (byte 11); save it as UTF-8"),
+        ):
+            with self.subTest(content=content):
+                self.presets.write_bytes(content)
+                with self.assertLogs(level="ERROR") as logs:
+                    self.assertEqual(self.switch("clang"), 1)
+                self.assertEqual(logs.output, [f"ERROR:root:{self.presets} {message}"])
+                self.assertEqual(self.presets.read_bytes(), content)
+                self.assertIn("build", self.folders())
+
+    def test_only_the_toolchain_value_changes(self):
+        # 以前整个文件按 4 空格缩进重写：2 空格缩进的文件每行都变，中文写成 调试。
+        # The whole file used to be rewritten with 4-space indentation: every line of a
+        # 2-space file changed, and Chinese text became 调试.
+        data = presets("gcc-arm-none-eabi.cmake")
+        data["configurePresets"][1]["displayName"] = "调试"
+        text = json.dumps(data, indent=2, ensure_ascii=False).replace("\n", "\r\n") + "\r\n"
+        self.presets.write_bytes(text.encode("utf-8"))
+        starm = CUBEMX_STARM.replace("\n", "\r\n").encode("utf-8")
+        self.starm.write_bytes(starm)
+        self.assertEqual(self.switch("clang", "newlib"), 0)
+        self.assertEqual(
+            self.presets.read_bytes(),
+            text.replace("gcc-arm-none-eabi.cmake", "starm-clang.cmake").encode("utf-8"),
+        )
+        self.assertEqual(self.starm.read_bytes(), starm.replace(b"PICOLIBC", b"NEWLIB", 1))
+
+    def test_a_default_preset_without_a_toolchain_gets_one(self):
+        data = presets("gcc-arm-none-eabi.cmake")
+        del data["configurePresets"][0]["toolchainFile"]
+        data["configurePresets"][1]["displayName"] = "调试"
+        self.presets.write_text(json.dumps(data), encoding="utf-8")
+        self.assertEqual(self.switch("gcc"), 0)
+        self.assertEqual(self.toolchain_file(), "${sourceDir}/cmake/gcc-arm-none-eabi.cmake")
+        self.assertIn('"displayName": "调试"', self.presets.read_text(encoding="utf-8"))
+
+
+if __name__ == "__main__":
+    unittest.main()

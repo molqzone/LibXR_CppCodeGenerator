@@ -1,28 +1,32 @@
 #!/usr/bin/env python3
-"""Regression checks for CubeMX context-to-project directory discovery."""
+"""CubeMX 上下文到子工程目录发现的回归检查。
+Regression checks for CubeMX context-to-project directory discovery.
+"""
 
 from __future__ import annotations
 
 import sys
 import tempfile
 from pathlib import Path
-from typing import Optional, Tuple
-
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
-from libxr.ConfigCubemxProject import (  # noqa: E402
+from libxr.config_cubemx_project import (  # noqa: E402
     SIMPLE_MULTICORE_LAYOUT_ERROR,
     detect_cube_contexts,
     select_cube_contexts,
 )
-from libxr.PeripheralAnalyzerSTM32 import filter_ioc_context  # noqa: E402
+from libxr.peripheral_analyzer_stm32 import filter_ioc_context  # noqa: E402
 
 
 def _write_project(
-    root: Path, ioc: str, mxproject: Optional[str], directories: Tuple[str, ...]
+    root: Path, ioc: str, mxproject: str | None, directories: tuple[str, ...]
 ) -> Path:
+    """在 root 里写一个含 .ioc、可选 .mxproject 和若干核子工程的最小布局，返回 .ioc 路径。
+    Write a minimal layout with an .ioc, an optional .mxproject and several core subprojects
+    into root; return the .ioc path.
+    """
     root.mkdir(parents=True, exist_ok=True)
     (root / "demo.ioc").write_text(ioc, encoding="utf-8")
     if mxproject is not None:
@@ -34,16 +38,22 @@ def _write_project(
 
 
 def _assert_layout_error(ioc_file: Path) -> None:
+    """select_cube_contexts 必须以 SIMPLE_MULTICORE_LAYOUT_ERROR 拒绝这个布局。
+    select_cube_contexts must reject this layout with SIMPLE_MULTICORE_LAYOUT_ERROR.
+    """
     try:
         select_cube_contexts(str(ioc_file))
     except ValueError as error:
         if str(error) != SIMPLE_MULTICORE_LAYOUT_ERROR:
-            raise AssertionError(f"unexpected layout error: {error}")
+            raise AssertionError(f"unexpected layout error: {error}") from error
     else:
         raise AssertionError("unsupported CubeMX layout was accepted")
 
 
 def _assert_context_filtering() -> None:
+    """filter_ioc_context 把每个虚拟引脚和外设条目分给拥有它们的核。
+    filter_ioc_context assigns every virtual pin and peripheral entry to the core owning it.
+    """
     raw_map = {
         "Mcu.Context0": "CortexM7",
         "Mcu.Context1": "CortexM4",
@@ -70,6 +80,9 @@ def _assert_context_filtering() -> None:
 
 
 def main() -> int:
+    """运行全部检查；全部通过时打印一行并返回 0。
+    Run every check; print one line and return 0 when all pass.
+    """
     with tempfile.TemporaryDirectory(prefix="cubemx_context_smoke_") as temporary:
         root = Path(temporary)
         ioc_file = _write_project(

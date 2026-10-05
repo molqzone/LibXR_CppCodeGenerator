@@ -1,5 +1,25 @@
 <?xml version="1.0" encoding="utf-8"?>
-<flash-layout-rules version="1">
+<!--
+  Erase sector layouts of the internal flash of STM32 devices, in the default (factory)
+  bank configuration. The first rule that matches a model applies; a model without a rule
+  is an error. base is the flash start address (default 0x08000000).
+-->
+<flash-layout-rules version="2">
+  <!-- F0: 1 KB pages, 2 KB on F07x/F09x and F030xC; F070x6 has 1 KB pages -->
+  <rule name="stm32_f070x6" regex="^STM32F070.6">
+    <uniform size_kb="1" />
+  </rule>
+  <rule name="stm32_f07_f09" regex="^STM32F0[79]">
+    <uniform size_kb="2" />
+  </rule>
+  <rule name="stm32_f030xc" regex="^STM32F030.C">
+    <uniform size_kb="2" />
+  </rule>
+  <rule name="stm32_f0" prefix="STM32F0">
+    <uniform size_kb="1" />
+  </rule>
+
+  <!-- F1: 1 KB pages up to 128 KB, 2 KB above and on F105/F107 -->
   <rule name="stm32_f105_f107" regex="^STM32F10[57]">
     <uniform size_kb="2" />
   </rule>
@@ -9,34 +29,52 @@
   <rule name="stm32_f1_large" prefix="STM32F1" flash_kb_min="256">
     <uniform size_kb="2" />
   </rule>
+
   <rule name="stm32_f2" prefix="STM32F2">
-    <banked bank_kb="1024" sizes_kb="16x4,64,128x7" />
+    <sequence sizes_kb="16x4,64,128x7" />
+  </rule>
+
+  <rule name="stm32_f3" prefix="STM32F3">
+    <uniform size_kb="2" />
+  </rule>
+
+  <!-- F4: F413/F423 is one 1.5 MB bank; 2 MB devices have two 1 MB banks -->
+  <rule name="stm32_f413_f423" regex="^STM32F4(13|23)">
+    <sequence sizes_kb="16x4,64,128x11" />
   </rule>
   <rule name="stm32_f4" prefix="STM32F4">
     <banked bank_kb="1024" sizes_kb="16x4,64,128x7" />
   </rule>
-  <rule name="stm32_u5" prefix="STM32U5">
-    <uniform size_kb="8" />
+
+  <!-- F7: F72x/F73x use 16 KB sectors; F74x-F77x are single bank by default -->
+  <rule name="stm32_f72x_f73x" regex="^STM32F7(22|23|30|32|33)">
+    <sequence sizes_kb="16x4,64,128x3" />
   </rule>
-  <rule name="stm32_u3" prefix="STM32U3">
-    <uniform size_kb="8" />
+  <rule name="stm32_f7" prefix="STM32F7">
+    <sequence sizes_kb="32x4,128,256x7" />
   </rule>
-  <rule name="stm32_wl_l4_g0_g4_c0_u0" regex="^STM32(WL|L4|G0|G4|C0|U0)">
+
+  <rule name="stm32_g0" prefix="STM32G0">
     <uniform size_kb="2" />
   </rule>
-  <rule name="stm32_l0" prefix="STM32L0">
-    <uniform size_bytes="128" />
+
+  <!-- G4: G47x/G48x/G414 are dual bank by default; below 512 KB bank 2 starts at 0x08040000 -->
+  <rule name="stm32_g47x_g48x_g414_256k" regex="^STM32G4(7|8|14)" flash_kb="256">
+    <banked bank_kb="128" address_stride_kb="256" sizes_kb="2x64" />
   </rule>
-  <rule name="stm32_wba" prefix="STM32WBA">
-    <uniform size_kb="8" />
+  <rule name="stm32_g47x_g48x_g414_128k" regex="^STM32G4(7|8|14)" flash_kb="128">
+    <banked bank_kb="64" address_stride_kb="256" sizes_kb="2x32" />
   </rule>
-  <rule name="stm32_wb" prefix="STM32WB">
-    <uniform size_kb="4" />
+  <rule name="stm32_g4" prefix="STM32G4">
+    <uniform size_kb="2" />
   </rule>
-  <rule name="stm32_h7a3_b0_b3" regex="^STM32H7(A3|B0|B3)">
-    <uniform size_kb="8" />
-  </rule>
+
   <rule name="stm32_h5" prefix="STM32H5">
+    <uniform size_kb="8" />
+  </rule>
+
+  <!-- H7: 1 MB H742/H743/H745/H747 have two 512 KB banks 1 MB apart -->
+  <rule name="stm32_h7a3_b0_b3" regex="^STM32H7(A3|B0|B3)">
     <uniform size_kb="8" />
   </rule>
   <rule name="stm32_h7_die450_1m_dual_bank_gap" regex="^STM32H7(42|43|45|47)" flash_kb="1024">
@@ -48,22 +86,71 @@
   <rule name="stm32_h7" prefix="STM32H7">
     <uniform size_kb="128" />
   </rule>
-  <rule name="stm32_f7" prefix="STM32F7">
-    <sequence sizes_kb="32x4,128,256x7" />
+
+  <rule name="stm32_l0" prefix="STM32L0">
+    <uniform size_bytes="128" />
   </rule>
-  <rule name="stm32_f0_small_page" regex="^STM32F0[345]">
-    <uniform size_kb="1" />
-  </rule>
-  <rule name="stm32_f3" prefix="STM32F3">
-    <uniform size_kb="2" />
-  </rule>
-  <rule name="stm32_f0" prefix="STM32F0">
-    <uniform size_kb="2" />
-  </rule>
+
   <rule name="stm32_l1" prefix="STM32L1">
     <uniform size_bytes="256" />
   </rule>
-  <rule name="stm32_default" prefix="STM32">
-    <uniform size_kb="1" />
+
+  <!-- L4: L4R/L4S/L4P/L4Q have 4 KB pages in their default dual bank mode -->
+  <rule name="stm32_l4_plus" regex="^STM32L4[RSPQ]">
+    <uniform size_kb="4" />
+  </rule>
+  <rule name="stm32_l4" prefix="STM32L4">
+    <uniform size_kb="2" />
+  </rule>
+
+  <!-- L5: 2 KB pages in the default dual bank mode -->
+  <rule name="stm32_l5" prefix="STM32L5">
+    <uniform size_kb="2" />
+  </rule>
+
+  <rule name="stm32_u0" prefix="STM32U0">
+    <uniform size_kb="2" />
+  </rule>
+
+  <rule name="stm32_u3" prefix="STM32U3">
+    <uniform size_kb="4" />
+  </rule>
+
+  <!-- U5: 8 KB pages in the default dual bank mode; 128 KB U535/U545 are single bank, 16 KB pages -->
+  <rule name="stm32_u535_u545_128k" regex="^STM32U5[34]5" flash_kb="128">
+    <uniform size_kb="16" />
+  </rule>
+  <rule name="stm32_u5" prefix="STM32U5">
+    <uniform size_kb="8" />
+  </rule>
+
+  <!-- WB: WB05/06/07/09 map their flash at 0x10040000; WB1x has 2 KB pages -->
+  <rule name="stm32_wb0" regex="^STM32WB0[5-9]" base="0x10040000">
+    <uniform size_kb="2" />
+  </rule>
+  <rule name="stm32_wba" prefix="STM32WBA">
+    <uniform size_kb="8" />
+  </rule>
+  <rule name="stm32_wb1" prefix="STM32WB1">
+    <uniform size_kb="2" />
+  </rule>
+  <rule name="stm32_wb" prefix="STM32WB">
+    <uniform size_kb="4" />
+  </rule>
+
+  <!-- WL: WL3x map their flash at 0x10040000 -->
+  <rule name="stm32_wl3" prefix="STM32WL3" base="0x10040000">
+    <uniform size_kb="2" />
+  </rule>
+  <rule name="stm32_wl" prefix="STM32WL">
+    <uniform size_kb="2" />
+  </rule>
+
+  <rule name="stm32_c0" prefix="STM32C0">
+    <uniform size_kb="2" />
+  </rule>
+
+  <rule name="stm32_c5" prefix="STM32C5">
+    <uniform size_kb="8" />
   </rule>
 </flash-layout-rules>

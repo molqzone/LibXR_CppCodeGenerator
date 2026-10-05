@@ -1,0 +1,96 @@
+generator: 6.0.0
+terminal_source: usb_otg_fs_cdc
+software_timer:
+  priority: 2
+  stack_depth: 2048
+SPI:
+  spi1:
+    tx_buffer_size: 32
+    rx_buffer_size: 32
+    dma_enable_min_size: 3
+    dma_section: ''
+I2C:
+  i2c1:
+    buffer_size: 32
+    dma_enable_min_size: 3
+    dma_section: ''
+  i2c2:
+    buffer_size: 32
+    dma_enable_min_size: 3
+    dma_section: ''
+  i2c3:
+    buffer_size: 32
+    dma_enable_min_size: 3
+    dma_section: ''
+USART:
+  usart1:
+    tx_buffer_size: 128
+    rx_buffer_size: 128
+    tx_queue_size: 5
+    dma_section: ''
+  usart3:
+    tx_buffer_size: 128
+    rx_buffer_size: 128
+    tx_queue_size: 5
+    dma_section: ''
+  usart6:
+    tx_buffer_size: 512
+    rx_buffer_size: 512
+    tx_queue_size: 15
+    dma_section: ''
+ADC:
+  adc3:
+    buffer_size: 128
+    vref: 3.3
+    dma_section: ''
+CAN:
+  can1:
+    queue_size: 5
+  can2:
+    queue_size: 5
+USB:
+  usb_otg_fs:
+    enable: true
+    ep0_packet_size: 8
+    tx_buffer_size: 128
+    rx_buffer_size: 128
+    rx_fifo_size: 256
+    tx_fifo_size: 128
+    dma_section: ''
+    cdc:
+    - {tx_fifo_size: 128, rx_fifo_size: 128, queue_size: 3}
+    vid: 5840
+    pid: 5266
+    bcd: 62471
+    manufacturer: QDU-Future
+    product: MainCtrl
+    serial: QDU-Future-MainCtrl-89ABCDEF0123456701234567
+  usb_otg_hs:
+    enable: true
+    cdc:
+    - {tx_fifo_size: 128, rx_fifo_size: 128, queue_size: 3}
+    - {tx_fifo_size: 128, rx_fifo_size: 128, queue_size: 3}
+    vid: 5840
+    pid: 5266
+    bcd: 62471
+    manufacturer: QDU-Future
+    product: MainCtrl
+    serial: QDU-Future-MainCtrl-89ABCDEF0123456701234567
+    ep0_packet_size: 8
+    tx_buffer_size: 128
+    rx_buffer_size: 128
+    rx_fifo_size: 256
+    tx_fifo_size: 128
+    dma_section: ''
+Terminal:
+  read_buff_size: 32
+  max_line_size: 32
+  max_arg_number: 5
+  max_history_number: 5
+  run_as_thread: true
+  thread_stack_depth: 2048
+  thread_priority: 3
+database:
+  enable: true
+  block_size: 1
+SYSTEM: FreeRTOS
