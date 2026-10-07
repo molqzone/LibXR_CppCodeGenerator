@@ -130,6 +130,8 @@ requires_clang_format = unittest.skipUnless(
     f"(pip install clang-format=={CLANG_FORMAT_VERSION})",
 )
 
+requires_posix = unittest.skipIf(os.name == "nt", "Windows searches its own STM32CubeMX candidates")
+
 
 def clang_format(text: str, file_name: str) -> str:
     """text 按 LibXR 的风格由 clang-format 排版的结果，视作名为 file_name 的文件。

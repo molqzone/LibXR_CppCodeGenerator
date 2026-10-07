@@ -804,6 +804,15 @@ def _iter_cubemx_candidates() -> Iterable[str]:
     Yield candidate STM32CubeMX locations in order: the non-empty values of the environment
     variables STM32CUBEMX_CMD, CUBEMX_CMD and STM32CUBEMX, then the platform's default install
     locations.
+
+    Linux 上按三个层次找，先显式后猜测：PATH 里的命令名（STM32CubeMX、stm32cubemx），安装
+    在用户主目录的，以及系统级规范位置 /opt/STM32CubeMX。只认确切的路径和命令名：猜测越
+    多，选到别的可执行文件的风险越大，那时明确的报错比猜错好。
+    On Linux three layers are searched, explicit ones before guesses: a command name on
+    PATH (STM32CubeMX, stm32cubemx), an install in the user's home, and the canonical
+    system location /opt/STM32CubeMX. Only exact paths and command names are recognized:
+    the more that is guessed, the higher the risk of picking a different executable,
+    and then a clear error beats a wrong pick.
     """
     env_candidates = (
         os.environ.get("STM32CUBEMX_CMD", ""),
@@ -828,7 +837,9 @@ def _iter_cubemx_candidates() -> Iterable[str]:
         home = os.path.expanduser("~")
         candidates = [
             "STM32CubeMX",
+            "stm32cubemx",
             os.path.join(home, "STM32CubeMX", "STM32CubeMX"),
+            "/opt/STM32CubeMX/STM32CubeMX",
             "/opt/st/stm32cubemx/STM32CubeMX",
             "/usr/local/bin/STM32CubeMX",
         ]
@@ -856,8 +867,10 @@ def resolve_cubemx_command(explicit_cmd: str = "") -> str:
 
     raise FileNotFoundError(
         tr(
-            "Unable to locate STM32CubeMX. Pass --cubemx-cmd or set STM32CUBEMX_CMD.",
-            "找不到 STM32CubeMX。请传入 --cubemx-cmd 或设置 STM32CUBEMX_CMD。",
+            "Unable to locate STM32CubeMX. Put a command named STM32CubeMX or "
+            "stm32cubemx on PATH, pass --cubemx-cmd, or set STM32CUBEMX_CMD.",
+            "找不到 STM32CubeMX。请在 PATH 中提供名为 STM32CubeMX 或 stm32cubemx 的命令，"
+            "传入 --cubemx-cmd，或设置 STM32CUBEMX_CMD。",
         )
     )
 
@@ -881,7 +894,11 @@ def _iter_java_candidates(cubemx_cmd: str) -> Iterable[str]:
     if java_home:
         yield os.path.join(java_home, "bin", "java.exe" if os.name == "nt" else "java")
 
-    cubemx_dir = os.path.dirname(os.path.abspath(cubemx_cmd))
+    # 用真实路径取 CubeMX 所在目录：PATH 里的包装脚本是指向安装目录的符号链接时，自带 JRE
+    # 仍能找到。
+    # Take the directory of CubeMX through its real path: when a wrapper script on PATH
+    # is a symlink into the install directory, the bundled JRE is still found.
+    cubemx_dir = os.path.dirname(os.path.realpath(cubemx_cmd))
     bundled_java = os.path.join(cubemx_dir, "jre", "bin", "java.exe" if os.name == "nt" else "java")
     yield bundled_java
     yield "java"

@@ -17,8 +17,9 @@ import zipfile
 from pathlib import Path
 from unittest import mock
 
-from fixtures import TestCase
+from fixtures import TestCase, requires_posix
 
+from libxr import cubemx_generator
 from libxr.cubemx_generator import (
     ACCESS_BRIDGE_OPTION,
     FIRMWARE_TITLE,
@@ -27,10 +28,13 @@ from libxr.cubemx_generator import (
     Dialog,
     DialogAnswer,
     DialogStopped,
+    _iter_cubemx_candidates,
     _x11_dialog_titles,
     answer_dialog,
     build_cubemx_command,
     generate_cubemx_project,
+    resolve_cubemx_command,
+    resolve_java_command,
 )
 
 # 假 CubeMX 像真的一样回显每条脚本命令并打印 OK（exit 打印 Bye bye），按 FAKE_CUBEMX_MODE 行为：
@@ -236,6 +240,104 @@ class CommandLine(CubeMXTestCase):
             FileNotFoundError, f"{absent} does not exist and is not a command on PATH"
         ):
             self.generate(cubemx_cmd=absent)
+
+
+class InstallationSearch(TestCase):
+    """CubeMX 的候选安装位置：PATH 上的命令名先于固定路径，Linux 的经典路径在其中。
+    The candidate CubeMX installations: a command on PATH comes before the fixed paths,
+    and the classic Linux path is among them.
+    """
+
+    def setUp(self):
+        super().setUp()
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.tmp = Path(temporary.name)
+
+    def environment(self):
+        """只有 tmp 目录的 PATH，且没有指定 CubeMX 或 Java 的环境变量。
+        A PATH holding only the tmp directory, with no CubeMX or Java variable set.
+        """
+        return {
+            "PATH": str(self.tmp),
+            "STM32CUBEMX_CMD": "",
+            "CUBEMX_CMD": "",
+            "STM32CUBEMX": "",
+            "STM32CUBEMX_JAVA": "",
+            "JAVA_CMD": "",
+            "JAVA_HOME": "",
+        }
+
+    def executable(self, name):
+        """在 tmp 目录里放一个空的可执行文件，返回它的路径。
+        Put an empty executable into the tmp directory and return its path.
+        """
+        path = self.tmp / name
+        path.write_text("#!/bin/sh\n", encoding="utf-8")
+        path.chmod(path.stat().st_mode | stat.S_IXUSR)
+        return path
+
+    @requires_posix
+    def test_the_classic_linux_install_path_is_a_candidate(self):
+        # 解压即用的 /opt/STM32CubeMX 是 Linux 上最常见的安装位置。
+        # /opt/STM32CubeMX, the unpack-and-run location, is the most common Linux install.
+        self.assertIn("/opt/STM32CubeMX/STM32CubeMX", list(_iter_cubemx_candidates()))
+
+    @requires_posix
+    def test_the_command_names_searched_on_path(self):
+        # PATH 上找 STM32CubeMX 和小写的 stm32cubemx（发行包和自建包装脚本的名字）；刻意
+        # 不收 cubemx 这类通用名：PATH 里可能有同名但不相干的工具，选错比找不到更糟。
+        # PATH is searched for STM32CubeMX and the lowercase stm32cubemx, the names
+        # distribution packages and hand-made wrappers use; a generic name such as
+        # cubemx is deliberately not searched: PATH can hold an unrelated tool by that
+        # name, and a wrong pick is worse than none.
+        candidates = list(_iter_cubemx_candidates())
+        self.assertIn("STM32CubeMX", candidates)
+        self.assertIn("stm32cubemx", candidates)
+        self.assertNotIn("cubemx", candidates)
+
+    def test_a_command_on_path_wins_over_the_default_locations(self):
+        command = self.executable("STM32CubeMX.exe" if os.name == "nt" else "STM32CubeMX")
+        with mock.patch.dict(os.environ, self.environment()):
+            self.assertEqual(resolve_cubemx_command(), str(command))
+
+    def test_an_environment_variable_names_the_command(self):
+        # STM32CUBEMX_CMD 给出可执行文件时只用它。
+        # Only STM32CUBEMX_CMD is used when it names an executable.
+        command = self.executable("STM32CubeMX.exe" if os.name == "nt" else "STM32CubeMX")
+        environment = self.environment()
+        environment["STM32CUBEMX_CMD"] = str(command)
+        with mock.patch.dict(os.environ, environment):
+            self.assertEqual(resolve_cubemx_command(), str(command))
+
+    def test_the_error_names_every_way_to_give_the_command(self):
+        # 找不到时说明三条路：PATH 上的命令名、--cubemx-cmd、STM32CUBEMX_CMD。
+        # When nothing is found, all three ways are named: a command name on PATH,
+        # --cubemx-cmd and STM32CUBEMX_CMD.
+        with (
+            mock.patch.object(cubemx_generator, "_iter_cubemx_candidates", return_value=[]),
+            self.assertRaisesMessage(
+                FileNotFoundError,
+                "Unable to locate STM32CubeMX. Put a command named STM32CubeMX or "
+                "stm32cubemx on PATH, pass --cubemx-cmd, or set STM32CUBEMX_CMD.",
+            ),
+        ):
+            cubemx_generator.resolve_cubemx_command()
+
+    @requires_posix
+    def test_the_bundled_jre_of_a_symlinked_command_is_found(self):
+        # PATH 里的包装脚本是指向安装目录的符号链接时，Java 用安装目录里自带的 JRE。
+        # When a wrapper script on PATH is a symlink into the install directory, Java
+        # uses the bundled JRE of that directory.
+        install = self.tmp / "install"
+        (install / "jre" / "bin").mkdir(parents=True)
+        (install / "STM32CubeMX").write_text("", encoding="utf-8")
+        bundled = install / "jre" / "bin" / "java"
+        bundled.write_text("", encoding="utf-8")
+        link = self.tmp / "STM32CubeMX"
+        link.symlink_to(install / "STM32CubeMX")
+        with mock.patch.dict(os.environ, self.environment()):
+            self.assertEqual(resolve_java_command(str(link)), str(bundled))
 
 
 class Generation(CubeMXTestCase):
