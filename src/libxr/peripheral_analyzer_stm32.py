@@ -1675,14 +1675,18 @@ def parse_ioc_file(ioc_path: str, context: str | None = None) -> dict[str, Any] 
             logging.error(tr(f"{ioc_path}: {error}", f"{ioc_path}：{error}"))
             return None
 
-    # 解析时基的特殊字段。
-    # Timebase special fields parsing
+    # 时基的特殊字段：单核文件写 NVIC.TimeBase*，多核文件按上下文分组写
+    # NVIC1.TimeBase*、NVIC2.TimeBase*；过滤后剩下的 NVIC 分组就是本上下文的。
+    # Timebase special fields parsing: a single-core file writes NVIC.TimeBase*, a
+    # multicore one writes NVIC1.TimeBase* and NVIC2.TimeBase* per context group;
+    # after filtering, the NVIC groups left are this context's.
     for key, value in raw_map.items():
-        if key.startswith("NVIC.TimeBaseIP"):
+        if re.fullmatch(r"NVIC\d*\.TimeBaseIP", key):
             config.timebase["Source"] = value
-        elif key.startswith("NVIC.TimeBase"):
+        elif re.fullmatch(r"NVIC\d*\.TimeBase", key):
             config.timebase["IRQ"] = value
-    _check_timebase(raw_map, config.timebase)
+    nvic_prefixes = _context_nvic_groups(raw_map, context) if context else ["NVIC"]
+    _check_timebase(raw_map, config.timebase, nvic_prefixes)
 
     # 创建全部解析器。
     # Instantiate all parsers
@@ -1729,10 +1733,18 @@ def parse_ioc_file(ioc_path: str, context: str | None = None) -> dict[str, Any] 
         return None
 
 
-def _check_timebase(raw_map: dict[str, str], timebase: dict[str, str | None]) -> None:
+def _check_timebase(
+    raw_map: dict[str, str],
+    timebase: dict[str, str | None],
+    nvic_prefixes: list[str] | None = None,
+) -> None:
     """HAL 时基仍是 SysTick，或其定时器中断的抢占优先级不是最高（0）时，记录警告。
-    Warn when the HAL timebase is still SysTick, or when the preemption priority of its timer
-    interrupt is not the highest (0).
+    Warn when the HAL timebase is still SysTick, or when the preemption priority of
+    its timer interrupt is not the highest (0).
+
+    nvic_prefixes 是该上下文要查的 NVIC 分组前缀（如 ["NVIC2"]）；为空时按单核的 NVIC。
+    nvic_prefixes names the NVIC group prefixes of the context to look in (such as
+    ["NVIC2"]); empty means the single-core NVIC.
     """
     source = timebase.get("Source") or "SysTick"
     if source == "SysTick":
@@ -1747,9 +1759,18 @@ def _check_timebase(raw_map: dict[str, str], timebase: dict[str, str | None]) ->
         )
         return
     irq = timebase.get("IRQ")
-    # NVIC.<IRQ> 的值形如 true\:5\:0\:...，第二项是抢占优先级。
-    # NVIC.<IRQ> reads like true\:5\:0\:..., the second field being the preemption priority.
-    fields = raw_map.get(f"NVIC.{irq}", "").replace("\\:", ":").split(":")
+    # NVIC.<IRQ> 的值形如 true\:5\:0\:...，第二项是抢占优先级；多核文件中为 NVIC2.<IRQ>。
+    # NVIC.<IRQ> reads like true\:5\:0\:..., the second field being the preemption
+    # priority; a multicore file writes NVIC2.<IRQ>.
+    entry = next(
+        (
+            raw_map.get(f"{prefix}.{irq}")
+            for prefix in nvic_prefixes or ["NVIC"]
+            if f"{prefix}.{irq}" in raw_map
+        ),
+        "",
+    )
+    fields = str(entry).replace("\\:", ":").split(":")
     if len(fields) > 1 and fields[1] != "0":
         logging.warning(
             tr(
@@ -1983,7 +2004,7 @@ def _extract_key_value_pairs(file_handler: TextIO) -> dict[str, str]:
 # --------------------------
 # CubeMX 上下文 / CubeMX Contexts
 # --------------------------
-_IOC_CONTEXT_KEY_RE = re.compile(r"^Mcu\.Context\d+$", re.IGNORECASE)
+_IOC_CONTEXT_KEY_RE = re.compile(r"^Mcu\.Context(\d+)$", re.IGNORECASE)
 
 
 def _ioc_context_name(value: str) -> str:
@@ -2020,12 +2041,85 @@ def _unknown_context_error(context: str) -> ValueError:
     )
 
 
+def _split_ip_list_entry(item: str) -> tuple[str, bool]:
+    """拆开一条 IP 列表条目：IP 名和它是否带 `\\:I`（该上下文初始化它）。
+    Split one IP list entry into its IP name and whether it carries `\\:I`, meaning
+    this context initializes it.
+
+    多核 .ioc 中一个外设可以只由一个核初始化：初始化它的核列出 `USART3\\:I`，另一个核
+    列出不带标记的 `USART3`，只作参考。
+    A peripheral of a multicore project can be initialized by one core only: that
+    core lists `USART3\\:I` while the other lists `USART3` without the marker, for
+    reference only.
+    """
+    item = item.strip().replace("\\:", ":")
+    if not item:
+        return "", False
+    name, _, marker = item.partition(":")
+    return name.strip(), marker.strip().upper() == "I"
+
+
+def _context_ip_lists(raw_map: dict[str, str]) -> dict[str, str]:
+    """每个上下文的 IP 列表原文，键是上下文在 .ioc 中的写法。
+    The IP list of every context as written in the .ioc file, keyed by its spelling.
+    """
+    lists: dict[str, str] = {}
+    for key, value in raw_map.items():
+        if not _IOC_CONTEXT_KEY_RE.fullmatch(key):
+            continue
+        name = str(value).strip()
+        ip_key = f"{name}.IPs"
+        if name and ip_key in raw_map:
+            lists[name] = raw_map[ip_key]
+    return lists
+
+
+def _ip_lists_use_init_markers(raw_map: dict[str, str]) -> bool:
+    """任一上下文的 IP 列表有条目带 `\\:I` 时为 True。
+    True when any context's IP list has an entry carrying `\\:I`.
+
+    CubeMX 6 起多核工程用 `\\:I` 标出初始化外设的核；早于它的文件不带标记，那时列表中
+    的条目都归该上下文。
+    CubeMX 6 marks the core that initializes a peripheral with `\\:I`; files written
+    before it carry no marker, and then every entry belongs to its context.
+    """
+    return any(
+        marked
+        for ip_list in _context_ip_lists(raw_map).values()
+        for _, marked in (_split_ip_list_entry(item) for item in str(ip_list).split(","))
+    )
+
+
+def _owned_ip_names(ip_list: str, init_marked_only: bool) -> set[str]:
+    """一条 IP 列表中归该上下文的 IP 名。
+    The IP names of one list that its context owns.
+
+    init_marked_only 为真时只取带 `\\:I` 的条目；文件不用 `\\:I` 标记（早于 CubeMX 6）
+    时为 False，全部条目都算该上下文的。
+    With init_marked_only only the entries carrying `\\:I` count; a file that does not
+    use the marker, one written before CubeMX 6, passes False and every entry belongs
+    to its context.
+    """
+    names: set[str] = set()
+    for item in str(ip_list).split(","):
+        name, marked = _split_ip_list_entry(item)
+        if name and (marked or not init_marked_only):
+            names.add(name)
+    return names
+
+
 def _context_ip_names(raw_map: dict[str, str], context: str) -> set[str]:
     """返回一个 CubeMX 上下文拥有的 IP 实例名。
     Return the IP instance names assigned to a CubeMX context.
 
-    上下文不存在或没有 IP 列表时抛出 ValueError。
-    An unknown context or a context without an IP list raises ValueError.
+    上下文不存在或没有 IP 列表时抛出 ValueError。`\\:I` 标出初始化外设的核，文件用了
+    标记时只有带标记的条目归该上下文（见 _ip_lists_use_init_markers()），两个核都列出
+    但不带标记的外设归另一个核；上下文自身的名字也归它。
+    An unknown context or a context without an IP list raises ValueError. `\\:I` marks
+    the core that initializes a peripheral, so with the marker only marked entries
+    belong to the context (see _ip_lists_use_init_markers()) and a peripheral listed
+    by both cores without the marker belongs to the other core; the context's own
+    name belongs to it as well.
     """
     normalized_context = _ioc_context_name(context)
     context_key = next(
@@ -2050,12 +2144,7 @@ def _context_ip_names(raw_map: dict[str, str], context: str) -> set[str]:
             )
         )
 
-    names = set()
-    for item in raw_map[ip_key].split(","):
-        item = item.strip().replace("\\:", ":")
-        if not item:
-            continue
-        names.add(item.split(":", 1)[0])
+    names = _owned_ip_names(raw_map[ip_key], _ip_lists_use_init_markers(raw_map))
     names.add(context_name.upper())
     names.add(normalized_context)
     return names
@@ -2064,7 +2153,12 @@ def _context_ip_names(raw_map: dict[str, str], context: str) -> set[str]:
 def _context_ip_names_by_context(raw_map: dict[str, str]) -> dict[str, set[str]]:
     """返回每个上下文拥有的 IP 名，用于虚拟引脚的归属判断。
     Return the IP names owned by each context, for virtual-pin ownership checks.
+
+    归属规则与 _context_ip_names() 相同：文件用 `\\:I` 标记时只取带标记的条目。
+    The same rule as _context_ip_names() applies: with `\\:I` markers only the marked
+    entries count.
     """
+    init_marked_only = _ip_lists_use_init_markers(raw_map)
     result: dict[str, set[str]] = {}
     for key, context_name in raw_map.items():
         if not _IOC_CONTEXT_KEY_RE.fullmatch(key) or not context_name.strip():
@@ -2074,26 +2168,88 @@ def _context_ip_names_by_context(raw_map: dict[str, str]) -> dict[str, set[str]]
             continue
         normalized_context = _ioc_context_name(context_name)
         names = result.setdefault(normalized_context, set())
-        for item in raw_map[ip_key].split(","):
-            item = item.strip().replace("\\:", ":")
-            if item:
-                names.add(item.split(":", 1)[0])
+        names.update(_owned_ip_names(raw_map[ip_key], init_marked_only))
         names.add(context_name.upper())
         names.add(normalized_context)
     return result
+
+
+def _context_nvic_groups(raw_map: dict[str, str], context_name: str) -> list[str]:
+    """一个上下文的 NVIC 分组名（NVIC1、NVIC2 等）。
+    The NVIC group names of a context (NVIC1, NVIC2 and so on).
+
+    分组号取自该上下文 IP 列表中的 `NVIC<n>` 条目：Mcu.Context0=CortexM7 的列表写
+    `NVIC1\\:I`、Mcu.Context1=CortexM4 的写 `NVIC2\\:I`，CubeMX 6.1.0 起如此。IP 列表
+    没有 NVIC 条目时退回 Mcu.ContextN 的序号 +1；两者都没有时按单核的 `NVIC`。
+    The group number comes from the `NVIC<n>` entry of the context's own IP list:
+    Mcu.Context0=CortexM7 lists `NVIC1\\:I` and Mcu.Context1=CortexM4 lists
+    `NVIC2\\:I`, the same since CubeMX 6.1.0. Without an NVIC entry the number is
+    the index of the Mcu.ContextN key plus one; without either, the single-core
+    `NVIC` applies.
+    """
+    names: list[str] = []
+    ip_key = f"{context_name}.IPs"
+    if ip_key in raw_map:
+        for item in str(raw_map[ip_key]).split(","):
+            name, _ = _split_ip_list_entry(item)
+            if re.fullmatch(r"NVIC\d+", name):
+                names.append(name)
+    if names:
+        return names
+    normalized = _ioc_context_name(context_name)
+    for key, value in raw_map.items():
+        match = _IOC_CONTEXT_KEY_RE.fullmatch(key)
+        if match and _ioc_context_name(value) == normalized:
+            names.append(f"NVIC{int(match.group(1)) + 1}")
+            break
+    return names or ["NVIC"]
+
+
+def _filter_functionlistsort(value: str, context_name: str, all_contexts: set[str]) -> str:
+    """只保留 ProjectManager.functionlistsort 中属于一个上下文的条目。
+    Keep only the ProjectManager.functionlistsort entries that belong to one context.
+
+    每个条目的末段是所属上下文的写法（如 `...-CortexM7`）；不带上下文名的条目（单核
+    工程）保留。另一个核的条目丢掉：其中的驱动（HAL/LL）和 Generate Code 只对该核的
+    生成有效，留着会把本核的外设误判成使用 LL 驱动或取消了代码生成。
+    The last field of an entry is the context it belongs to (such as `...-CortexM7`);
+    an entry without a context, as in a single-core project, is kept. The other
+    core's entries are dropped: their driver (HAL/LL) and Generate Code apply to that
+    core's generation only, and keeping them would misjudge this core's peripherals
+    as LL-driven or as having generation off.
+    """
+    normalized = _ioc_context_name(context_name)
+    kept: list[str] = []
+    for entry in value.split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        trailing = _ioc_context_name(entry.rsplit("-", 1)[-1])
+        if trailing in all_contexts and trailing != normalized:
+            continue
+        kept.append(entry)
+    return ",".join(kept)
 
 
 def filter_ioc_context(raw_map: dict[str, str], context: str) -> dict[str, str]:
     """保留全局的 .ioc 设置和一个 CubeMX 上下文拥有的条目。
     Keep the global .ioc settings and the entries owned by one CubeMX context.
 
-    上下文不存在时抛出 ValueError。Mcu 和 RCC 的条目、本上下文的 NVIC 条目和 DEBUG 条目是全局
-    的；引脚按 PinAttribute/ContextOwner 归属；虚拟引脚归给 IP 列表里信号前缀最长的上下文（如
-    SYS 与 SYS_M4）；其余条目按 IP 实例名或上下文名归属。
-    An unknown context raises ValueError. The Mcu and RCC entries, the NVIC entries of this
-    context and the DEBUG entries are global; pins follow PinAttribute/ContextOwner; a virtual
-    pin goes to the context whose IP list owns the longest matching signal prefix (such as SYS
-    versus SYS_M4); the remaining entries follow the IP instance name or the context name.
+    上下文不存在时抛出 ValueError。Mcu 和 RCC 的条目、本上下文的 NVIC 分组、DEBUG
+    条目和共享条目（SH.*）是全局的；引脚按 PinAttribute/ContextOwner 归属，
+    PinAttribute=Free 的引脚（没有指定核的共享引脚）每个核都保留；虚拟引脚归给 IP 列表
+    里信号前缀最长的上下文（如 SYS 与 SYS_M4）；其余条目按 IP 实例名或上下文名归属，
+    IP 实例只归其带 `\\:I` 的上下文；ProjectManager.functionlistsort 只保留本上下文的
+    条目，其中的驱动和 Generate Code 信息才不会丢失。
+    An unknown context raises ValueError. The Mcu and RCC entries, the NVIC groups of
+    this context, the DEBUG entries and the shared entries (SH.*) are global; pins
+    follow PinAttribute/ContextOwner, and a pin with PinAttribute=Free, shared without
+    a named core, is kept for every core; a virtual pin goes to the context whose IP
+    list owns the longest matching signal prefix (such as SYS versus SYS_M4); the
+    remaining entries follow the IP instance name or the context name, an IP instance
+    going only to the context that lists it with `\\:I`; ProjectManager.functionlistsort
+    keeps this context's entries only, so their driver and Generate Code information
+    does not get lost.
     """
     aliases = _context_aliases(context)
     normalized_context = _ioc_context_name(context)
@@ -2115,7 +2271,12 @@ def filter_ioc_context(raw_map: dict[str, str], context: str) -> dict[str, str]:
 
     ip_names = _context_ip_names(raw_map, context_name)
     all_context_ip_names = _context_ip_names_by_context(raw_map)
-    nvic_prefix = f"NVIC{context_suffix}"
+    nvic_groups = _context_nvic_groups(raw_map, context_name)
+    all_contexts = {
+        _ioc_context_name(value)
+        for key, value in raw_map.items()
+        if _IOC_CONTEXT_KEY_RE.fullmatch(key) and value.strip()
+    }
     kept: dict[str, str] = {}
 
     for key, value in raw_map.items():
@@ -2128,19 +2289,54 @@ def filter_ioc_context(raw_map: dict[str, str], context: str) -> dict[str, str]:
             kept[key] = value
             continue
 
-        if upper_prefix == nvic_prefix or upper_prefix in {"NVIC", "DEBUG"}:
+        # 本上下文的 NVIC 分组、未编号的 NVIC（单核写法）和 DEBUG 是每个核都需要的。双核
+        # 文件按上下文给分组编号：NVIC1 归 Mcu.Context0 的核，NVIC2 归下一个核，分组号
+        # 与 Cortex-M 的型号无关。
+        # The NVIC groups of this context, the unnumbered NVIC of a single-core file
+        # and DEBUG are needed by every core. A dual-core file numbers the groups by
+        # context: NVIC1 belongs to the core of Mcu.Context0 and NVIC2 to the next
+        # one, whatever the Cortex-M model number is.
+        if upper_prefix in nvic_groups or upper_prefix in {"NVIC", "DEBUG"}:
             kept[key] = value
             continue
 
-        # 双核 .ioc 文件中引脚的归属是显式写出的。
-        # Pin ownership is explicit in dual-core IOC files.
-        if ".PinAttribute" in key or ".ContextOwner" in key:
-            if _ioc_context_name(value) in aliases:
+        # 共享外设条目（SH.*）两个核的解析器都要读：TIM 通道模式、DAC 组和共享的 GPIO
+        # 外部中断线都写在这里，丢掉会把 TIM 输入捕获通道误判成 PWM 通道。
+        # The shared entries (SH.*) are read by both cores' parsers: the TIM channel
+        # modes, the DAC groups and the shared GPIO external interrupt lines live
+        # here, and dropping them misjudges a TIM input capture channel as PWM.
+        if prefix == "SH":
+            kept[key] = value
+            continue
+
+        # Project Manager 的设置每个核都要用；functionlistsort 只留本上下文的条目。
+        # The Project Manager settings are used by every core; functionlistsort keeps
+        # this context's entries only.
+        if prefix == "ProjectManager":
+            if key == "ProjectManager.functionlistsort":
+                kept[key] = _filter_functionlistsort(value, context_name, all_contexts)
+            else:
                 kept[key] = value
             continue
-        if "." in key and re.match(r"^P[A-K]\d+", prefix):
+
+        # 双核 .ioc 文件中引脚的归属是显式写出的；PinAttribute=Free 的引脚没有指定核，
+        # 两个核都可能用到，都保留。
+        # Pin ownership is explicit in dual-core IOC files; a pin with
+        # PinAttribute=Free names no core, both cores may use it, both keep it.
+        if ".PinAttribute" in key or ".ContextOwner" in key:
+            if _ioc_context_name(value) in aliases or value.strip().lower() == "free":
+                kept[key] = value
+            continue
+        # 端口号到 Z：Nucleo 板上有 L 以后的端口（如 PL0），丢掉会少引脚配置。
+        # Port letters up to Z: Nucleo boards carry ports beyond L (PL0 for one),
+        # and dropping them loses pin configuration.
+        if "." in key and re.match(r"^P[A-Z]\d+", prefix):
             owner = raw_map.get(f"{prefix}.PinAttribute") or raw_map.get(f"{prefix}.ContextOwner")
-            if owner is None or _ioc_context_name(owner) in aliases:
+            if (
+                owner is None
+                or _ioc_context_name(owner) in aliases
+                or owner.strip().lower() == "free"
+            ):
                 kept[key] = value
             continue
 
