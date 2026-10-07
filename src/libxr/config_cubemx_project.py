@@ -658,9 +658,30 @@ def check_project(project_dir: str, require_ioc: bool = True) -> str:
 # 无法确定一个无歧义的“简单多核”CubeMX 工程布局时抛出的错误。
 # The error raised when an unambiguous "simple multicore" CubeMX project layout cannot be
 # identified.
-SIMPLE_MULTICORE_LAYOUT_ERROR = (
-    "Cannot identify an unambiguous simple multi-core CubeMX project layout"
-)
+class LayoutAmbiguityError(ValueError):
+    """布局无法判定，错误信息中说明是哪一步不确定。
+    A layout that cannot be told apart; its message names the step that is ambiguous.
+
+    它是 ValueError：调用方（如 setup_project）按 ValueError 记录并退出；
+    select_cube_contexts 的兜底 except 不再改写已经带原因的信息。
+    It is a ValueError, which callers such as setup_project log and exit on;
+    the catch-all except of select_cube_contexts leaves a message that already
+    names its reason alone.
+    """
+
+
+def _layout_error(reason_en: str, reason_zh: str) -> LayoutAmbiguityError:
+    """带原因的布局错误：总体判定加具体是哪一步不确定。
+    The layout error with its reason: the overall verdict plus the ambiguous step.
+    """
+    return LayoutAmbiguityError(
+        tr(
+            "Cannot identify an unambiguous simple multi-core CubeMX project layout: " + reason_en,
+            "无法确定无歧义的“简单多核”CubeMX 工程布局：" + reason_zh,
+        )
+    )
+
+
 _IOC_CONTEXT_KEY_RE = re.compile(r"^Mcu\.Context(\d+)$", re.IGNORECASE)
 _SIMPLE_CORTEX_M_CONTEXT_RE = re.compile(r"^CORTEXM\d+(?:PLUS)?$")
 _MXPROJECT_CONTEXT_SECTION_RE = re.compile(r"^(?P<context>.+):PreviousGenFiles$", re.IGNORECASE)
@@ -669,11 +690,25 @@ _MXPROJECT_CONTEXT_SECTION_RE = re.compile(r"^(?P<context>.+):PreviousGenFiles$"
 def _read_ioc_map(ioc_file):
     """把 .ioc 文件读成 key=value 表。
     Read an .ioc file into a key=value map.
+
+    非 UTF-8 的 .ioc 抛出带保存提示的 ValueError，与解析器的信息一致：多核检测先于解析
+    读取文件，这条路径要保持原来的提示，不退化成原始的 UnicodeDecodeError。
+    A .ioc that is not UTF-8 raises a ValueError carrying the save hint, the same
+    message the parser gives: multicore detection reads the file before parsing,
+    and this path keeps the original hint instead of a raw UnicodeDecodeError.
     """
     from libxr.peripheral_analyzer_stm32 import _extract_key_value_pairs
 
-    with open(ioc_file, encoding="utf-8") as file:
-        return _extract_key_value_pairs(file)
+    try:
+        with open(ioc_file, encoding="utf-8") as file:
+            return _extract_key_value_pairs(file)
+    except UnicodeDecodeError as error:
+        raise ValueError(
+            tr(
+                f"{ioc_file} is not UTF-8 text (byte {error.start + 1}); save it as UTF-8",
+                f"{ioc_file} 不是 UTF-8 编码（第 {error.start + 1} 个字节）；请以 UTF-8 保存",
+            )
+        ) from error
 
 
 def _normalize_context(value):
@@ -759,7 +794,10 @@ def _read_mxproject_context_paths(project_dir):
     try:
         sections = _read_mxproject_sections(mxproject_file)
     except (OSError, UnicodeError) as error:
-        raise ValueError(SIMPLE_MULTICORE_LAYOUT_ERROR) from error
+        raise _layout_error(
+            f"the .mxproject of {project_dir} cannot be read ({error})",
+            f"读不到 {project_dir} 的 .mxproject（{error}）",
+        ) from error
 
     context_paths = {}
     for section_name, values in sections.items():
@@ -879,12 +917,14 @@ def select_cube_contexts(ioc_file):
     Return all CubeMX contexts and their generated subproject directories.
 
     只有“简单多核”布局才算数：上下文名是 CortexM 系列，Mcu.ContextNb 与条目一致，每个上下文
-    从 .mxproject 恰好解析出一个本地子工程。任何一步不确定都抛出 ValueError，避免把别的 CubeMX
-    布局当成多核工程。
+    从 .mxproject 恰好解析出一个本地子工程。任何一步不确定都抛出带原因的 ValueError
+    （_layout_error()），说明是哪一步不确定，避免把别的 CubeMX 布局当成
+    多核工程，也不把原因藏起来。
     Only a "simple multicore" layout counts: the context names are CortexM-style, Mcu.ContextNb
     matches the entries, and every context resolves to exactly one local subproject through
-    .mxproject. Any ambiguity raises ValueError, so other CubeMX layouts are never mistaken
-    for a multicore project.
+    .mxproject. Any ambiguity raises a ValueError that names its reason
+    (_layout_error()), so other CubeMX layouts are never mistaken for a
+    multicore project and the reason is not hidden.
     """
     contexts = detect_cube_contexts(ioc_file)
     if len(contexts) < 2:
@@ -900,12 +940,24 @@ def select_cube_contexts(ioc_file):
         if declared_count and (
             not declared_count.isdigit() or int(declared_count) != len(contexts)
         ):
-            raise ValueError
+            raise _layout_error(
+                f"Mcu.ContextNb={declared_count} but the .ioc lists {len(contexts)} contexts",
+                f"Mcu.ContextNb={declared_count}，但 .ioc 中列出了 {len(contexts)} 个上下文",
+            )
         normalized_names = [context["normalized"] for context in contexts]
-        if len(set(normalized_names)) != len(normalized_names) or not all(
-            _is_simple_cortex_m_context(context) for context in contexts
-        ):
-            raise ValueError
+        if len(set(normalized_names)) != len(normalized_names):
+            raise _layout_error(
+                "two contexts normalize to the same core name",
+                "有两个上下文归一化后是同名的核",
+            )
+        for context in contexts:
+            if not _is_simple_cortex_m_context(context):
+                raise _layout_error(
+                    f"context {context['name']} is not a simple Cortex-M core, as in a "
+                    "TrustZone (CortexM33S/CortexM33NS), Cortex-A or Cortex-M0++ layout",
+                    f"上下文 {context['name']} 不是普通 Cortex-M 核，如 TrustZone"
+                    "（CortexM33S/CortexM33NS）、Cortex-A 或 Cortex-M0+ 布局",
+                )
 
         project_dir = os.path.dirname(os.path.abspath(ioc_file))
         context_paths = _read_mxproject_context_paths(project_dir)
@@ -913,36 +965,36 @@ def select_cube_contexts(ioc_file):
         for context in contexts:
             candidates = _project_dirs_for_context(project_dir, context, context_paths)
             if len(candidates) != 1:
-                raise ValueError
+                raise _layout_error(
+                    (
+                        f"context {context['name']} has no generated subproject in .mxproject "
+                        "or the project tree"
+                        if not candidates
+                        else f"context {context['name']} maps to {len(candidates)} generated "
+                        "subprojects"
+                    ),
+                    (
+                        f"上下文 {context['name']} 在 .mxproject 和工程目录里找不到已生成的子工程"
+                        if not candidates
+                        else f"上下文 {context['name']} 解析出 {len(candidates)} 个已生成的子工程"
+                    ),
+                )
             context["project_dir"] = next(iter(candidates))
             resolved_dirs.append(os.path.realpath(context["project_dir"]))
         if len(set(resolved_dirs)) != len(resolved_dirs):
-            raise ValueError
+            raise _layout_error(
+                f"two contexts map to the same subproject {resolved_dirs[0]}",
+                f"有两个上下文解析出同一个子工程 {resolved_dirs[0]}",
+            )
     except (KeyError, TypeError, ValueError, OSError, UnicodeError) as error:
-        raise ValueError(SIMPLE_MULTICORE_LAYOUT_ERROR) from error
+        if isinstance(error, LayoutAmbiguityError):
+            raise
+        raise _layout_error(
+            f"the contexts and their subprojects cannot be told apart ({error})",
+            f"无法区分各上下文及其子工程（{error}）",
+        ) from error
 
     return contexts
-
-
-def context_project_dir(project_dir, context_info):
-    """把一个 CubeMX 上下文映射到它生成的子工程目录。
-    Map a CubeMX context to its generated subproject directory.
-    """
-    if context_info is None:
-        return project_dir
-
-    try:
-        normalized = context_info.get("normalized") or _normalize_context(context_info["name"])
-        context = {"normalized": normalized}
-        if not _is_simple_cortex_m_context(context):
-            raise ValueError
-        context_paths = _read_mxproject_context_paths(os.path.abspath(project_dir))
-        candidates = _project_dirs_for_context(os.path.abspath(project_dir), context, context_paths)
-        if len(candidates) != 1:
-            raise ValueError
-        return next(iter(candidates))
-    except (KeyError, TypeError, ValueError, OSError, UnicodeError) as error:
-        raise ValueError(SIMPLE_MULTICORE_LAYOUT_ERROR) from error
 
 
 def setup_project(
@@ -961,18 +1013,19 @@ def setup_project(
     根目录没有 Core/，这时改为检查检测出的每个上下文的子工程，并为核心逐个生成配置、代码和
     CMake 集成；子模块仍只加入根目录一次。commit 为空时以 libxr_version.py 中锁定的 commit
     为默认值。需要克隆 LibXR 时，git_source 为 auto 则在 GitHub、内置镜像、XR_GIT_MIRRORS 和
-    git_mirrors（逗号分隔）中选出响应最快的源。xrobot_enable 为 None 时沿用工程现在的选择：
-    User/app_main.cpp 由 --xrobot 生成时继续生成 XRobot 代码。结束时说明还需手动完成的步骤（见
-    _report_next_steps()）。
+    git_mirrors（逗号分隔）中选出响应最快的源。xrobot_enable 为 None 时逐核沿用工程现在的
+    选择：一个核的 User/app_main.cpp 由 --xrobot 生成时该核继续生成 XRobot 代码，其余核不变；
+    显式给出时对全部核生效。结束时说明还需手动完成的步骤（见 _report_next_steps()）。
     check_project() checks the project before anything changes. The root of a multicore CubeMX
     project (see select_cube_contexts()) has no Core/; the subprojects of the detected contexts
     are checked instead, and the configuration, the code and the CMake integration are then
     produced once per core, while the submodule is still added to the root only once. With an
     empty commit, the commit locked in libxr_version.py is the default. When LibXR has to
     be cloned, git_source auto picks the fastest of GitHub, the built-in mirror,
-    XR_GIT_MIRRORS and git_mirrors (comma-separated). With xrobot_enable None the project keeps
-    its choice: XRobot code is generated again when User/app_main.cpp was generated with
-    --xrobot. At the end it describes what is left to do by hand (see _report_next_steps()).
+    XR_GIT_MIRRORS and git_mirrors (comma-separated). With xrobot_enable None the choice is
+    made per core: a core whose User/app_main.cpp was generated with --xrobot keeps generating
+    XRobot code and the other cores are unchanged; an explicit value applies to every core. At
+    the end it describes what is left to do by hand (see _report_next_steps()).
     """
     from libxr.generator_code_stm32 import generate
     from libxr.generator_stm32_cmake import integrate, project_uses_xrobot
@@ -1065,13 +1118,20 @@ def setup_project(
             )
         )
 
+    # --xrobot / --no-xrobot 显式给出时对全部核生效；没有显式选择时逐核判定：多核工程的
+    # User 目录在每个核的子工程里，一个核的入口源文件用 --xrobot 生成，不影响仍用普通
+    # LibXR 的核。
+    # An explicit --xrobot / --no-xrobot applies to every core; without one the choice
+    # is made per core: a multicore project keeps its User directory in every core's
+    # subproject, so one core's entry source generated with --xrobot does not change
+    # a core still on plain LibXR.
     if xrobot_enable is None:
-        # 多核工程的 User 目录在每个核的子工程里。
-        # A multicore project keeps its User directory in every core's subproject.
-        xrobot_enable = project_uses_xrobot(project_dir) or any(
-            project_uses_xrobot(context["project_dir"]) for context in contexts
-        )
-        if xrobot_enable:
+        xrobot_by_core = {
+            context["project_dir"]: project_uses_xrobot(project_dir)
+            or project_uses_xrobot(context["project_dir"])
+            for context in contexts
+        }
+        if any(xrobot_by_core.values()):
             logging.info(
                 tr(
                     "User/app_main.cpp uses XRobot; generating with --xrobot "
@@ -1079,6 +1139,10 @@ def setup_project(
                     "User/app_main.cpp 使用了 XRobot，继续按 --xrobot 生成（--no-xrobot 可关闭）。",
                 )
             )
+    else:
+        xrobot_by_core = dict.fromkeys(
+            (context["project_dir"] for context in contexts), xrobot_enable
+        )
 
     # 克隆用的源只在需要克隆时选择（auto 时对默认源和镜像测速）。
     # The source for cloning is chosen only when a clone is needed (auto probes the default and
@@ -1096,7 +1160,7 @@ def setup_project(
         source=LibXRSource(git_source, all_mirrors),
         default_libxr_commit=default_libxr_commit if default_libxr_commit else None,
     )
-    if xrobot_enable:
+    if any(xrobot_by_core.values()):
         check_xrobot_support(project_dir, default_libxr_commit)
 
     logging.info(tr(f"Found .ioc file: {ioc_file}", f"找到 .ioc 文件：{ioc_file}"))
@@ -1135,12 +1199,12 @@ def setup_project(
         parse_project(project_dir, yaml_output, summary=False, context=context_name or None)
 
         logging.info(tr("Generating C++ code...", "正在生成 C++ 代码……"))
-        generate(yaml_output, cpp_output, xrobot_enable)
+        generate(yaml_output, cpp_output, xrobot_by_core[target_dir])
 
         integrate(target_dir)
 
     logging.info(tr("[Pass] All tasks completed.", "[通过] 全部任务已完成。"))
-    _report_next_steps(project_dir, xrobot_enable)
+    _report_next_steps(project_dir, any(xrobot_by_core.values()))
 
 
 # LibXR 中 XRobot 工程构建其模块所需的 CMake 文件，相对 LibXR 检出的路径。
