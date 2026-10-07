@@ -265,10 +265,14 @@ class DefaultExpectPaths(TestCase):
 
     def test_a_multicore_project_expects_every_cores_core_inc(self):
         # 多核工程把 Core/ 生成在子工程里，检查路径跟着变；否则成功的生成被误报成失败。
+        # 子工程目录按真实路径（realpath）给出：Windows 的用户目录会解析成 8.3 短名。
         # A multicore project generates Core/ in the subprojects, and the checked paths
-        # follow; otherwise a successful generation is reported as a failure.
+        # follow; otherwise a successful generation is reported as a failure. The
+        # subproject directories come as real paths: on Windows the user directory
+        # resolves to its 8.3 short name.
         expected = [
-            os.path.join(str(self.project / core), "Core", "Inc") for core in ("CM7", "CM4")
+            os.path.join(os.path.realpath(self.project / core), "Core", "Inc")
+            for core in ("CM7", "CM4")
         ]
         self.assertEqual(_default_expect_paths(self.write_multicore()), expected)
 
