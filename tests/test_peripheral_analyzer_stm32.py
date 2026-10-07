@@ -12,7 +12,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from fixtures import IOC, TestCase, run_libxr
+from fixtures import IOC, MULTICORE_IOC, TestCase, run_libxr
 
 from libxr import peripheral_analyzer_stm32
 
@@ -244,6 +244,141 @@ class ParseIoc(TestCase):
         # CortexM7 is not.
         self.assertIn("USART1", text)
         self.assertNotIn("USART3", text)
+
+
+class MulticoreContextOwnership(TestCase):
+    """多核 .ioc 的按核解析：共享外设归初始化它的核，时基和引脚归属按上下文分组。
+    The per-core parsing of a multicore .ioc: a shared peripheral belongs to the core
+    initializing it, and timebase and pin ownership follow the context groups.
+    """
+
+    def setUp(self):
+        super().setUp()
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.project = Path(temporary.name)
+        (self.project / "demo.ioc").write_text(MULTICORE_IOC, encoding="utf-8")
+
+    def parse(self, context):
+        """解析一个核的硬件，返回配置结构。
+        Parse the hardware of one core and return the configuration structure.
+        """
+        return peripheral_analyzer_stm32.parse_ioc_file(str(self.project / "demo.ioc"), context)
+
+    def test_a_shared_peripheral_belongs_to_the_core_initializing_it(self):
+        # CM4 列出 USART3 不带 \:I：只作参考，不生成它，否则 CM4 的 app_main.cpp 里出现
+        # CM4 的 main.c 从不定义的 huart3，链接失败，两个核还会驱动同一个串口。
+        # CM4 lists USART3 without \:I: for reference only, so it is not generated; if
+        # it were, CM4's app_main.cpp would reference huart3, which CM4's main.c never
+        # defines, the link fails and both cores drive one UART.
+        cm7 = self.parse("CortexM7")
+        cm4 = self.parse("CortexM4")
+        self.assertIn("USART3", cm7["Peripherals"]["USART"])
+        self.assertNotIn("USART", cm4["Peripherals"])
+        # 共享的 DMA 条目同样只归初始化的 CM7：CM4 的 DMA 段一条配置都不剩。
+        # The shared DMA entries belong to the initializing CM7 only as well: CM4's
+        # DMA section keeps not one configuration.
+        self.assertTrue(cm7["DMA"])
+        self.assertEqual(cm4["DMA"], {"Requests": {}, "Configurations": {}})
+
+    def test_the_timebase_is_read_from_the_nvic_group_of_the_context(self):
+        # 真实文件写 NVIC2.TimeBaseIP=TIM6（CM4 的 HAL 时基），NVIC1 没有时基条目；解析
+        # 写 NVIC.TimeBase* 的代码两个核都退化成 SysTick。
+        # Real files write NVIC2.TimeBaseIP=TIM6, the HAL timebase of CM4, and NVIC1
+        # has no timebase entry; code that reads NVIC.TimeBase* only degrades both
+        # cores to SysTick.
+        self.assertEqual(
+            self.parse("CortexM4")["Timebase"], {"Source": "TIM6", "IRQ": "TIM6_DAC_IRQn"}
+        )
+        self.assertEqual(self.parse("CortexM7")["Timebase"], {"Source": "SysTick", "IRQ": None})
+
+    def test_free_pins_and_ports_after_k_are_kept_for_both_cores(self):
+        # PinAttribute=Free 的板载 LED 和按钮以前两个核都丢掉；L 以后端口的引脚也一样。
+        # The board LED and the button with PinAttribute=Free used to be dropped for
+        # both cores, as were pins on ports after L.
+        for context in ("CortexM7", "CortexM4"):
+            with self.subTest(context=context):
+                pins = self.parse(context)["GPIO"]
+                self.assertIn("PC13", pins)
+                self.assertEqual(pins["PC13"].get("Label"), "USER_BUTTON")
+                self.assertIn("PL7", pins)
+        cm7 = self.parse("CortexM7")["GPIO"]
+        self.assertIn("PE1", cm7)
+        self.assertIn("PL5", cm7)
+        self.assertNotIn("PE1", self.parse("CortexM4")["GPIO"])
+
+    def test_a_single_channel_timer_keeps_its_channel_mode_from_the_shared_entry(self):
+        # SH.S_TIM16_CH1 被丢掉时，TIM16.Channel=CH1 找不到模式，回退把输入捕获通道记成
+        # PWM 通道；模式条目在时，该定时器一个通道都不记。
+        # When SH.S_TIM16_CH1 is dropped, TIM16.Channel=CH1 finds no mode and the
+        # fallback records the input capture channel as a PWM channel; with the mode
+        # entry the timer records no channel at all.
+        tim16 = self.parse("CortexM7")["Peripherals"]["TIM"]["TIM16"]
+        self.assertFalse(tim16.get("Channels"))
+
+    def test_the_project_manager_entries_of_the_other_core_are_dropped(self):
+        # functionlistsort 被丢掉时，CM7 的 TIM2 用 LL 驱动也照常生成，YAML 引用 CubeMX
+        # 不生成的 HAL 句柄；TIM6 在 CM4 上取消了代码生成，同样要丢掉。
+        # When functionlistsort is dropped, CM7's TIM2 is generated even on the LL
+        # driver, so the YAML references a HAL handle CubeMX never generates; TIM6 has
+        # generation off on CM4 and must be dropped there too.
+        with self.assertLogs(level="WARNING") as logs:
+            cm7 = self.parse("CortexM7")
+        self.assertNotIn("TIM2", cm7["Peripherals"]["TIM"])
+        self.assertTrue(any("LL driver" in message for message in logs.output), logs.output)
+        cm4 = self.parse("CortexM4")
+        self.assertNotIn("TIM6", cm4["Peripherals"].get("TIM", {}))
+        self.assertEqual(cm7["Timebase"]["Source"], "SysTick")
+
+    def test_the_nvic_group_of_a_context_is_kept_for_it(self):
+        raw_map = peripheral_analyzer_stm32._extract_key_value_pairs(io.StringIO(MULTICORE_IOC))
+        cm7 = peripheral_analyzer_stm32.filter_ioc_context(raw_map, "CortexM7")
+        cm4 = peripheral_analyzer_stm32.filter_ioc_context(raw_map, "CortexM4")
+        self.assertIn("NVIC1.SysTick_IRQn", cm7)
+        self.assertNotIn("NVIC2.SysTick_IRQn", cm7)
+        self.assertIn("NVIC2.SysTick_IRQn", cm4)
+        self.assertNotIn("NVIC1.SysTick_IRQn", cm4)
+        # 共享条目和 Project Manager 设置两个核都保留。
+        # The shared entries and the Project Manager settings are kept for both cores.
+        for kept in (cm7, cm4):
+            self.assertIn("SH.GPXTI7.0", kept)
+            self.assertIn("ProjectManager.functionlistsort", kept)
+        # functionlistsort 只留本上下文的条目。
+        # functionlistsort keeps this context's entries only.
+        self.assertNotIn("MX_TIM6_Init", cm7["ProjectManager.functionlistsort"])
+        self.assertIn("MX_TIM2_Init", cm7["ProjectManager.functionlistsort"])
+        self.assertNotIn("MX_TIM2_Init", cm4["ProjectManager.functionlistsort"])
+        self.assertIn("MX_TIM6_Init", cm4["ProjectManager.functionlistsort"])
+
+    def test_ip_lists_without_init_markers_belong_to_every_context(self):
+        # 不带任何 \:I 标记的文件（CubeMX 6 之前的写法）中，IP 列表里的条目都归该上下文。
+        # In a file without any \:I marker, one written before CubeMX 6, every entry of
+        # an IP list belongs to its context.
+        raw_map = peripheral_analyzer_stm32._extract_key_value_pairs(
+            io.StringIO(
+                "Mcu.Context0=CortexM7\n"
+                "Mcu.Context1=CortexM4\n"
+                "Mcu.ContextNb=2\n"
+                "CortexM7.IPs=RCC,USART3,SYS\n"
+                "CortexM4.IPs=RCC,USART1,SYS_M4\n"
+                "USART3.BaudRate=115200\n"
+                "USART1.BaudRate=115200\n"
+            )
+        )
+        cm7 = peripheral_analyzer_stm32._context_ip_names(raw_map, "CortexM7")
+        cm4 = peripheral_analyzer_stm32._context_ip_names(raw_map, "CortexM4")
+        self.assertIn("USART3", cm7)
+        self.assertIn("RCC", cm4)
+        self.assertIn("USART1", cm4)
+        # 归属仍按各自的列表：CM4 拿到自己的 USART1，不拿 CM7 列表里的 USART3。
+        # Ownership still follows each list: CM4 gets its own USART1 and not the
+        # USART3 that only the CM7 list holds.
+        kept = peripheral_analyzer_stm32.filter_ioc_context(raw_map, "CortexM4")
+        self.assertIn("USART1.BaudRate", kept)
+        self.assertNotIn("USART3.BaudRate", kept)
+        kept = peripheral_analyzer_stm32.filter_ioc_context(raw_map, "CortexM7")
+        self.assertIn("USART3.BaudRate", kept)
+        self.assertNotIn("USART1.BaudRate", kept)
 
 
 class ParsedConfiguration(TestCase):
